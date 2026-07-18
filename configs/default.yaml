@@ -1,0 +1,64 @@
+governance:
+  # 当前只读取业务文件，禁止删除、移动、重命名或覆盖原文件。
+  read_only: true
+
+  # 默认递归扫描输入目录。
+  recursive: true
+
+  # 当前支持的文档格式；扫描版 PDF 暂不执行 OCR。
+  allowed_extensions:
+    - .xlsx
+    - .docx
+    - .pdf
+
+  # 防止一次运行扫描过多文件并产生过大的比较矩阵。
+  max_files: 500
+
+grouping:
+  # 文件名、内容与关键字段综合相似度达到该值时归入同一版本组。
+  similarity_threshold: 0.72
+
+recommendation:
+  # 置信度低于该值，或检测到分叉时，必须进入人工确认。
+  auto_select_threshold: 0.82
+
+  # 存在可编辑版本时优先推荐可编辑格式，而不是 PDF 导出件。
+  editable_extensions:
+    - .xlsx
+    - .docx
+
+parsing:
+  # 单文件读取上限，单位为字节，默认 100 MiB。
+  max_file_size_bytes: 104857600
+
+  # ZIP 容器格式解压后的总大小上限，防止压缩炸弹。
+  max_uncompressed_size_bytes: 524288000
+
+  # 单个文档允许提取的最大字符数。
+  max_extracted_characters: 5000000
+
+  # Excel 单文件最多遍历的单元格数。
+  max_excel_cells: 200000
+
+  # PDF 单文件最多读取的页数。
+  max_pdf_pages: 500
+
+artifacts:
+  # 标准化内容和中间产物根目录，不得指向或包含输入目录。
+  root: .artifacts/content
+
+  # 标准化内容由 storage 层写入该根目录下的 normalized 子目录。
+  normalized_subdirectory: normalized
+
+  # 可选调试或后续处理产物写入该根目录下的 intermediate 子目录。
+  intermediate_subdirectory: intermediate
+
+  # Markdown 治理报告目录，同样不得与输入目录重叠。
+  reports: .artifacts/reports
+
+checkpoints:
+  # CLI 默认使用 SQLite，以便关闭进程后仍能恢复人工审核。
+  backend: sqlite
+
+  # checkpoint 数据库必须位于只读输入目录之外。
+  database_path: .artifacts/checkpoints/file-governance.sqlite3

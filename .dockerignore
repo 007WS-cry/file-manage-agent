@@ -1,0 +1,61 @@
+# Git 元数据与本地开发配置
+.git
+.gitignore
+.gitattributes
+.idea
+.vscode
+.agents
+.codex
+
+# Python 虚拟环境、字节码与构建产物
+.venv
+venv
+env
+.tox
+.nox
+__pycache__
+*.py[cod]
+*.egg-info
+.eggs
+build
+dist
+
+# 测试、覆盖率和静态检查缓存
+tests
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.pyright
+.coverage
+.coverage.*
+htmlcov
+
+# 真实输入数据、运行产物与 LangGraph 状态均通过卷挂载提供
+data
+.artifacts
+artifacts
+reports
+checkpoints
+.langgraph
+
+# 人工审核响应只在恢复运行时单独只读挂载
+review_response.json
+review_response*.json
+
+# SQLite checkpoint 数据库及其事务附属文件
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+
+# 本地配置、日志和非运行时文档
+.env
+.env.*
+*.log
+docs
+
+# Docker 构建定义由构建器单独读取，不进入镜像上下文内容
+Dockerfile*
+docker-compose*.yml

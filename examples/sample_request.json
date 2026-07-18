@@ -1,0 +1,25 @@
+{
+  "request": {
+    "root_directory": "../data/input",
+    "recursive": true,
+    "allowed_extensions": [
+      ".xlsx",
+      ".docx",
+      ".pdf"
+    ],
+    "max_files": 500,
+    "grouping_similarity_threshold": 0.72,
+    "auto_select_threshold": 0.82,
+    "use_llm_summary": false
+  },
+  "workspace": {
+    "input_root": "../data/input",
+    "input_readonly": true,
+    "artifact_root": "../.artifacts/content",
+    "report_root": "../.artifacts/reports"
+  },
+  "checkpoint": {
+    "backend": "sqlite",
+    "database_path": "../.artifacts/checkpoints/file-governance.sqlite3"
+  }
+}

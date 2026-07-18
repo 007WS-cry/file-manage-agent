@@ -1,0 +1,76 @@
+# Python 字节码与解释器缓存
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python 虚拟环境与依赖管理环境
+.venv/
+venv/
+env/
+.tox/
+.nox/
+
+# Python 构建、安装与打包产物
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# 测试、覆盖率、类型检查与静态检查缓存
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+
+# IDE、编辑器与操作系统文件
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 本地配置、密钥与日志
+.env
+.env.*
+!.env.example
+*.log
+
+# Codex 或其他本地代理生成的工作目录
+.agents/
+.codex/
+
+# 文件治理运行产物、报告与 LangGraph 状态
+.artifacts/
+artifacts/
+reports/
+checkpoints/
+.langgraph/
+
+# SQLite checkpoint 数据库及其事务附属文件
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sqlite3-*
+*.db
+*.db-*
+
+# 真实业务输入文件不提交；允许使用 .gitkeep 保留空目录
+data/input/*
+!data/input/.gitkeep
+data/artifacts/
+
+# 人工审核响应包含具体运行 ID，不提交到仓库
+review_response.json
+review_response*.json
+
+# 本地 Docker Compose 覆盖配置
+docker-compose.override.yml
+
+# Office 打开文件时生成的临时锁文件
+~$*.docx
+~$*.xlsx
+~$*.pptx
