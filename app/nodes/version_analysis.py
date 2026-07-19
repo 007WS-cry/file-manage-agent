@@ -3,12 +3,6 @@ from __future__ import annotations
 from app.services.document_grouping import (
     group_related_documents as group_related_documents_service,
 )
-from app.services.recommendation import (
-    recommend_main_versions,
-)
-from app.services.recommendation import (
-    score_version_candidates as score_version_candidates_service,
-)
 from app.services.version_graph import (
     build_version_chains as build_version_chains_service,
 )
@@ -27,11 +21,11 @@ from app.services.version_graph import (
 from app.services.version_graph import (
     infer_version_direction as infer_version_direction_service,
 )
-from app.state.models import ComparisonJob, DecisionRecord, DiffRecord, VersionAnalysisGraphState
+from app.state.models import ComparisonJob, DiffRecord, VersionAnalysisGraphState
 from app.utils.runtime import create_error_record
 from app.utils.state_lookup import find_comparison_job_by_id
 
-"""本模块实现版本分组、文件对循环、版本图构建和主版本推荐的 LangGraph 节点。"""
+"""本模块实现版本分组、文件对比较、关系建边和版本链校验的 LangGraph 节点。"""
 
 
 def group_related_documents(state: VersionAnalysisGraphState) -> dict:
@@ -372,107 +366,28 @@ def build_version_chains(state: VersionAnalysisGraphState) -> dict:
         }
 
 
-def score_version_candidates(state: VersionAnalysisGraphState) -> dict:
-    """分别计算每个版本组候选文件的透明规则评分。"""
-    chain_by_group = {
-        item["group_id"]: item for item in state.get("version_chains", [])
-    }
-    decisions: list[DecisionRecord] = []
-    try:
-        for group in state.get("version_groups", []):
-            chain = chain_by_group[group["id"]]
-            scores, reasons = score_version_candidates_service(
-                group,
-                state.get("files", []),
-                chain,
-            )
-            decisions.append(
-                DecisionRecord(
-                    id=f"decision:{group['id']}",
-                    group_id=group["id"],
-                    candidate_scores=scores,
-                    recommended_file_id=None,
-                    reasons=[
-                        reason
-                        for candidate_reasons in reasons.values()
-                        for reason in candidate_reasons
-                    ][:20],
-                    confidence=0.0,
-                    needs_human_review=True,
-                    selected_by="unresolved",
-                    preserve_file_ids=list(group["file_ids"]),
-                )
-            )
-        return {"decisions": decisions}
-    except (KeyError, TypeError, ValueError) as exc:
-        return {
-            "errors": [
-                create_error_record(
-                    stage="version_analysis",
-                    node_name="score_version_candidates",
-                    category="validation",
-                    message=str(exc),
-                    fatal=True,
-                )
-            ]
-        }
-
-
-def select_main_versions(state: VersionAnalysisGraphState) -> dict:
-    """根据候选评分、版本链和分叉规则生成每组最终推荐。"""
-    try:
-        decisions = recommend_main_versions(
-            state.get("version_groups", []),
-            state.get("files", []),
-            state.get("version_chains", []),
-            state.get("branches", []),
-            auto_select_threshold=state["request"]["auto_select_threshold"],
-        )
-        return {"decisions": decisions}
-    except (KeyError, TypeError, ValueError) as exc:
-        return {
-            "errors": [
-                create_error_record(
-                    stage="version_analysis",
-                    node_name="select_main_versions",
-                    category="validation",
-                    message=str(exc),
-                    fatal=True,
-                )
-            ]
-        }
-
-
-def mark_human_review_items(state: VersionAnalysisGraphState) -> dict:
-    """把需要人工确认的版本组 ID 汇总回顶层人工审核状态。"""
-    pending_ids = [
-        item["group_id"]
-        for item in state.get("decisions", [])
-        if item["needs_human_review"]
-    ]
-    previous_review = state.get(
-        "human_review",
-        {"pending_group_ids": [], "selections": {}, "review_note": None},
-    )
-    return {
-        "human_review": {
-            "pending_group_ids": pending_ids,
-            "selections": {},
-            "review_note": previous_review.get("review_note"),
-        }
-    }
-
-
 def validate_version_results(state: VersionAnalysisGraphState) -> dict:
-    """校验每个版本组都具有版本链和推荐结果。"""
+    """校验每个版本组都具有且只具有一条对应版本链。
+
+    主版本推荐已在第四批迁移到独立 Recommendation 子图，因此本节点不再读取
+    或要求 ``decisions``，避免 Evidence 和 Recommendation 尚未执行时误报失败。
+
+    Args:
+        state: 已完成版本边、分叉和版本链构建的 Version Analysis 子图状态。
+
+    Returns:
+        版本组与版本链一一对应时返回空更新，否则返回致命校验错误。
+    """
     group_ids = {item["id"] for item in state.get("version_groups", [])}
-    chain_group_ids = {item["group_id"] for item in state.get("version_chains", [])}
-    decision_group_ids = {item["group_id"] for item in state.get("decisions", [])}
+    chains = state.get("version_chains", [])
+    chain_group_ids = {item["group_id"] for item in chains}
     messages = []
     if group_ids - chain_group_ids:
         messages.append(f"{len(group_ids - chain_group_ids)} 个版本组缺少版本链")
-    if group_ids - decision_group_ids:
-        messages.append(f"{len(group_ids - decision_group_ids)} 个版本组缺少推荐结果")
+    if chain_group_ids - group_ids:
+        messages.append(f"{len(chain_group_ids - group_ids)} 条版本链引用未知版本组")
+    if len(chains) != len(chain_group_ids):
+        messages.append("同一版本组存在多条版本链")
     if not messages:
         return {}
     return {

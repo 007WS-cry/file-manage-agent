@@ -11,7 +11,7 @@ from app.state.models import (
     VersionAnalysisGraphState,
 )
 
-"""本模块实现顶层图以及 Inventory、Version Analysis、Evidence 子图路由。"""
+"""本模块实现顶层治理图以及 Inventory、Version Analysis、Evidence 子图路由。"""
 
 
 def is_request_valid(state: FileGovernanceState) -> Literal["valid", "invalid"]:
@@ -44,12 +44,47 @@ def has_analyzable_documents(
 def has_pending_human_review(
     state: FileGovernanceState,
 ) -> Literal["review", "complete", "failure"]:
-    """在版本子图结束后区分人工确认、直接报告和致命失败。"""
+    """在 Recommendation 子图结束后选择失败、人工确认或直接报告。
+
+    Args:
+        state: 已完成独立 Recommendation 子图的顶层治理状态。
+
+    Returns:
+        存在致命错误时返回 ``failure``；存在待审核推荐时返回 ``review``；
+        其余情况返回 ``complete``。
+    """
     if any(error["fatal"] for error in state.get("errors", [])):
         return "failure"
     if any(decision["needs_human_review"] for decision in state.get("decisions", [])):
         return "review"
     return "complete"
+
+
+def route_version_analysis_result(state: FileGovernanceState) -> Literal["success", "failure"]:
+    """根据 Version Analysis 执行后的致命错误决定是否进入 Evidence。
+
+    Args:
+        state: 已合并版本组、差异、版本关系、分叉和版本链的顶层状态。
+
+    Returns:
+        没有致命错误时返回 ``success``，否则返回 ``failure``。
+    """
+    return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
+
+
+def route_evidence_result(state: FileGovernanceState) -> Literal["success", "failure"]:
+    """根据 Evidence 执行后的致命错误决定是否进入 Recommendation。
+
+    发送日志缺失、不可读或单个 PDF 匹配失败属于可降级错误，不会阻断推荐；
+    只有状态引用和证据关系不一致等致命错误才进入失败报告。
+
+    Args:
+        state: 已合并 PDF 来源、发送记录及 Evidence 错误的顶层状态。
+
+    Returns:
+        没有致命错误时返回 ``success``，否则返回 ``failure``。
+    """
+    return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
 
 
 def has_pending_parse_jobs(state: InventoryGraphState) -> Literal["pending", "done"]:

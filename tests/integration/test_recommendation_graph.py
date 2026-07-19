@@ -219,10 +219,10 @@ def test_recommendation_graph_accepts_empty_business_state() -> None:
     assert result["errors"] == []
 
 
-def test_recommendation_wrapper_filters_private_state_and_stays_detached(
+def test_recommendation_wrapper_filters_private_state_and_remains_independent(
     tmp_path: Path,
 ) -> None:
-    """包装节点只返回白名单字段，且第三批不得修改顶层治理图连线。"""
+    """接入顶层图后包装节点仍应只返回白名单字段并保留独立子图。"""
     input_root = tmp_path / "input"
     input_root.mkdir()
     source_state = make_recommendation_state()
@@ -252,5 +252,5 @@ def test_recommendation_wrapper_filters_private_state_and_stays_detached(
     assert set(update) == {"decisions", "human_review", "errors"}
     assert update["decisions"][0]["recommended_file_id"] == "source"
     assert "candidate_sets" not in update
-    assert "run_recommendation_subgraph" not in file_governance_graph.get_graph().nodes
+    assert "run_recommendation_subgraph" in file_governance_graph.get_graph().nodes
     assert "calculate_decision_confidence" in recommendation_graph.get_graph().nodes

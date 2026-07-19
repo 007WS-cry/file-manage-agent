@@ -34,6 +34,7 @@ def create_test_state(
     report_root: Path,
     *,
     auto_select_threshold: float,
+    delivery_log_path: str | None = None,
 ) -> dict:
     """创建集成测试使用的完整顶层治理初始状态。
 
@@ -42,6 +43,7 @@ def create_test_state(
         artifact_root: 标准化内容和中间产物目录。
         report_root: Markdown 报告目录。
         auto_select_threshold: 自动主版本选择阈值。
+        delivery_log_path: 可选的本地发送记录 JSON 路径。
 
     Returns:
         可直接提交给顶层 LangGraph 的状态。
@@ -54,6 +56,8 @@ def create_test_state(
             "max_files": 20,
             "grouping_similarity_threshold": 0.72,
             "auto_select_threshold": auto_select_threshold,
+            "pdf_match_threshold": 0.82,
+            "delivery_log_path": delivery_log_path,
             "use_llm_summary": False,
         },
         {
@@ -63,6 +67,137 @@ def create_test_state(
             "report_root": str(report_root),
         },
     )
+
+
+def write_delivery_log(
+    path: Path,
+    *,
+    attachment_name: str,
+    attachment_sha256: str,
+) -> None:
+    """写入端到端测试使用的单条客户确认发送记录。
+
+    Args:
+        path: 本地发送记录 JSON 输出路径。
+        attachment_name: 发送时使用的附件文件名。
+        attachment_sha256: 用于精确匹配文件版本的原始附件摘要。
+    """
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "deliveries": [
+                    {
+                        "id": "delivery-confirmed",
+                        "attachment_name": attachment_name,
+                        "attachment_sha256": attachment_sha256,
+                        "normalized_digest": None,
+                        "sent_at": "2026-07-19T10:00:00+08:00",
+                        "recipient_label": "客户甲",
+                        "customer_confirmed": True,
+                        "evidence_ref": "local-log://delivery-confirmed",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_top_graph_registers_four_subgraphs_in_required_order() -> None:
+    """0.2.0 顶层图必须按版本分析、证据和推荐顺序连接业务子图。"""
+    graph = build_file_governance_graph().get_graph()
+    edges = {(edge.source, edge.target) for edge in graph.edges}
+
+    assert (
+        "run_inventory_subgraph",
+        "run_version_analysis_subgraph",
+    ) in edges
+    assert (
+        "run_version_analysis_subgraph",
+        "run_evidence_subgraph",
+    ) in edges
+    assert (
+        "run_evidence_subgraph",
+        "run_recommendation_subgraph",
+    ) in edges
+    assert (
+        "run_recommendation_subgraph",
+        "generate_governance_report",
+    ) in edges
+
+
+def test_top_graph_uses_delivery_evidence_in_recommendation_and_report(
+    tmp_path: Path,
+) -> None:
+    """本地客户确认应贯穿 Evidence、Recommendation 和最终治理报告。"""
+    input_root = tmp_path / "input"
+    artifact_root = tmp_path / "artifacts"
+    report_root = tmp_path / "reports"
+    delivery_log_path = tmp_path / "delivery_log.json"
+    input_root.mkdir()
+    source_path = input_root / "contract_final.docx"
+    create_docx(source_path, "Amount CNY 1200 Clause A")
+    source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
+    write_delivery_log(
+        delivery_log_path,
+        attachment_name=source_path.name,
+        attachment_sha256=source_sha256,
+    )
+    state = create_test_state(
+        input_root,
+        artifact_root,
+        report_root,
+        auto_select_threshold=0.82,
+        delivery_log_path=str(delivery_log_path),
+    )
+
+    result = build_file_governance_graph().invoke(
+        state,
+        config={"configurable": {"thread_id": "evidence-recommendation-report"}},
+    )
+
+    assert result["run"]["status"] == "completed"
+    assert len(result["deliveries"]) == 1
+    assert result["deliveries"][0]["match_method"] == "sha256"
+    assert result["deliveries"][0]["customer_confirmed"] is True
+    assert result["decisions"][0]["selected_by"] == "rule"
+    assert any("客户已确认" in reason for reason in result["decisions"][0]["reasons"])
+    assert "### PDF 来源证据" in result["report"]["report_markdown"]
+    assert "### 发送与确认记录" in result["report"]["report_markdown"]
+    assert "local-log://delivery-confirmed" in result["report"]["report_markdown"]
+    assert "1 条发送证据" in result["report"]["summary"]
+
+
+def test_invalid_delivery_log_is_nonfatal_and_reaches_recommendation(
+    tmp_path: Path,
+) -> None:
+    """非法发送日志应降级为部分成功，并继续生成推荐和带警告报告。"""
+    input_root = tmp_path / "input"
+    artifact_root = tmp_path / "artifacts"
+    report_root = tmp_path / "reports"
+    delivery_log_path = tmp_path / "delivery_log.json"
+    input_root.mkdir()
+    create_docx(input_root / "contract_final.docx", "Amount CNY 1200 Clause A")
+    delivery_log_path.write_text("{not-json", encoding="utf-8")
+    state = create_test_state(
+        input_root,
+        artifact_root,
+        report_root,
+        auto_select_threshold=0.82,
+        delivery_log_path=str(delivery_log_path),
+    )
+
+    result = build_file_governance_graph().invoke(
+        state,
+        config={"configurable": {"thread_id": "invalid-evidence-degrades"}},
+    )
+
+    assert result["run"]["status"] == "partial"
+    assert len(result["decisions"]) == 1
+    assert any(error["stage"] == "evidence" and not error["fatal"] for error in result["errors"])
+    assert "## 运行警告" in result["report"]["report_markdown"]
 
 
 def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> None:

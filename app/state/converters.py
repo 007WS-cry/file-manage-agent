@@ -90,8 +90,12 @@ def file_governance_to_version_analysis_state(
         version_edges=list(state.get("version_edges", [])),
         branches=list(state.get("branches", [])),
         version_chains=list(state.get("version_chains", [])),
-        decisions=list(state.get("decisions", [])),
-        human_review=dict(state["human_review"]),
+        decisions=[],
+        human_review={
+            "pending_group_ids": [],
+            "selections": {},
+            "review_note": state["human_review"].get("review_note"),
+        },
         errors=list(state.get("errors", [])),
     )
 
@@ -101,9 +105,9 @@ def version_analysis_state_to_file_governance_update(
 ) -> dict:
     """把 Version Analysis 子图结果转换为顶层治理状态更新。
 
-    只返回版本分组、差异、版本边、分叉、版本链、推荐、人工审核和错误。
-    比较任务、比较队列、当前任务和当前差异草稿均属于子图私有执行状态，
-    不会合并回顶层状态。
+    只返回版本分组、差异、版本边、分叉、版本链和错误。推荐与人工审核已经
+    迁移到独立 Recommendation 子图；比较任务、队列和当前差异草稿也不会
+    合并回顶层状态。
 
     Args:
         state: 已完成执行的 Version Analysis 子图状态。
@@ -117,8 +121,6 @@ def version_analysis_state_to_file_governance_update(
         "version_edges": list(state.get("version_edges", [])),
         "branches": list(state.get("branches", [])),
         "version_chains": list(state.get("version_chains", [])),
-        "decisions": list(state.get("decisions", [])),
-        "human_review": dict(state["human_review"]),
         "errors": list(state.get("errors", [])),
     }
 

@@ -50,6 +50,10 @@ checkpoints
 review_response.json
 review_response*.json
 
+# 本地 Docker 手工测试请求通过只读挂载提供，不进入镜像构建上下文
+docker_request.json
+docker_request*.json
+
 # 真实客户发送记录只允许在运行时只读挂载；保留可公开的示例协议文件
 delivery_log.json
 delivery_log*.json
@@ -63,11 +67,13 @@ delivery_log*.json
 *.db
 *.db-*
 
-# 本地配置、日志和非运行时文档
+# 本地配置、日志、文档源码及静态站点产物
 .env
 .env.*
 *.log
 docs
+site
+.mkdocs_cache
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
