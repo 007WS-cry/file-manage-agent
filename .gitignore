@@ -67,6 +67,11 @@ data/artifacts/
 review_response.json
 review_response*.json
 
+# 客户发送记录可能包含收件人和发送时间，仅允许提交脱敏示例
+delivery_log.json
+delivery_log*.json
+!examples/sample_delivery_log.json
+
 # 本地 Docker Compose 覆盖配置
 docker-compose.override.yml
 

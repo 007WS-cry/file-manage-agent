@@ -34,7 +34,7 @@ class RunState(TypedDict):
 
 
 class RequestState(TypedDict):
-    """用户提交的文件治理范围和判断参数。"""
+    """用户提交的文件治理范围、判断参数和本地证据来源。"""
 
     root_directory: str
     # 需要扫描和治理的根目录。
@@ -53,6 +53,12 @@ class RequestState(TypedDict):
 
     auto_select_threshold: float
     # 自动推荐主版本所需的最低置信度。
+
+    pdf_match_threshold: float
+    # 将 PDF 判定为某个可编辑版本导出件所需的最低匹配分数。
+
+    delivery_log_path: str | None
+    # 本地发送记录 JSON 文件路径；未提供时跳过发送证据匹配。
 
     use_llm_summary: bool
     # 是否允许 LLM 为内容差异生成自然语言摘要。
@@ -371,11 +377,12 @@ class ErrorRecord(TypedDict):
         "filesystem",
         "parse",
         "comparison",
+        "evidence",
         "llm",
         "validation",
         "unknown",
     ]
-    # 错误类别。
+    # 错误类别；evidence 表示 PDF 来源或发送记录匹配错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -404,6 +411,152 @@ class ReportState(TypedDict):
 
     generated_at: str | None
     # 报告生成时间。
+
+
+class PdfMatchJob(TypedDict):
+    """一项 PDF 与可编辑源版本的匹配任务。"""
+
+    id: str
+    # PDF 匹配任务唯一 ID。
+
+    group_id: str
+    # 当前 PDF 所属的版本组 ID。
+
+    pdf_file_id: str
+    # 等待匹配来源的 PDF 文件 ID。
+
+    source_candidate_ids: list[str]
+    # 同一版本组内可能生成该 PDF 的可编辑文件 ID。
+
+    status: Literal["pending", "running", "completed", "failed"]
+    # PDF 匹配任务当前执行状态。
+
+
+class DeliveryLogEntry(TypedDict):
+    """从本地发送日志读取、尚未匹配到文件版本的原始记录。"""
+
+    id: str
+    # 本地发送记录唯一 ID。
+
+    attachment_name: str
+    # 当时发送的附件文件名。
+
+    attachment_sha256: str | None
+    # 附件 SHA-256；旧日志没有哈希时为 None。
+
+    normalized_digest: str | None
+    # 附件标准化内容摘要；日志未保存时为 None。
+
+    sent_at: str | None
+    # 附件发送时间；未知时为 None。
+
+    recipient_label: str
+    # 脱敏后的客户或收件人标识。
+
+    customer_confirmed: bool
+    # 是否存在客户确认、批准或接受记录。
+
+    evidence_ref: str
+    # 指向原始日志记录的稳定引用。
+
+
+class PdfExportRecord(TypedDict):
+    """PDF 与其最可能可编辑来源版本的匹配结果。"""
+
+    id: str
+    # PDF 来源匹配记录唯一 ID。
+
+    group_id: str
+    # PDF 所属的版本组 ID。
+
+    pdf_file_id: str
+    # PDF 文件 ID。
+
+    source_file_id: str | None
+    # 最可能的可编辑来源文件 ID；无法可靠判断时为 None。
+
+    match_score: float
+    # PDF 与来源候选的原始内容匹配评分。
+
+    matched_signals: list[str]
+    # 文本、关键字段、表格结构和时间等匹配证据。
+
+    confidence: float
+    # PDF 来源判断的综合置信度。
+
+
+class DeliveryRecord(TypedDict):
+    """本地发送记录与具体文件版本的匹配结果。"""
+
+    id: str
+    # 发送证据唯一 ID。
+
+    group_id: str | None
+    # 匹配到的版本组 ID；未匹配时为 None。
+
+    file_id: str | None
+    # 匹配到的文件版本 ID；未匹配时为 None。
+
+    evidence_source: Literal["local_log", "email_mcp", "manual"]
+    # 证据来源；本版只生成 local_log 类型。
+
+    sent_at: str | None
+    # 文件发送时间；未知时为 None。
+
+    recipient_label: str
+    # 脱敏后的客户或收件人标识。
+
+    evidence_ref: str
+    # 原始发送记录、邮件或人工证明的引用。
+
+    match_method: Literal[
+        "sha256",
+        "normalized_digest",
+        "file_name",
+        "unmatched",
+    ]
+    # 发送记录与文件版本的匹配方法。
+
+    customer_confirmed: bool
+    # 是否存在客户确认、批准或接受记录。
+
+    confidence: float
+    # 发送证据匹配到该版本的置信度。
+
+
+class RecommendationCandidateSet(TypedDict):
+    """Recommendation 子图中一个版本组的候选集合。"""
+
+    id: str
+    # 候选集合唯一 ID，通常由版本组 ID 派生。
+
+    group_id: str
+    # 候选集合所属的版本组 ID。
+
+    candidate_file_ids: list[str]
+    # 可参与主版本推荐的非重复文件 ID。
+
+    editable_leaf_file_ids: list[str]
+    # 位于版本链末端的可编辑文件 ID。
+
+
+class PdfMatchWorkerState(TypedDict):
+    """单个并行 PDF 匹配 Worker 接收和返回的状态。"""
+
+    job: PdfMatchJob
+    # 当前 Worker 负责的 PDF 匹配任务。
+
+    files: list[FileRecord]
+    # 当前匹配任务可能引用的文件记录。
+
+    documents: list[DocumentRecord]
+    # 当前匹配任务需要读取的标准化文档记录。
+
+    pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
+    # 当前 Worker 产生的 PDF 来源匹配结果。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 当前 Worker 产生的非致命或致命错误。
 
 
 class FileGovernanceState(TypedDict):
@@ -450,8 +603,14 @@ class FileGovernanceState(TypedDict):
     version_chains: Annotated[list[VersionChainRecord], merge_by_id]
     # 每个文档组整理后的版本链。
 
+    pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
+    # PDF 与可编辑源文件版本的匹配关系。
+
+    deliveries: Annotated[list[DeliveryRecord], merge_by_id]
+    # 文件曾发送给客户或获得确认的证据。
+
     decisions: Annotated[list[DecisionRecord], merge_by_id]
-    # 每个文档组各自的主版本推荐结果。
+    # 每个版本组各自的主版本推荐结果。
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
     # 所有阶段产生的文件级或运行级错误。
@@ -495,7 +654,7 @@ class InventoryGraphState(TypedDict):
 
 
 class VersionAnalysisGraphState(TypedDict):
-    """版本分组、比较、建链和推荐子图使用的状态。"""
+    """版本分组、比较、建链和当前推荐子图使用的状态。"""
 
     request: RequestState
     # 分组相似度和自动选择置信度等参数。
@@ -537,10 +696,84 @@ class VersionAnalysisGraphState(TypedDict):
     # 根据版本边生成的可读版本链。
 
     decisions: Annotated[list[DecisionRecord], merge_by_id]
-    # 每个版本组的主版本推荐结果。
+    # 第一至第三批期间仍由版本分析子图产生的主版本推荐结果。
 
     human_review: HumanReviewState
-    # 需要返回顶层图的待人工确认版本组和用户选择。
+    # 第一至第三批期间仍由版本分析子图返回的人工确认状态。
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
-    # 比较、建链和推荐阶段产生的错误。
+    # 分组、比较、版本关系建图和当前推荐阶段产生的错误。
+
+
+class EvidenceGraphState(TypedDict):
+    """PDF 来源与本地发送记录匹配子图使用的状态。"""
+
+    request: RequestState
+    # PDF 匹配阈值和本地发送日志路径。
+
+    files: Annotated[list[FileRecord], merge_by_id]
+    # Inventory 阶段发现的全部文件。
+
+    documents: Annotated[list[DocumentRecord], merge_by_id]
+    # 用于 PDF 和可编辑版本内容匹配的标准化文档。
+
+    version_groups: Annotated[list[VersionGroupRecord], merge_by_id]
+    # 用于限制 PDF 来源候选范围的版本组。
+
+    pdf_match_jobs: Annotated[list[PdfMatchJob], merge_by_id]
+    # PDF 来源匹配任务及其执行状态。
+
+    delivery_log_entries: Annotated[list[DeliveryLogEntry], merge_by_id]
+    # 从本地发送日志加载的原始证据记录。
+
+    pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
+    # PDF 与可编辑源版本的匹配结果。
+
+    deliveries: Annotated[list[DeliveryRecord], merge_by_id]
+    # 本地发送记录与文件版本的匹配结果。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # PDF 来源和发送记录匹配阶段产生的错误。
+
+
+class RecommendationGraphState(TypedDict):
+    """结合版本关系和外部证据推荐各版本组主版本的子图状态。"""
+
+    request: RequestState
+    # 自动推荐阈值及 PDF 匹配阈值。
+
+    files: Annotated[list[FileRecord], merge_by_id]
+    # 所有可参与推荐的文件记录。
+
+    version_groups: Annotated[list[VersionGroupRecord], merge_by_id]
+    # 相互独立的文档版本组。
+
+    diffs: Annotated[list[DiffRecord], merge_by_id]
+    # 候选版本之间可用于解释推荐的关键差异。
+
+    version_edges: Annotated[list[VersionEdge], merge_by_id]
+    # 父版本、子版本和重复版本关系。
+
+    branches: Annotated[list[BranchRecord], merge_by_id]
+    # 需要降低置信度或人工确认的版本分叉。
+
+    version_chains: Annotated[list[VersionChainRecord], merge_by_id]
+    # 每个版本组整理后的完整版本链。
+
+    pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
+    # PDF 与可编辑源版本的匹配证据。
+
+    deliveries: Annotated[list[DeliveryRecord], merge_by_id]
+    # 客户发送和确认记录。
+
+    candidate_sets: Annotated[list[RecommendationCandidateSet], merge_by_id]
+    # 每个版本组内部使用的推荐候选集合。
+
+    decisions: Annotated[list[DecisionRecord], merge_by_id]
+    # 每个版本组的评分、推荐和保留策略。
+
+    human_review: HumanReviewState
+    # 需要顶层图执行 interrupt 的版本组与用户选择。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 候选评分、证据规则或推荐验证错误。

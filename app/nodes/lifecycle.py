@@ -16,7 +16,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
         state: 调用方提交的顶层状态；推荐由 ``create_initial_state`` 创建。
 
     Returns:
-        进入 ``running`` 状态的运行信息及缺省人工审核、报告字段。
+        进入 ``running`` 状态的运行信息及缺省证据、人工审核和报告字段。
     """
     previous_run = state.get("run", {})
     run_id = previous_run.get("run_id") or uuid4().hex
@@ -43,11 +43,13 @@ def initialize_run(state: FileGovernanceState) -> dict:
                 "generated_at": None,
             },
         ),
+        "pdf_exports": state.get("pdf_exports", []),
+        "deliveries": state.get("deliveries", []),
     }
 
 
 def validate_request(state: FileGovernanceState) -> dict:
-    """验证输入目录、只读约束、扩展名、数量上限和输出目录隔离。
+    """验证输入目录、判断阈值、可选证据路径和输出目录隔离。
 
     节点不会创建、移动或修改业务文件。校验失败会写入致命
     ``ErrorRecord``，由条件路由转入失败报告，而不是让图以未捕获异常退出。
@@ -90,10 +92,29 @@ def validate_request(state: FileGovernanceState) -> dict:
 
         grouping_threshold = float(request.get("grouping_similarity_threshold", -1))
         auto_select_threshold = float(request.get("auto_select_threshold", -1))
+        pdf_match_threshold = float(request.get("pdf_match_threshold", 0.82))
         if not 0.0 <= grouping_threshold <= 1.0:
             raise ValueError("grouping_similarity_threshold 必须位于 0.0 到 1.0 之间")
         if not 0.0 <= auto_select_threshold <= 1.0:
             raise ValueError("auto_select_threshold 必须位于 0.0 到 1.0 之间")
+        if not 0.0 <= pdf_match_threshold <= 1.0:
+            raise ValueError("pdf_match_threshold 必须位于 0.0 到 1.0 之间")
+
+        delivery_log_path = request.get("delivery_log_path")
+        if delivery_log_path in (None, ""):
+            resolved_delivery_log: str | None = None
+        else:
+            if not isinstance(delivery_log_path, str) or not delivery_log_path.strip():
+                raise ValueError("delivery_log_path 必须是非空路径字符串或 null")
+            delivery_log_candidate = Path(delivery_log_path).expanduser()
+            if delivery_log_candidate.is_symlink():
+                raise ValueError("delivery_log_path 不得是符号链接")
+            resolved_delivery_path = delivery_log_candidate.resolve(strict=True)
+            if not resolved_delivery_path.is_file():
+                raise ValueError("delivery_log_path 必须指向普通 JSON 文件")
+            if resolved_delivery_path.suffix.casefold() != ".json":
+                raise ValueError("delivery_log_path 必须指向 .json 文件")
+            resolved_delivery_log = str(resolved_delivery_path)
 
         artifact_root = Path(workspace["artifact_root"]).expanduser().resolve()
         report_root = Path(workspace["report_root"]).expanduser().resolve()
@@ -109,6 +130,8 @@ def validate_request(state: FileGovernanceState) -> dict:
                 "max_files": int(request["max_files"]),
                 "grouping_similarity_threshold": grouping_threshold,
                 "auto_select_threshold": auto_select_threshold,
+                "pdf_match_threshold": pdf_match_threshold,
+                "delivery_log_path": resolved_delivery_log,
                 "use_llm_summary": bool(request.get("use_llm_summary", False)),
             }
         )

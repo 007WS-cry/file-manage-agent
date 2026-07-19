@@ -152,6 +152,15 @@ def resolve_request_payload(
             candidate = base_directory / candidate
         target[field_name] = str(candidate.resolve())
 
+    delivery_log_path = resolved_request.get("delivery_log_path")
+    if delivery_log_path is not None:
+        if not isinstance(delivery_log_path, str) or not delivery_log_path.strip():
+            raise ValueError("delivery_log_path 必须是非空路径字符串或 null")
+        candidate = Path(delivery_log_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_directory / candidate
+        resolved_request["delivery_log_path"] = str(candidate.resolve())
+
     checkpoint_path = resolved_checkpoint.get("database_path")
     if checkpoint_path is not None:
         if not isinstance(checkpoint_path, str) or not checkpoint_path.strip():

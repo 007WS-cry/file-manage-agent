@@ -42,6 +42,11 @@ checkpoints
 review_response.json
 review_response*.json
 
+# 真实客户发送记录只允许在运行时只读挂载；保留可公开的示例协议文件
+delivery_log.json
+delivery_log*.json
+!examples/sample_delivery_log.json
+
 # SQLite checkpoint 数据库及其事务附属文件
 *.sqlite
 *.sqlite3
