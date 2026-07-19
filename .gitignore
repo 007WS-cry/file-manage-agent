@@ -21,6 +21,10 @@ dist/
 .ruff_cache/
 .mypy_cache/
 .pyright/
+.hypothesis/
+test-results/
+junit*.xml
+coverage.xml
 .coverage
 .coverage.*
 htmlcov/

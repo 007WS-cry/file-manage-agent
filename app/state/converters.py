@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from app.state.models import (
+    EvidenceGraphState,
     FileGovernanceState,
     InventoryGraphState,
     VersionAnalysisGraphState,
 )
 
-"""本模块显式转换顶层状态与子图状态，并通过字段白名单隔离子图私有字段。"""
+"""本模块显式转换顶层状态与三个子图状态，并隔离各子图私有执行字段。"""
 
 
 def file_governance_to_inventory_state(
@@ -117,5 +118,54 @@ def version_analysis_state_to_file_governance_update(
         "version_chains": list(state.get("version_chains", [])),
         "decisions": list(state.get("decisions", [])),
         "human_review": dict(state["human_review"]),
+        "errors": list(state.get("errors", [])),
+    }
+
+
+def file_governance_to_evidence_state(
+    state: FileGovernanceState,
+) -> EvidenceGraphState:
+    """把顶层治理状态转换为 Evidence 子图的完整输入状态。
+
+    请求、文件、标准化文档、版本组及已有证据按值传入；PDF 候选、匹配任务和
+    原始发送日志属于单次子图调用的私有状态，每次调用时显式初始化为空。
+
+    Args:
+        state: 已完成 Inventory 和 Version Analysis 阶段的顶层治理状态。
+
+    Returns:
+        所有 Evidence 私有执行字段均已初始化的子图状态。
+    """
+    return EvidenceGraphState(
+        request=dict(state["request"]),
+        files=list(state.get("files", [])),
+        documents=list(state.get("documents", [])),
+        version_groups=list(state.get("version_groups", [])),
+        pdf_candidate_ids=[],
+        pdf_match_jobs=[],
+        delivery_log_entries=[],
+        pdf_exports=list(state.get("pdf_exports", [])),
+        deliveries=list(state.get("deliveries", [])),
+        errors=list(state.get("errors", [])),
+    )
+
+
+def evidence_state_to_file_governance_update(
+    state: EvidenceGraphState,
+) -> dict:
+    """把 Evidence 子图结果转换为允许合并回顶层状态的更新。
+
+    只返回 PDF 来源、发送证据和结构化错误。PDF 候选 ID、匹配任务以及原始
+    本地日志记录不会进入顶层状态，避免扩大 checkpoint 和后续 LLM 上下文。
+
+    Args:
+        state: 已完成执行的 Evidence 子图状态。
+
+    Returns:
+        可由顶层 reducer 安全合并的证据字段白名单更新。
+    """
+    return {
+        "pdf_exports": list(state.get("pdf_exports", [])),
+        "deliveries": list(state.get("deliveries", [])),
         "errors": list(state.get("errors", [])),
     }
