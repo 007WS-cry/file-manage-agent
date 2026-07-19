@@ -6,12 +6,15 @@ from collections.abc import Iterable
 from app.state.models import (
     BranchRecord,
     DecisionRecord,
+    DeliveryRecord,
     FileRecord,
+    PdfExportRecord,
+    RecommendationCandidateSet,
     VersionChainRecord,
     VersionGroupRecord,
 )
 
-"""本模块使用透明规则为每个版本组评分，并决定是否需要人工确认。"""
+"""本模块提供 Recommendation 子图使用的确定性候选、证据和置信度规则。"""
 
 
 # 用于识别文件名中 final、最终版、定稿和终稿弱信号的正则表达式。
@@ -107,6 +110,432 @@ def score_version_candidates(
     return scores, reasons
 
 
+def find_editable_leaf_versions(
+    group: VersionGroupRecord,
+    files: Iterable[FileRecord],
+    chain: VersionChainRecord,
+    *,
+    editable_extensions: Iterable[str] = DEFAULT_EDITABLE_EXTENSIONS,
+) -> RecommendationCandidateSet:
+    """建立一个版本组的非重复候选集合并标记可编辑叶子版本。
+
+    Args:
+        group: 当前文档版本组。
+        files: 全部扫描文件记录。
+        chain: 当前组的版本链记录。
+        editable_extensions: 可以作为可编辑主版本的扩展名集合。
+
+    Returns:
+        包含全部非重复候选以及可编辑叶子候选的集合。
+
+    Raises:
+        ValueError: 版本链不属于当前组或状态引用未知文件时抛出。
+    """
+    if chain["group_id"] != group["id"]:
+        raise ValueError("版本链与版本组不匹配")
+
+    file_by_id = {item["id"]: item for item in files}
+    unknown_file_ids = [file_id for file_id in group["file_ids"] if file_id not in file_by_id]
+    if unknown_file_ids:
+        raise ValueError(f"版本组引用未知文件：{unknown_file_ids[0]}")
+    if not set(chain["leaf_file_ids"]).issubset(group["file_ids"]):
+        raise ValueError("版本链叶子文件不属于当前版本组")
+
+    normalized_editable = {
+        value.lower() if value.startswith(".") else f".{value.lower()}"
+        for value in editable_extensions
+    }
+    candidate_file_ids = [
+        file_id
+        for file_id in group["file_ids"]
+        if file_by_id[file_id]["duplicate_of"] is None
+    ]
+    leaf_file_ids = set(chain["leaf_file_ids"])
+    editable_leaf_file_ids = [
+        file_id
+        for file_id in candidate_file_ids
+        if file_id in leaf_file_ids
+        and file_by_id[file_id]["extension"] in normalized_editable
+    ]
+    return RecommendationCandidateSet(
+        id=f"candidate-set:{group['id']}",
+        group_id=group["id"],
+        candidate_file_ids=candidate_file_ids,
+        editable_leaf_file_ids=editable_leaf_file_ids,
+    )
+
+
+def create_scored_decision(
+    group: VersionGroupRecord,
+    files: Iterable[FileRecord],
+    chain: VersionChainRecord,
+    candidate_set: RecommendationCandidateSet,
+    *,
+    editable_extensions: Iterable[str] = DEFAULT_EDITABLE_EXTENSIONS,
+) -> DecisionRecord:
+    """把一个候选集合转换为尚未选择主版本的基础评分记录。
+
+    Args:
+        group: 当前文档版本组。
+        files: 全部扫描文件记录。
+        chain: 当前组的版本链记录。
+        candidate_set: 已建立的组内候选集合。
+        editable_extensions: 可以作为可编辑主版本的扩展名集合。
+
+    Returns:
+        只包含基础候选分、尚未应用外部证据的推荐记录。
+
+    Raises:
+        ValueError: 候选集合与版本组不一致时抛出。
+    """
+    if candidate_set["group_id"] != group["id"]:
+        raise ValueError("推荐候选集合与版本组不匹配")
+    scores, _ = score_version_candidates(
+        group,
+        files,
+        chain,
+        editable_extensions=editable_extensions,
+    )
+    expected_candidate_ids = set(candidate_set["candidate_file_ids"])
+    if set(scores) != expected_candidate_ids:
+        raise ValueError("候选集合与基础评分引用的文件不一致")
+    return DecisionRecord(
+        id=f"decision:{group['id']}",
+        group_id=group["id"],
+        candidate_scores=scores,
+        recommended_file_id=None,
+        reasons=[],
+        confidence=0.0,
+        needs_human_review=True,
+        selected_by="unresolved",
+        preserve_file_ids=[],
+    )
+
+
+def apply_delivery_rules(
+    decision: DecisionRecord,
+    deliveries: Iterable[DeliveryRecord],
+) -> DecisionRecord:
+    """用已发送和客户确认记录增强对应文件的候选评分。
+
+    普通发送证据最多按其置信度增加 0.10；客户确认是更强流程信号，最多
+    增加 0.18。未匹配记录不会影响评分，也不会凭附件名称猜测版本。
+
+    Args:
+        decision: 当前版本组的基础推荐记录。
+        deliveries: 已由 Evidence 子图匹配到具体文件的发送记录。
+
+    Returns:
+        应用发送证据增量后的新推荐记录。
+
+    Raises:
+        ValueError: 发送证据把当前候选文件关联到其他版本组时抛出。
+    """
+    updated = dict(decision)
+    scores = dict(decision["candidate_scores"])
+    reasons = list(decision["reasons"])
+    for delivery in deliveries:
+        file_id = delivery["file_id"]
+        if file_id is None or file_id not in scores:
+            continue
+        if delivery["group_id"] != decision["group_id"]:
+            raise ValueError(f"发送证据 {delivery['id']} 与候选所属版本组不一致")
+        weight = 0.18 if delivery["customer_confirmed"] else 0.10
+        boost = round(weight * delivery["confidence"], 4)
+        scores[file_id] = round(min(1.0, scores[file_id] + boost), 4)
+        signal = "客户已确认" if delivery["customer_confirmed"] else "存在发送记录"
+        reasons.append(
+            f"发送证据：文件 {file_id} {signal}，候选分 +{boost:.2f}"
+        )
+    updated["candidate_scores"] = scores
+    updated["reasons"] = list(dict.fromkeys(reasons))
+    return DecisionRecord(**updated)
+
+
+def apply_pdf_source_rules(
+    decision: DecisionRecord,
+    pdf_exports: Iterable[PdfExportRecord],
+) -> DecisionRecord:
+    """用 PDF 与可编辑来源关系增强源文件并降低导出件优先级。
+
+    Args:
+        decision: 已应用发送证据的推荐记录。
+        pdf_exports: PDF 与其可编辑来源版本的匹配结果。
+
+    Returns:
+        应用 PDF 来源证据增量后的新推荐记录。
+
+    Raises:
+        ValueError: 来源记录引用当前组内不存在的源候选时抛出。
+    """
+    updated = dict(decision)
+    scores = dict(decision["candidate_scores"])
+    reasons = list(decision["reasons"])
+    for export in pdf_exports:
+        if export["group_id"] != decision["group_id"]:
+            continue
+        source_file_id = export["source_file_id"]
+        if source_file_id is None:
+            continue
+        if source_file_id not in scores:
+            raise ValueError(f"PDF 来源记录 {export['id']} 引用非候选源文件")
+        boost = round(0.10 * export["confidence"], 4)
+        scores[source_file_id] = round(min(1.0, scores[source_file_id] + boost), 4)
+        pdf_file_id = export["pdf_file_id"]
+        penalty = round(0.06 * export["confidence"], 4)
+        if pdf_file_id in scores and pdf_file_id != source_file_id:
+            scores[pdf_file_id] = round(max(0.0, scores[pdf_file_id] - penalty), 4)
+        reasons.append(
+            f"PDF 来源证据：文件 {source_file_id} 是 {pdf_file_id} 的可编辑来源，"
+            f"候选分 +{boost:.2f}"
+        )
+    updated["candidate_scores"] = scores
+    updated["reasons"] = list(dict.fromkeys(reasons))
+    return DecisionRecord(**updated)
+
+
+def apply_branch_rules(
+    decision: DecisionRecord,
+    branches: Iterable[BranchRecord],
+) -> DecisionRecord:
+    """把当前版本组的分叉事实加入推荐解释并保留候选竞争关系。
+
+    分叉本身不靠排序消解，也不直接篡改候选分数；后续置信度阶段会强制该组
+    进入人工确认并施加确定性惩罚。
+
+    Args:
+        decision: 已应用外部证据的推荐记录。
+        branches: 全部版本分叉记录。
+
+    Returns:
+        带有版本分叉解释的新推荐记录。
+    """
+    group_branches = [
+        item for item in branches if item["group_id"] == decision["group_id"]
+    ]
+    if not group_branches:
+        return DecisionRecord(**dict(decision))
+    updated = dict(decision)
+    updated["reasons"] = list(
+        dict.fromkeys(
+            [
+                *decision["reasons"],
+                f"检测到 {len(group_branches)} 个版本分叉，不能仅凭评分自动消解",
+            ]
+        )
+    )
+    return DecisionRecord(**updated)
+
+
+def select_recommended_file(
+    decision: DecisionRecord,
+    files: Iterable[FileRecord],
+) -> DecisionRecord:
+    """使用候选分、修改时间、文件名和稳定 ID 确定当前最高候选。
+
+    Args:
+        decision: 已完成全部规则加权的推荐记录。
+        files: 全部扫描文件记录。
+
+    Returns:
+        写入当前推荐文件 ID 的新推荐记录；没有候选时保持 ``None``。
+
+    Raises:
+        ValueError: 候选评分引用未知文件时抛出。
+    """
+    updated = dict(decision)
+    if not decision["candidate_scores"]:
+        updated["recommended_file_id"] = None
+        return DecisionRecord(**updated)
+
+    file_by_id = {item["id"]: item for item in files}
+    unknown_file_ids = [
+        file_id for file_id in decision["candidate_scores"] if file_id not in file_by_id
+    ]
+    if unknown_file_ids:
+        raise ValueError(f"候选评分引用未知文件：{unknown_file_ids[0]}")
+    ranked = sorted(
+        decision["candidate_scores"],
+        key=lambda file_id: (
+            decision["candidate_scores"][file_id],
+            file_by_id[file_id]["modified_at"],
+            file_by_id[file_id]["file_name"].casefold(),
+            file_id,
+        ),
+        reverse=True,
+    )
+    updated["recommended_file_id"] = ranked[0]
+    return DecisionRecord(**updated)
+
+
+def explain_recommendation(
+    decision: DecisionRecord,
+    group: VersionGroupRecord,
+    files: Iterable[FileRecord],
+    chain: VersionChainRecord,
+    *,
+    editable_extensions: Iterable[str] = DEFAULT_EDITABLE_EXTENSIONS,
+) -> DecisionRecord:
+    """组合获胜候选的基础评分依据、证据规则和分叉说明。
+
+    Args:
+        decision: 已选择当前最高候选的推荐记录。
+        group: 推荐记录所属版本组。
+        files: 全部扫描文件记录。
+        chain: 当前组的版本链记录。
+        editable_extensions: 可以作为可编辑主版本的扩展名集合。
+
+    Returns:
+        带有面向人工审核的确定性解释列表的新推荐记录。
+
+    Raises:
+        ValueError: 推荐记录与版本组不匹配或候选引用无效时抛出。
+    """
+    if decision["group_id"] != group["id"]:
+        raise ValueError("推荐结果与版本组不匹配")
+    updated = dict(decision)
+    winner_id = decision["recommended_file_id"]
+    if winner_id is None:
+        updated["reasons"] = list(
+            dict.fromkeys([*decision["reasons"], "版本组没有可用的非重复候选文件"])
+        )
+        return DecisionRecord(**updated)
+
+    file_by_id = {item["id"]: item for item in files}
+    if winner_id not in file_by_id:
+        raise ValueError("推荐结果引用未知文件")
+    _, scoring_reasons = score_version_candidates(
+        group,
+        file_by_id.values(),
+        chain,
+        editable_extensions=editable_extensions,
+    )
+    if winner_id not in scoring_reasons:
+        raise ValueError("推荐文件不属于当前候选集合")
+    updated["reasons"] = list(
+        dict.fromkeys(
+            [
+                f"当前最高候选为 {file_by_id[winner_id]['file_name']}",
+                *scoring_reasons[winner_id],
+                *decision["reasons"],
+            ]
+        )
+    )
+    return DecisionRecord(**updated)
+
+
+def calculate_decision_confidence(
+    decision: DecisionRecord,
+    chain: VersionChainRecord,
+    branches: Iterable[BranchRecord],
+    *,
+    auto_select_threshold: float = 0.82,
+) -> DecisionRecord:
+    """根据最高候选分差、版本链完整性和分叉计算最终置信度。
+
+    Args:
+        decision: 已完成候选选择和解释的推荐记录。
+        chain: 当前组的版本链记录。
+        branches: 全部版本分叉记录。
+        auto_select_threshold: 允许规则自动选择的最低综合置信度。
+
+    Returns:
+        写入置信度、人工审核标记和选择来源的新推荐记录。
+
+    Raises:
+        ValueError: 阈值非法或版本链与推荐记录不匹配时抛出。
+    """
+    if not 0.0 <= auto_select_threshold <= 1.0:
+        raise ValueError("auto_select_threshold 必须位于 0.0 到 1.0 之间")
+    if chain["group_id"] != decision["group_id"]:
+        raise ValueError("版本链与推荐结果不匹配")
+
+    updated = dict(decision)
+    reasons = list(decision["reasons"])
+    winner_id = decision["recommended_file_id"]
+    scores = decision["candidate_scores"]
+    if winner_id is None or not scores:
+        updated["confidence"] = 0.0
+        updated["needs_human_review"] = True
+        updated["selected_by"] = "unresolved"
+        updated["reasons"] = reasons
+        return DecisionRecord(**updated)
+
+    ranked_scores = sorted(scores.values(), reverse=True)
+    top_score = scores[winner_id]
+    margin = 1.0 if len(ranked_scores) == 1 else top_score - ranked_scores[1]
+    confidence = (
+        1.0
+        if len(ranked_scores) == 1
+        else 0.65 * top_score + 0.35 * min(max(margin, 0.0) / 0.25, 1.0)
+    )
+    group_branches = [
+        item for item in branches if item["group_id"] == decision["group_id"]
+    ]
+    if not chain["is_complete"]:
+        confidence -= 0.15
+        reasons.append("版本链不完整或存在不确定关系")
+    if group_branches:
+        confidence -= 0.25
+    confidence = round(min(1.0, max(0.0, confidence)), 4)
+    near_tie = len(ranked_scores) > 1 and margin < 0.08
+    if near_tie:
+        reasons.append(f"最高分与次高分差距仅为 {margin:.2f}")
+    if confidence < auto_select_threshold:
+        reasons.append(
+            f"综合置信度 {confidence:.2f} 低于自动选择阈值 "
+            f"{auto_select_threshold:.2f}"
+        )
+
+    needs_review = bool(
+        group_branches
+        or not chain["is_complete"]
+        or near_tie
+        or confidence < auto_select_threshold
+    )
+    updated["confidence"] = confidence
+    updated["needs_human_review"] = needs_review
+    updated["selected_by"] = "unresolved" if needs_review else "rule"
+    updated["reasons"] = list(dict.fromkeys(reasons))
+    return DecisionRecord(**updated)
+
+
+def preserve_complete_version_chain(
+    decision: DecisionRecord,
+    group: VersionGroupRecord,
+    chain: VersionChainRecord,
+) -> DecisionRecord:
+    """将版本组全部成员写入保留清单，避免推荐被解释为清理授权。
+
+    Args:
+        decision: 已完成置信度计算的推荐记录。
+        group: 推荐记录所属版本组。
+        chain: 当前组的版本链记录。
+
+    Returns:
+        保留完整组内版本、重复件和孤立成员的新推荐记录。
+
+    Raises:
+        ValueError: 推荐、版本组和版本链关系不一致时抛出。
+    """
+    if decision["group_id"] != group["id"] or chain["group_id"] != group["id"]:
+        raise ValueError("推荐结果、版本组和版本链不匹配")
+    chain_file_ids = set(chain["ordered_file_ids"]) | set(chain["leaf_file_ids"])
+    if not chain_file_ids.issubset(group["file_ids"]):
+        raise ValueError("版本链引用版本组之外的文件")
+    updated = dict(decision)
+    updated["preserve_file_ids"] = list(group["file_ids"])
+    updated["reasons"] = list(
+        dict.fromkeys(
+            [
+                *decision["reasons"],
+                "安全策略：保留版本组内完整版本链及重复文件",
+            ]
+        )
+    )
+    return DecisionRecord(**updated)
+
+
 def recommend_main_version(
     group: VersionGroupRecord,
     files: Iterable[FileRecord],
@@ -136,87 +565,37 @@ def recommend_main_version(
     Raises:
         ValueError: 阈值非法或状态引用不一致时抛出。
     """
-    if not 0.0 <= auto_select_threshold <= 1.0:
-        raise ValueError("auto_select_threshold 必须位于 0.0 到 1.0 之间")
-
     file_list = list(files)
-    file_by_id = {item["id"]: item for item in file_list}
-    scores, scoring_reasons = score_version_candidates(
+    branch_list = list(branches)
+    candidate_set = find_editable_leaf_versions(
         group,
         file_list,
         chain,
         editable_extensions=editable_extensions,
     )
-    group_branches = [item for item in branches if item["group_id"] == group["id"]]
-
-    if not scores:
-        return DecisionRecord(
-            id=f"decision:{group['id']}",
-            group_id=group["id"],
-            candidate_scores={},
-            recommended_file_id=None,
-            reasons=["版本组没有可用的非重复候选文件"],
-            confidence=0.0,
-            needs_human_review=True,
-            selected_by="unresolved",
-            preserve_file_ids=list(group["file_ids"]),
-        )
-
-    ranked = sorted(
-        scores,
-        key=lambda file_id: (
-            scores[file_id],
-            file_by_id[file_id]["modified_at"],
-            file_by_id[file_id]["file_name"].casefold(),
-            file_id,
-        ),
-        reverse=True,
+    decision = create_scored_decision(
+        group,
+        file_list,
+        chain,
+        candidate_set,
+        editable_extensions=editable_extensions,
     )
-    winner_id = ranked[0]
-    top_score = scores[winner_id]
-
-    if len(ranked) == 1:
-        margin = 1.0
-        confidence = 1.0
-    else:
-        margin = top_score - scores[ranked[1]]
-        confidence = 0.65 * top_score + 0.35 * min(max(margin, 0.0) / 0.25, 1.0)
-    if not chain["is_complete"]:
-        confidence -= 0.15
-    if group_branches:
-        confidence -= 0.25
-    confidence = round(min(1.0, max(0.0, confidence)), 4)
-
-    review_reasons: list[str] = list(scoring_reasons[winner_id])
-    if group_branches:
-        review_reasons.append(f"检测到 {len(group_branches)} 个版本分叉")
-    if not chain["is_complete"]:
-        review_reasons.append("版本链不完整或存在不确定关系")
-    if len(ranked) > 1 and margin < 0.08:
-        review_reasons.append(f"最高分与次高分差距仅为 {margin:.2f}")
-    if confidence < auto_select_threshold:
-        review_reasons.append(
-            f"综合置信度 {confidence:.2f} 低于自动选择阈值 "
-            f"{auto_select_threshold:.2f}"
-        )
-
-    needs_review = bool(
-        group_branches
-        or not chain["is_complete"]
-        or (len(ranked) > 1 and margin < 0.08)
-        or confidence < auto_select_threshold
+    decision = apply_branch_rules(decision, branch_list)
+    decision = select_recommended_file(decision, file_list)
+    decision = explain_recommendation(
+        decision,
+        group,
+        file_list,
+        chain,
+        editable_extensions=editable_extensions,
     )
-    return DecisionRecord(
-        id=f"decision:{group['id']}",
-        group_id=group["id"],
-        candidate_scores=scores,
-        recommended_file_id=winner_id,
-        reasons=review_reasons,
-        confidence=confidence,
-        needs_human_review=needs_review,
-        selected_by="unresolved" if needs_review else "rule",
-        preserve_file_ids=list(group["file_ids"]),
+    decision = calculate_decision_confidence(
+        decision,
+        chain,
+        branch_list,
+        auto_select_threshold=auto_select_threshold,
     )
+    return preserve_complete_version_chain(decision, group, chain)
 
 
 def recommend_main_versions(

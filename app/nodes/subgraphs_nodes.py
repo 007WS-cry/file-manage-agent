@@ -2,18 +2,21 @@ from __future__ import annotations
 
 from app.graphs.evidence import evidence_graph
 from app.graphs.inventory import inventory_graph
+from app.graphs.recommendation import recommendation_graph
 from app.graphs.version_analysis import version_analysis_graph
 from app.state.converters import (
     evidence_state_to_file_governance_update,
     file_governance_to_evidence_state,
     file_governance_to_inventory_state,
+    file_governance_to_recommendation_state,
     file_governance_to_version_analysis_state,
     inventory_state_to_file_governance_update,
+    recommendation_state_to_file_governance_update,
     version_analysis_state_to_file_governance_update,
 )
 from app.state.models import FileGovernanceState
 
-"""本模块实现 Inventory、Version Analysis 与独立 Evidence 子图包装节点。"""
+"""本模块实现四个治理子图的显式状态转换和同步调用包装节点。"""
 
 
 def run_inventory_subgraph(state: FileGovernanceState) -> dict:
@@ -59,3 +62,20 @@ def run_evidence_subgraph(state: FileGovernanceState) -> dict:
     subgraph_input = file_governance_to_evidence_state(state)
     subgraph_result = evidence_graph.invoke(subgraph_input)
     return evidence_state_to_file_governance_update(subgraph_result)
+
+
+def run_recommendation_subgraph(state: FileGovernanceState) -> dict:
+    """显式转换状态、同步执行 Recommendation 子图并过滤返回字段。
+
+    第三批只提供该独立包装函数，不会把它注册到顶层 File Governance 图。
+    候选集合等内部判断过程不会泄漏回顶层状态。
+
+    Args:
+        state: 已具有文件、版本关系和可选外部证据的顶层治理状态。
+
+    Returns:
+        仅包含推荐结果、人工审核状态和错误的顶层状态更新。
+    """
+    subgraph_input = file_governance_to_recommendation_state(state)
+    subgraph_result = recommendation_graph.invoke(subgraph_input)
+    return recommendation_state_to_file_governance_update(subgraph_result)

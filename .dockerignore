@@ -33,6 +33,10 @@ coverage.xml
 .coverage
 .coverage.*
 htmlcov
+pytestdebug.log
+.benchmarks
+benchmark-results
+*.prof
 
 # 真实输入数据、运行产物与 LangGraph 状态均通过卷挂载提供
 data
