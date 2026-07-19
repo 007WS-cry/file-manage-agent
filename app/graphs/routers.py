@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.state.models import FileGovernanceState, InventoryGraphState, VersionAnalysisGraphState
+from langgraph.types import Send
 
-"""本模块实现顶层图和两个子图使用的纯条件路由函数。"""
+from app.state.models import (
+    EvidenceGraphState,
+    FileGovernanceState,
+    InventoryGraphState,
+    VersionAnalysisGraphState,
+)
+
+"""本模块实现顶层图以及 Inventory、Version Analysis、Evidence 子图路由。"""
 
 
 def is_request_valid(state: FileGovernanceState) -> Literal["valid", "invalid"]:
@@ -94,3 +101,47 @@ def comparison_succeeded(
         and state.get("current_comparison_error") is None
         else "failure"
     )
+
+
+def has_pdf_match_jobs(
+    state: EvidenceGraphState,
+) -> Literal["pdf_match", "done"]:
+    """判断 Evidence 子图是否需要进入 PDF 并行匹配阶段。
+
+    Args:
+        state: 已创建 PDF 匹配任务的 Evidence 子图状态。
+
+    Returns:
+        存在待处理任务时返回 ``pdf_match``，否则返回 ``done``。
+    """
+    has_jobs = any(
+        job["status"] == "pending" for job in state.get("pdf_match_jobs", [])
+    )
+    return "pdf_match" if has_jobs else "done"
+
+
+def dispatch_pdf_match_jobs(state: EvidenceGraphState) -> list[Send]:
+    """使用 LangGraph Send 为每个运行中 PDF 任务创建隔离 Worker 状态。
+
+    Args:
+        state: 已由 fan-out 节点把待处理任务标记为运行中的子图状态。
+
+    Returns:
+        指向 ``match_pdf_to_source_version`` 节点的 Send 指令列表。
+    """
+    return [
+        Send(
+            "match_pdf_to_source_version",
+            {
+                "request": dict(state["request"]),
+                "job": dict(job),
+                "files": list(state.get("files", [])),
+                "documents": list(state.get("documents", [])),
+                "pdf_match_jobs": [],
+                "pdf_exports": [],
+                "errors": [],
+            },
+        )
+        for job in state.get("pdf_match_jobs", [])
+        if job["status"] == "running"
+    ]

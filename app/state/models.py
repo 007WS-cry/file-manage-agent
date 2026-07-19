@@ -543,6 +543,9 @@ class RecommendationCandidateSet(TypedDict):
 class PdfMatchWorkerState(TypedDict):
     """单个并行 PDF 匹配 Worker 接收和返回的状态。"""
 
+    request: RequestState
+    # 当前 PDF 匹配阈值等只读请求参数。
+
     job: PdfMatchJob
     # 当前 Worker 负责的 PDF 匹配任务。
 
@@ -551,6 +554,9 @@ class PdfMatchWorkerState(TypedDict):
 
     documents: list[DocumentRecord]
     # 当前匹配任务需要读取的标准化文档记录。
+
+    pdf_match_jobs: Annotated[list[PdfMatchJob], merge_by_id]
+    # 当前 Worker 返回的完成或失败任务状态。
 
     pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
     # 当前 Worker 产生的 PDF 来源匹配结果。
@@ -720,10 +726,13 @@ class EvidenceGraphState(TypedDict):
     version_groups: Annotated[list[VersionGroupRecord], merge_by_id]
     # 用于限制 PDF 来源候选范围的版本组。
 
+    pdf_candidate_ids: list[str]
+    # 子图内部收集到的非重复、已解析 PDF 文件 ID。
+
     pdf_match_jobs: Annotated[list[PdfMatchJob], merge_by_id]
     # PDF 来源匹配任务及其执行状态。
 
-    delivery_log_entries: Annotated[list[DeliveryLogEntry], merge_by_id]
+    delivery_log_entries: list[DeliveryLogEntry]
     # 从本地发送日志加载的原始证据记录。
 
     pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
