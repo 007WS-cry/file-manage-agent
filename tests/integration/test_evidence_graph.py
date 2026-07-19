@@ -326,11 +326,11 @@ def test_evidence_wrapper_filters_private_subgraph_state(tmp_path: Path) -> None
     assert update["deliveries"][0]["file_id"] == "source"
 
 
-def test_evidence_subgraph_is_not_registered_in_top_graph() -> None:
-    """第二批必须保持 Evidence 可独立调用但不改变顶层治理图连线。"""
+def test_evidence_subgraph_remains_independent_after_top_graph_registration() -> None:
+    """第四批接入顶层图后，Evidence 仍应保留可独立调用的完整节点结构。"""
     top_node_ids = set(file_governance_graph.get_graph().nodes)
     evidence_node_ids = set(evidence_graph.get_graph().nodes)
 
-    assert "run_evidence_subgraph" not in top_node_ids
+    assert "run_evidence_subgraph" in top_node_ids
     assert "collect_pdf_candidates" in evidence_node_ids
     assert "validate_evidence_confidence" in evidence_node_ids

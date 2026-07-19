@@ -40,7 +40,7 @@ def run_version_analysis_subgraph(state: FileGovernanceState) -> dict:
         state: 已完成文件扫描和内容提取的顶层治理状态。
 
     Returns:
-        仅包含版本业务结果、人工审核和错误的顶层状态更新。
+        仅包含版本组、差异、关系边、分叉、版本链和错误的顶层状态更新。
     """
     subgraph_input = file_governance_to_version_analysis_state(state)
     subgraph_result = version_analysis_graph.invoke(subgraph_input)
@@ -50,8 +50,8 @@ def run_version_analysis_subgraph(state: FileGovernanceState) -> dict:
 def run_evidence_subgraph(state: FileGovernanceState) -> dict:
     """显式转换状态、同步执行 Evidence 子图并过滤返回字段。
 
-    第二批只提供该独立包装函数，不会把它注册到顶层 File Governance 图。
-    调用方可单独测试子图，同时确保任务、候选和原始发送日志不泄漏回顶层状态。
+    第四批已把该包装节点注册到顶层 File Governance 图。任务、PDF 候选和原始
+    发送日志仍由状态转换白名单隔离，不会泄漏回顶层状态。
 
     Args:
         state: 已具有文件、标准化文档和版本组的顶层治理状态。
@@ -67,8 +67,8 @@ def run_evidence_subgraph(state: FileGovernanceState) -> dict:
 def run_recommendation_subgraph(state: FileGovernanceState) -> dict:
     """显式转换状态、同步执行 Recommendation 子图并过滤返回字段。
 
-    第三批只提供该独立包装函数，不会把它注册到顶层 File Governance 图。
-    候选集合等内部判断过程不会泄漏回顶层状态。
+    第四批已把该包装节点注册到顶层 File Governance 图，并在 Evidence 之后
+    执行。候选集合等内部判断过程仍不会泄漏回顶层状态。
 
     Args:
         state: 已具有文件、版本关系和可选外部证据的顶层治理状态。
