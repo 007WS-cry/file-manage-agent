@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "deliveries": [
+    {
+      "id": "delivery-2026-001",
+      "attachment_name": "合同_最终版.docx",
+      "attachment_sha256": null,
+      "normalized_digest": null,
+      "sent_at": "2026-07-18T09:30:00+08:00",
+      "recipient_label": "客户甲",
+      "customer_confirmed": true,
+      "evidence_ref": "local-log://delivery-2026-001"
+    },
+    {
+      "id": "delivery-2026-002",
+      "attachment_name": "报价单_v2.xlsx",
+      "attachment_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "normalized_digest": null,
+      "sent_at": "2026-07-18T14:15:00+08:00",
+      "recipient_label": "客户乙",
+      "customer_confirmed": false,
+      "evidence_ref": "local-log://delivery-2026-002"
+    }
+  ]
+}

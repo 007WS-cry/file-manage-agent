@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.services.reporting import build_report_state, escape_markdown_cell
 from app.state.models import FileGovernanceState
 
-"""本模块仅实现失败、无数据和成功治理报告的 LangGraph 节点。"""
+"""本模块实现失败、无数据及包含版本推荐与外部证据的治理报告节点。"""
 
 
 def generate_failure_report(state: FileGovernanceState) -> dict:
@@ -60,7 +60,18 @@ def generate_no_data_report(state: FileGovernanceState) -> dict:
 
 
 def generate_governance_report(state: FileGovernanceState) -> dict:
-    """生成包含版本组、版本链、候选评分和主版本选择的治理报告。"""
+    """生成包含版本链、证据、候选评分和主版本选择的治理报告。
+
+    PDF 来源和发送记录只展示结构化匹配结果、脱敏收件人标签及稳定证据引用，
+    不读取原始附件、完整正文或外部系统凭据。未匹配发送记录单独列出，避免被
+    误解为已经支持某个主版本建议。
+
+    Args:
+        state: 已完成 Recommendation 或人工选择阶段的顶层治理状态。
+
+    Returns:
+        包含 Markdown 正文、摘要、警告和持久化路径的报告状态更新。
+    """
     file_by_id = {item["id"]: item for item in state.get("files", [])}
     chain_by_group = {
         item["group_id"]: item for item in state.get("version_chains", [])
@@ -71,6 +82,16 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
     branches_by_group: dict[str, list] = {}
     for branch in state.get("branches", []):
         branches_by_group.setdefault(branch["group_id"], []).append(branch)
+    pdf_exports_by_group: dict[str, list] = {}
+    for pdf_export in state.get("pdf_exports", []):
+        pdf_exports_by_group.setdefault(pdf_export["group_id"], []).append(pdf_export)
+    deliveries_by_group: dict[str, list] = {}
+    unmatched_deliveries = []
+    for delivery in state.get("deliveries", []):
+        if delivery["group_id"] is None:
+            unmatched_deliveries.append(delivery)
+        else:
+            deliveries_by_group.setdefault(delivery["group_id"], []).append(delivery)
 
     lines = [
         "# 文件版本治理报告",
@@ -141,6 +162,83 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
             lines.extend(["", "版本链警告："])
             lines.extend(f"- {warning}" for warning in chain["warnings"])
 
+        lines.extend(["", "### PDF 来源证据", ""])
+        group_pdf_exports = pdf_exports_by_group.get(group["id"], [])
+        if group_pdf_exports:
+            lines.extend(
+                [
+                    "| PDF | 可编辑来源 | 匹配分 | 置信度 | 匹配信号 |",
+                    "|---|---|---:|---:|---|",
+                ]
+            )
+            for pdf_export in group_pdf_exports:
+                pdf_file = file_by_id.get(pdf_export["pdf_file_id"])
+                source_file_id = pdf_export["source_file_id"]
+                source_file = file_by_id.get(source_file_id) if source_file_id else None
+                pdf_name = pdf_file["file_name"] if pdf_file else pdf_export["pdf_file_id"]
+                source_name = source_file["file_name"] if source_file else "未可靠匹配"
+                signals = "；".join(pdf_export["matched_signals"]) or "无"
+                lines.append(
+                    "| "
+                    f"{escape_markdown_cell(pdf_name)} | "
+                    f"{escape_markdown_cell(source_name)} | "
+                    f"{pdf_export['match_score']:.2f} | "
+                    f"{pdf_export['confidence']:.2f} | "
+                    f"{escape_markdown_cell(signals)} |"
+                )
+        else:
+            lines.append("- 当前版本组没有 PDF 来源记录。")
+
+        lines.extend(["", "### 发送与确认记录", ""])
+        group_deliveries = deliveries_by_group.get(group["id"], [])
+        if group_deliveries:
+            lines.extend(
+                [
+                    "| 文件 | 收件人 | 发送时间 | 客户确认 | 匹配方式 | 置信度 | 证据引用 |",
+                    "|---|---|---|---|---|---:|---|",
+                ]
+            )
+            for delivery in group_deliveries:
+                delivered_file = file_by_id.get(delivery["file_id"])
+                delivered_name = (
+                    delivered_file["file_name"]
+                    if delivered_file
+                    else delivery["file_id"] or "未匹配"
+                )
+                lines.append(
+                    "| "
+                    f"{escape_markdown_cell(delivered_name)} | "
+                    f"{escape_markdown_cell(delivery['recipient_label'])} | "
+                    f"{escape_markdown_cell(delivery['sent_at'] or '未知')} | "
+                    f"{'是' if delivery['customer_confirmed'] else '否'} | "
+                    f"{delivery['match_method']} | "
+                    f"{delivery['confidence']:.2f} | "
+                    f"{escape_markdown_cell(delivery['evidence_ref'])} |"
+                )
+        else:
+            lines.append("- 当前版本组没有已匹配的发送记录。")
+
+    if unmatched_deliveries:
+        lines.extend(
+            [
+                "",
+                "## 未匹配发送证据",
+                "",
+                "以下记录未可靠关联到具体文件版本，不参与自动推荐加权。",
+                "",
+                "| 收件人 | 发送时间 | 客户确认 | 证据引用 |",
+                "|---|---|---|---|",
+            ]
+        )
+        for delivery in unmatched_deliveries:
+            lines.append(
+                "| "
+                f"{escape_markdown_cell(delivery['recipient_label'])} | "
+                f"{escape_markdown_cell(delivery['sent_at'] or '未知')} | "
+                f"{'是' if delivery['customer_confirmed'] else '否'} | "
+                f"{escape_markdown_cell(delivery['evidence_ref'])} |"
+            )
+
     errors = state.get("errors", [])
     if errors:
         lines.extend(["", "## 运行警告", ""])
@@ -155,7 +253,9 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
     )
     summary = (
         f"完成 {len(state.get('version_groups', []))} 个文档组的版本治理，"
-        f"产生 {len(state.get('decisions', []))} 个主版本结果。"
+        f"产生 {len(state.get('decisions', []))} 个主版本结果、"
+        f"{len(state.get('pdf_exports', []))} 条 PDF 来源记录和"
+        f"{len(state.get('deliveries', []))} 条发送证据。"
     )
     markdown = "\n".join(lines)
     warnings = [error["message"] for error in errors]

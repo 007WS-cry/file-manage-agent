@@ -14,21 +14,22 @@ from app.nodes.version_analysis import (
     group_related_documents,
     infer_version_direction,
     load_next_comparison,
-    mark_human_review_items,
     record_comparison_error,
     record_diff_result,
-    score_version_candidates,
-    select_main_versions,
     summarize_key_changes,
     validate_version_results,
 )
 from app.state.models import VersionAnalysisGraphState
 
-"""本模块构建并编译版本分组、比较、建链和推荐 Version Analysis 子图。"""
+"""本模块构建只负责版本分组、文件比较和版本建链的 Version Analysis 子图。"""
 
 
 def build_version_analysis_graph():
-    """构建版本分析子图并确保比较循环与后处理节点完整连通。"""
+    """构建版本分析子图并确保比较循环与版本建链节点完整连通。
+
+    Returns:
+        已编译、可由顶层图同步调用且不包含推荐节点的 Version Analysis 子图。
+    """
     builder = StateGraph(VersionAnalysisGraphState)
     builder.add_node("group_related_documents", group_related_documents)
     builder.add_node("add_duplicate_version_edges", add_duplicate_version_edges)
@@ -43,9 +44,6 @@ def build_version_analysis_graph():
     builder.add_node("build_version_edges", build_version_edges)
     builder.add_node("detect_version_branches", detect_version_branches)
     builder.add_node("build_version_chains", build_version_chains)
-    builder.add_node("score_version_candidates", score_version_candidates)
-    builder.add_node("select_main_versions", select_main_versions)
-    builder.add_node("mark_human_review_items", mark_human_review_items)
     builder.add_node("validate_version_results", validate_version_results)
 
     builder.add_edge(START, "group_related_documents")
@@ -77,10 +75,7 @@ def build_version_analysis_graph():
     )
     builder.add_edge("build_version_edges", "detect_version_branches")
     builder.add_edge("detect_version_branches", "build_version_chains")
-    builder.add_edge("build_version_chains", "score_version_candidates")
-    builder.add_edge("score_version_candidates", "select_main_versions")
-    builder.add_edge("select_main_versions", "mark_human_review_items")
-    builder.add_edge("mark_human_review_items", "validate_version_results")
+    builder.add_edge("build_version_chains", "validate_version_results")
     builder.add_edge("validate_version_results", END)
     return builder.compile()
 

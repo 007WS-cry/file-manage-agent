@@ -2,9 +2,16 @@ from __future__ import annotations
 
 from typing import Literal
 
-from app.state.models import FileGovernanceState, InventoryGraphState, VersionAnalysisGraphState
+from langgraph.types import Send
 
-"""本模块实现顶层图和两个子图使用的纯条件路由函数。"""
+from app.state.models import (
+    EvidenceGraphState,
+    FileGovernanceState,
+    InventoryGraphState,
+    VersionAnalysisGraphState,
+)
+
+"""本模块实现顶层治理图以及 Inventory、Version Analysis、Evidence 子图路由。"""
 
 
 def is_request_valid(state: FileGovernanceState) -> Literal["valid", "invalid"]:
@@ -37,12 +44,47 @@ def has_analyzable_documents(
 def has_pending_human_review(
     state: FileGovernanceState,
 ) -> Literal["review", "complete", "failure"]:
-    """在版本子图结束后区分人工确认、直接报告和致命失败。"""
+    """在 Recommendation 子图结束后选择失败、人工确认或直接报告。
+
+    Args:
+        state: 已完成独立 Recommendation 子图的顶层治理状态。
+
+    Returns:
+        存在致命错误时返回 ``failure``；存在待审核推荐时返回 ``review``；
+        其余情况返回 ``complete``。
+    """
     if any(error["fatal"] for error in state.get("errors", [])):
         return "failure"
     if any(decision["needs_human_review"] for decision in state.get("decisions", [])):
         return "review"
     return "complete"
+
+
+def route_version_analysis_result(state: FileGovernanceState) -> Literal["success", "failure"]:
+    """根据 Version Analysis 执行后的致命错误决定是否进入 Evidence。
+
+    Args:
+        state: 已合并版本组、差异、版本关系、分叉和版本链的顶层状态。
+
+    Returns:
+        没有致命错误时返回 ``success``，否则返回 ``failure``。
+    """
+    return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
+
+
+def route_evidence_result(state: FileGovernanceState) -> Literal["success", "failure"]:
+    """根据 Evidence 执行后的致命错误决定是否进入 Recommendation。
+
+    发送日志缺失、不可读或单个 PDF 匹配失败属于可降级错误，不会阻断推荐；
+    只有状态引用和证据关系不一致等致命错误才进入失败报告。
+
+    Args:
+        state: 已合并 PDF 来源、发送记录及 Evidence 错误的顶层状态。
+
+    Returns:
+        没有致命错误时返回 ``success``，否则返回 ``failure``。
+    """
+    return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
 
 
 def has_pending_parse_jobs(state: InventoryGraphState) -> Literal["pending", "done"]:
@@ -94,3 +136,47 @@ def comparison_succeeded(
         and state.get("current_comparison_error") is None
         else "failure"
     )
+
+
+def has_pdf_match_jobs(
+    state: EvidenceGraphState,
+) -> Literal["pdf_match", "done"]:
+    """判断 Evidence 子图是否需要进入 PDF 并行匹配阶段。
+
+    Args:
+        state: 已创建 PDF 匹配任务的 Evidence 子图状态。
+
+    Returns:
+        存在待处理任务时返回 ``pdf_match``，否则返回 ``done``。
+    """
+    has_jobs = any(
+        job["status"] == "pending" for job in state.get("pdf_match_jobs", [])
+    )
+    return "pdf_match" if has_jobs else "done"
+
+
+def dispatch_pdf_match_jobs(state: EvidenceGraphState) -> list[Send]:
+    """使用 LangGraph Send 为每个运行中 PDF 任务创建隔离 Worker 状态。
+
+    Args:
+        state: 已由 fan-out 节点把待处理任务标记为运行中的子图状态。
+
+    Returns:
+        指向 ``match_pdf_to_source_version`` 节点的 Send 指令列表。
+    """
+    return [
+        Send(
+            "match_pdf_to_source_version",
+            {
+                "request": dict(state["request"]),
+                "job": dict(job),
+                "files": list(state.get("files", [])),
+                "documents": list(state.get("documents", [])),
+                "pdf_match_jobs": [],
+                "pdf_exports": [],
+                "errors": [],
+            },
+        )
+        for job in state.get("pdf_match_jobs", [])
+        if job["status"] == "running"
+    ]

@@ -7,6 +7,8 @@ from app.graphs.routers import (
     has_analyzable_documents,
     has_pending_human_review,
     is_request_valid,
+    route_evidence_result,
+    route_version_analysis_result,
 )
 from app.nodes.lifecycle import finalize_run, initialize_run, validate_request
 from app.nodes.report import (
@@ -19,11 +21,16 @@ from app.nodes.review import (
     prepare_human_review,
     request_human_review,
 )
-from app.nodes.subgraphs_nodes import run_inventory_subgraph, run_version_analysis_subgraph
+from app.nodes.subgraphs_nodes import (
+    run_evidence_subgraph,
+    run_inventory_subgraph,
+    run_recommendation_subgraph,
+    run_version_analysis_subgraph,
+)
 from app.state.models import FileGovernanceState
 from app.storage.checkpoints import create_memory_checkpointer
 
-"""本模块构建顶层文件治理图，并直接接入 Inventory 与 Version Analysis 子图。"""
+"""本模块构建依次接入四个业务子图并支持人工暂停恢复的顶层治理图。"""
 
 
 def build_file_governance_graph(
@@ -45,6 +52,8 @@ def build_file_governance_graph(
     builder.add_node("validate_request", validate_request)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
     builder.add_node("run_version_analysis_subgraph", run_version_analysis_subgraph)
+    builder.add_node("run_evidence_subgraph", run_evidence_subgraph)
+    builder.add_node("run_recommendation_subgraph", run_recommendation_subgraph)
     builder.add_node("prepare_human_review", prepare_human_review)
     builder.add_node("request_human_review", request_human_review)
     builder.add_node("apply_human_selection", apply_human_selection)
@@ -71,6 +80,16 @@ def build_file_governance_graph(
     )
     builder.add_conditional_edges(
         "run_version_analysis_subgraph",
+        route_version_analysis_result,
+        {"success": "run_evidence_subgraph", "failure": "generate_failure_report"},
+    )
+    builder.add_conditional_edges(
+        "run_evidence_subgraph",
+        route_evidence_result,
+        {"success": "run_recommendation_subgraph", "failure": "generate_failure_report"},
+    )
+    builder.add_conditional_edges(
+        "run_recommendation_subgraph",
         has_pending_human_review,
         {
             "review": "prepare_human_review",

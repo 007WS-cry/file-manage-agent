@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from app.services.recommendation import (
+    apply_delivery_rules,
     apply_human_selection,
+    apply_pdf_source_rules,
+    create_scored_decision,
+    find_editable_leaf_versions,
     recommend_main_version,
     score_version_candidates,
 )
@@ -147,3 +151,109 @@ def test_human_selection_accepts_only_group_member() -> None:
 
     with pytest.raises(ValueError, match="不属于当前版本组"):
         apply_human_selection(decision, group, "outside")
+
+
+def test_candidate_set_excludes_duplicate_and_marks_editable_leaf() -> None:
+    """候选集合应排除完全重复件，并单独标记可编辑叶子文件。"""
+    files = [
+        make_file_record("root", "合同_v1.docx", "2026-01-01T00:00:00+00:00"),
+        make_file_record("leaf", "合同_v2.docx", "2026-01-02T00:00:00+00:00"),
+        make_file_record("copy", "合同_v2_副本.docx", "2026-01-02T00:00:00+00:00"),
+    ]
+    files[2]["duplicate_of"] = "leaf"
+    group = {
+        "id": "group",
+        "label": "合同",
+        "file_ids": ["root", "leaf", "copy"],
+        "grouping_signals": [],
+        "confidence": 0.9,
+    }
+    chain = {
+        "id": "chain",
+        "group_id": "group",
+        "ordered_file_ids": ["root", "leaf"],
+        "leaf_file_ids": ["leaf"],
+        "is_complete": True,
+        "warnings": [],
+    }
+
+    candidate_set = find_editable_leaf_versions(group, files, chain)
+
+    assert candidate_set["candidate_file_ids"] == ["root", "leaf"]
+    assert candidate_set["editable_leaf_file_ids"] == ["leaf"]
+
+
+def test_delivery_and_pdf_source_evidence_adjust_scores_transparently() -> None:
+    """发送确认和 PDF 来源证据应提高源版本评分并保留解释。"""
+    files = [
+        make_file_record("source", "合同_最终版.docx", "2026-01-02T00:00:00+00:00"),
+        FileRecord(
+            id="pdf",
+            absolute_path="/readonly/合同.pdf",
+            file_name="合同.pdf",
+            normalized_stem="合同",
+            extension=".pdf",
+            size_bytes=1,
+            modified_at="2026-01-03T00:00:00+00:00",
+            sha256="p" * 64,
+            duplicate_of=None,
+            parse_status="parsed",
+            parse_error=None,
+        ),
+    ]
+    group = {
+        "id": "group",
+        "label": "合同",
+        "file_ids": ["source", "pdf"],
+        "grouping_signals": [],
+        "confidence": 0.9,
+    }
+    chain = {
+        "id": "chain",
+        "group_id": "group",
+        "ordered_file_ids": ["source", "pdf"],
+        "leaf_file_ids": ["source", "pdf"],
+        "is_complete": True,
+        "warnings": [],
+    }
+    candidate_set = find_editable_leaf_versions(group, files, chain)
+    decision = create_scored_decision(group, files, chain, candidate_set)
+    source_before = decision["candidate_scores"]["source"]
+    pdf_before = decision["candidate_scores"]["pdf"]
+
+    decision = apply_delivery_rules(
+        decision,
+        [
+            {
+                "id": "delivery",
+                "group_id": "group",
+                "file_id": "source",
+                "evidence_source": "local_log",
+                "sent_at": "2026-01-04T00:00:00+00:00",
+                "recipient_label": "客户A",
+                "evidence_ref": "delivery:1",
+                "match_method": "sha256",
+                "customer_confirmed": True,
+                "confidence": 1.0,
+            }
+        ],
+    )
+    decision = apply_pdf_source_rules(
+        decision,
+        [
+            {
+                "id": "pdf-export",
+                "group_id": "group",
+                "pdf_file_id": "pdf",
+                "source_file_id": "source",
+                "match_score": 1.0,
+                "matched_signals": ["标准化内容一致"],
+                "confidence": 1.0,
+            }
+        ],
+    )
+
+    assert decision["candidate_scores"]["source"] > source_before
+    assert decision["candidate_scores"]["pdf"] < pdf_before
+    assert any("客户已确认" in reason for reason in decision["reasons"])
+    assert any("PDF 来源证据" in reason for reason in decision["reasons"])

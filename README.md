@@ -1,17 +1,25 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.1.0` 已完成能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.0` 已完成四批开发计划，
+具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
 - 可解释主版本评分和低置信度人工确认；
-- Inventory、Version Analysis 子图和顶层 File Governance 图；
+- Inventory、Version Analysis、Evidence、Recommendation 四个子图和顶层治理图；
 - 标准化内容及中间 JSON 产物的隔离、原子持久化；
 - 进程内或 SQLite LangGraph checkpoint；
 - 可跨进程恢复 `interrupt()` 的最小 CLI；
-- 成功、部分成功、无数据和失败 Markdown 报告。
+- 成功、部分成功、无数据和失败 Markdown 报告；
+- PDF 来源、本地发送记录及推荐候选的状态协议；
+- 只读本地发送日志加载工具，以及不执行文件 I/O 的纯证据匹配服务；
+- 带 START、END、条件跳过和 LangGraph Send 并行匹配的独立 Evidence 子图；
+- 分阶段应用版本链、发送确认、PDF 来源和分叉规则的 Recommendation 子图；
+- 证据化 Markdown 报告以及贯穿四个子图的端到端错误路由。
 
-当前版本提供 Python 接口和 CLI，尚未提供 HTTP API 或后台 Worker。
+四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
+Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
+和 CLI，尚未提供 HTTP API 或后台 Worker。
 
 ## 安全边界
 
@@ -25,6 +33,9 @@
 - 产物 ID 不允许包含路径分隔符，JSON 使用同目录临时文件和原子替换写入。
 - 分叉、链不完整、候选近似并列或低置信度结果必须人工确认。
 - `interrupt()` 载荷只包含文件 ID、文件名、评分和理由，不包含完整正文。
+- 本地发送日志工具只读取用户明确提供的普通 UTF-8 JSON 文件，拒绝符号链接、
+  超限文件和未知协议版本，不打开附件、不访问网络且不执行日志内容。
+- 证据匹配遇到多个非重复候选时保留未匹配结果，不依靠排序猜测文件版本。
 
 ## 目录
 
@@ -32,15 +43,17 @@
 file-manage-agent/
 ├── app/
 │   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
-│   ├── tools/                 # 只读文件扫描与文档解析工具
-│   ├── services/              # 标准化、分组、版本图、推荐和报告服务
+│   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
+│   ├── services/              # 标准化、版本图、证据匹配、推荐和报告服务
 │   ├── storage/               # 标准化/中间产物与 checkpoint
 │   ├── utils/                 # 时间、错误、路径和状态记录查询辅助函数
 │   ├── nodes/                 # 仅包含已注册的 LangGraph 节点函数
-│   ├── graphs/                # 两个子图与顶层治理图
+│   ├── graphs/                # 四个独立子图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── configs/default.yaml       # 默认扫描、存储和 checkpoint 参数
 ├── examples/sample_request.json
+├── examples/sample_delivery_log.json
+├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图和推荐规则单元测试
 │   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
@@ -60,6 +73,8 @@ initialize_run
   -> validate_request
   -> run_inventory_subgraph
   -> run_version_analysis_subgraph
+  -> run_evidence_subgraph
+  -> run_recommendation_subgraph
   -> [prepare_human_review -> interrupt -> apply_human_selection]
   -> generate_governance_report
   -> finalize_run
@@ -68,9 +83,59 @@ initialize_run
 Inventory 子图按队列逐文件解析。单文件失败只产生非致命错误并继续处理；目录
 无法访问或状态引用不一致等问题才形成致命错误。
 
-Version Analysis 子图按队列逐文件对比较，然后统一构建版本边、分叉、版本链和
-推荐结果。顶层包装节点使用 `app/state/converters.py` 显式转换状态，解析队列、
-比较队列和当前草稿等子图私有字段不会泄漏回顶层状态。
+Version Analysis 子图按队列逐文件对比较，然后统一构建版本边、分叉和版本链。
+主版本推荐已完全迁移到 Recommendation 子图。顶层包装节点使用
+`app/state/converters.py` 显式转换状态，解析队列、比较队列、Evidence 任务和
+推荐候选集合等子图私有字段不会泄漏回顶层状态。
+
+独立 Evidence 子图：
+
+```text
+START
+  -> collect_pdf_candidates
+  -> create_pdf_match_jobs
+  -> [fanout_pdf_matching -> Send(match_pdf_to_source_version) -> join_pdf_matches]
+  -> load_local_delivery_log
+  -> match_delivery_to_version
+  -> merge_external_evidence
+  -> validate_evidence_confidence
+  -> END
+```
+
+没有 PDF 时直接跳到本地发送日志；单个 PDF 或日志读取失败可记录非致命错误并
+继续，状态引用或证据关系不一致才产生致命错误。`run_evidence_subgraph()` 通过
+白名单转换只返回 `pdf_exports`、`deliveries` 和 `errors`，候选、任务和原始日志
+不会泄漏到顶层状态。顶层图在版本分析成功后调用该子图，并允许日志读取或单个
+PDF 匹配等非致命错误降级后继续 Recommendation。
+
+独立 Recommendation 子图：
+
+```text
+START
+  -> find_editable_leaf_versions
+  -> score_version_candidates
+  -> apply_delivery_rules
+  -> apply_pdf_source_rules
+  -> apply_branch_rules
+  -> select_main_versions
+  -> explain_recommendations
+  -> calculate_decision_confidence
+  -> preserve_complete_version_chains
+  -> mark_human_review_items
+  -> validate_recommendation_results
+  -> END
+```
+
+Recommendation 子图只在各自版本组内竞争主版本：客户确认和可靠发送记录增强
+具体版本，PDF 来源关系优先可编辑源文件，分叉、链不完整、近似并列或低于阈值
+的结果强制进入人工审核。推荐只表达主版本偏好，`preserve_file_ids` 始终保留组内
+全部版本；`run_recommendation_subgraph()` 仅返回 `decisions`、`human_review` 和
+`errors`，私有候选集合不会泄漏到顶层状态。Recommendation 完成后，致命错误
+进入失败报告；分叉、链不完整、近似并列或低置信度结果进入人工审核；其余结果
+直接生成证据化治理报告。
+
+第四批的证据协议、匹配优先级、推荐加权和错误语义详见
+[Evidence 接入与治理决策说明](docs/version-0.4-evidence.md)。
 
 ## 安装
 
@@ -93,6 +158,7 @@ python -m pip install -e ".[dev]"
 
 `examples/sample_request.json` 是完整请求信封。相对路径以 JSON 文件所在目录
 为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
+`delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
 
 ```json
 {
@@ -103,6 +169,8 @@ python -m pip install -e ".[dev]"
     "max_files": 500,
     "grouping_similarity_threshold": 0.72,
     "auto_select_threshold": 0.82,
+    "pdf_match_threshold": 0.82,
+    "delivery_log_path": "sample_delivery_log.json",
     "use_llm_summary": false
   },
   "workspace": {
@@ -123,6 +191,24 @@ python -m pip install -e ".[dev]"
 ```bash
 mkdir -p data/input
 ```
+
+## 本地发送记录协议
+
+本地发送记录使用 `schema_version: "1.0"` 和 `deliveries` 数组。完整脱敏示例见
+`examples/sample_delivery_log.json`。每条记录包含：
+
+- `id`：发送记录稳定唯一 ID；
+- `attachment_name`：发送时的附件名称；
+- `attachment_sha256`：可选原始附件 SHA-256；
+- `normalized_digest`：可选标准化内容 SHA-256；
+- `sent_at`：可选、必须带时区的 ISO 8601 发送时间；
+- `recipient_label`：脱敏收件人标签；
+- `customer_confirmed`：是否存在客户确认或批准记录；
+- `evidence_ref`：指向原始记录的稳定引用，不应包含正文或凭据。
+
+真实发送日志默认被 `.gitignore` 和 `.dockerignore` 排除，只允许通过用户明确
+提供的路径或只读挂载进入运行环境。`0.2.0` 的 Evidence 子图会消费该协议，
+Recommendation 使用可靠匹配结果加权，最终治理报告展示脱敏记录和证据引用。
 
 ## CLI 启动治理
 
@@ -182,6 +268,8 @@ state = create_initial_state(
         "max_files": 500,
         "grouping_similarity_threshold": 0.72,
         "auto_select_threshold": 0.82,
+        "pdf_match_threshold": 0.82,
+        "delivery_log_path": None,
         "use_llm_summary": False,
     },
     {
@@ -217,6 +305,7 @@ with open_checkpointer(
 
 - 扫描扩展名、最大文件数和解析资源上限；
 - 文档分组及自动选择阈值；
+- PDF 来源匹配阈值、本地发送日志读取上限和歧义分差；
 - `.artifacts/content/normalized` 和 `intermediate` 产物布局；
 - Markdown 报告目录；
 - SQLite checkpoint 后端及数据库路径。
@@ -236,6 +325,11 @@ python -m compileall -q app tests
 - 文件名归一化、内容支持的合组和无关文档隔离；
 - 候选对、差异、重复边、分叉和线性版本链；
 - 可解释候选评分、自动推荐和人工选择限制；
+- 本地发送日志协议、只读边界、大小限制和时间字段校验；
+- PDF 来源及发送记录的哈希、内容摘要、名称和歧义匹配规则；
+- Evidence 子图的 Send 并行汇合、空分支、日志降级和包装字段隔离；
+- Recommendation 子图的证据加权、分叉审核、空输入和包装字段隔离；
+- 四子图端到端顺序、发送证据加权、报告展示和非致命 Evidence 降级；
 - 真实 DOCX 顶层治理及原文件字节不变；
 - SQLite Checkpointer 关闭后重新打开并恢复 `interrupt()`；
 - 最小 CLI 的真实请求文件调用。
@@ -245,24 +339,26 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build -t file-manage-agent:0.1.0 .
+docker build --build-arg APP_VERSION=0.2.0 -t file-manage-agent:0.2.0 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.1.0
+docker run --rm file-manage-agent:0.2.0
 ```
 
-实际运行时必须只读挂载输入目录，单独挂载可写产物目录，并提供路径为
-`/data/input`、`/data/artifacts/content`、`/data/artifacts/reports` 的请求文件：
+实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
+请求中的 `delivery_log_path` 应指向 `/data/evidence/delivery_log.json`；不使用
+本地证据时应设为 `null`：
 
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.1.0 \
+  file-manage-agent:0.2.0 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -274,7 +370,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.1.0 \
+  file-manage-agent:0.2.0 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -284,5 +380,5 @@ docker run --rm \
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
-- 邮件证据、长期 Memory、Skills、Subagent 和 Worktree；
+- 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。
