@@ -1,7 +1,7 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.1.2` 是 `0.2.0`
-开发计划的第二批，已完成能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.1.3` 是 `0.2.0`
+开发计划的第三批，已完成能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -13,11 +13,12 @@
 - 成功、部分成功、无数据和失败 Markdown 报告；
 - PDF 来源、本地发送记录及推荐候选的状态协议；
 - 只读本地发送日志加载工具，以及不执行文件 I/O 的纯证据匹配服务；
-- 带 START、END、条件跳过和 LangGraph Send 并行匹配的独立 Evidence 子图。
+- 带 START、END、条件跳过和 LangGraph Send 并行匹配的独立 Evidence 子图；
+- 分阶段应用版本链、发送确认、PDF 来源和分叉规则的独立 Recommendation 子图。
 
-Evidence 子图和顶层状态包装函数已经可以独立调用，但尚未注册到顶层
-File Governance 图；Recommendation 子图与最终主图接线将在 `0.2.0` 后续批次
-完成。当前版本提供 Python 接口和 CLI，尚未提供 HTTP API 或后台 Worker。
+Evidence、Recommendation 子图及其顶层状态包装函数已经可以独立调用，但尚未
+注册到顶层 File Governance 图；最终主图接线将在 `0.2.0` 后续批次完成。当前
+版本提供 Python 接口和 CLI，尚未提供 HTTP API 或后台 Worker。
 
 ## 安全边界
 
@@ -46,7 +47,7 @@ file-manage-agent/
 │   ├── storage/               # 标准化/中间产物与 checkpoint
 │   ├── utils/                 # 时间、错误、路径和状态记录查询辅助函数
 │   ├── nodes/                 # 仅包含已注册的 LangGraph 节点函数
-│   ├── graphs/                # 三个独立子图与顶层治理图
+│   ├── graphs/                # 四个独立子图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── configs/default.yaml       # 默认扫描、存储和 checkpoint 参数
 ├── examples/sample_request.json
@@ -100,6 +101,30 @@ START
 继续，状态引用或证据关系不一致才产生致命错误。`run_evidence_subgraph()` 通过
 白名单转换只返回 `pdf_exports`、`deliveries` 和 `errors`，候选、任务和原始日志
 不会泄漏到顶层状态。本批不修改顶层图的连线。
+
+独立 Recommendation 子图：
+
+```text
+START
+  -> find_editable_leaf_versions
+  -> score_version_candidates
+  -> apply_delivery_rules
+  -> apply_pdf_source_rules
+  -> apply_branch_rules
+  -> select_main_versions
+  -> explain_recommendations
+  -> calculate_decision_confidence
+  -> preserve_complete_version_chains
+  -> mark_human_review_items
+  -> validate_recommendation_results
+  -> END
+```
+
+Recommendation 子图只在各自版本组内竞争主版本：客户确认和可靠发送记录增强
+具体版本，PDF 来源关系优先可编辑源文件，分叉、链不完整、近似并列或低于阈值
+的结果强制进入人工审核。推荐只表达主版本偏好，`preserve_file_ids` 始终保留组内
+全部版本；`run_recommendation_subgraph()` 仅返回 `decisions`、`human_review` 和
+`errors`，私有候选集合不会泄漏到顶层状态。本批仍不修改顶层图连线。
 
 ## 安装
 
@@ -171,7 +196,7 @@ mkdir -p data/input
 - `evidence_ref`：指向原始记录的稳定引用，不应包含正文或凭据。
 
 真实发送日志默认被 `.gitignore` 和 `.dockerignore` 排除，只允许通过用户明确
-提供的路径或只读挂载进入运行环境。`0.1.2` 的独立 Evidence 子图已经消费该
+提供的路径或只读挂载进入运行环境。`0.1.3` 的独立 Evidence 子图已经消费该
 协议；顶层治理报告仍要等后续主图接线后才会展示这些证据。
 
 ## CLI 启动治理
@@ -292,6 +317,7 @@ python -m compileall -q app tests
 - 本地发送日志协议、只读边界、大小限制和时间字段校验；
 - PDF 来源及发送记录的哈希、内容摘要、名称和歧义匹配规则；
 - Evidence 子图的 Send 并行汇合、空分支、日志降级和包装字段隔离；
+- Recommendation 子图的证据加权、分叉审核、空输入和包装字段隔离；
 - 真实 DOCX 顶层治理及原文件字节不变；
 - SQLite Checkpointer 关闭后重新打开并恢复 `interrupt()`；
 - 最小 CLI 的真实请求文件调用。
@@ -301,13 +327,13 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.1.2 -t file-manage-agent:0.1.2 .
+docker build --build-arg APP_VERSION=0.1.3 -t file-manage-agent:0.1.3 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.1.2
+docker run --rm file-manage-agent:0.1.3
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -320,7 +346,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.1.2 \
+  file-manage-agent:0.1.3 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -332,7 +358,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.1.2 \
+  file-manage-agent:0.1.3 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -342,6 +368,6 @@ docker run --rm \
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
-- Recommendation 子图以及 Evidence/Recommendation 顶层接线；
+- Evidence/Recommendation 子图的顶层接线；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

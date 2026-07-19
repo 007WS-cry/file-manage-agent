@@ -28,6 +28,10 @@ coverage.xml
 .coverage
 .coverage.*
 htmlcov/
+pytestdebug.log
+.benchmarks/
+benchmark-results/
+*.prof
 
 # IDE、编辑器与操作系统文件
 .idea/

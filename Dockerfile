@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.1.2
+ARG APP_VERSION=0.1.3
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
