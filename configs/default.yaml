@@ -15,7 +15,7 @@ governance:
   max_files: 500
 
 prompt:
-  # 0.2.1 只固定状态与配置协议，默认关闭以保持 0.2.0 的治理行为。
+  # 0.2.2 已实现独立受限加载器；默认关闭以保持当前顶层图治理行为。
   enabled: false
 
   # System Prompt 的语义版本和仓库内受控资源路径。
@@ -26,7 +26,7 @@ prompt:
   dynamic_rules: []
 
 hooks:
-  # 0.2.1 只固定 Hook 协议，执行节点将在后续批次接入顶层图。
+  # 0.2.2 已实现注册表和 runner；执行节点将在后续批次接入顶层图。
   enabled: false
 
   # 列表顺序就是各生命周期阶段的预期执行顺序。

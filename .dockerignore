@@ -79,6 +79,11 @@ site
 resources/prompts/*.local.md
 resources/prompts/*.private.md
 
+# Prompt 调试快照和本地 Hook 审计不进入镜像构建上下文
+prompt_snapshot*.txt
+prompt_snapshot*.json
+hook_audit*.json
+
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
 docker-compose*.yml
