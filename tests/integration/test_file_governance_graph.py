@@ -106,7 +106,7 @@ def write_delivery_log(
 
 
 def test_top_graph_registers_four_subgraphs_in_required_order() -> None:
-    """0.2.0 顶层图必须按版本分析、证据和推荐顺序连接业务子图。"""
+    """0.2.1 顶层图必须保持四个既有业务子图的连接顺序。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 

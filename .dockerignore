@@ -75,6 +75,10 @@ docs
 site
 .mkdocs_cache
 
+# 本地或私有 Prompt 不进入镜像；受控版本 Prompt 继续保留
+resources/prompts/*.local.md
+resources/prompts/*.private.md
+
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
 docker-compose*.yml

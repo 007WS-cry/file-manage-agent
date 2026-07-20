@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.2.0
+ARG APP_VERSION=0.2.1
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
@@ -20,6 +20,7 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY configs ./configs
 COPY examples ./examples
+COPY resources ./resources
 
 RUN python -m pip install "." \
     && mkdir -p /data/input /data/artifacts/content \

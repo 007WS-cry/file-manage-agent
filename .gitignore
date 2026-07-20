@@ -47,6 +47,10 @@ Thumbs.db
 !.env.example
 *.log
 
+# 本地或私有 Prompt 可能包含临时规则，不提交到仓库
+resources/prompts/*.local.md
+resources/prompts/*.private.md
+
 # Codex 或其他本地代理生成的工作目录
 .agents/
 .codex/

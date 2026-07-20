@@ -20,6 +20,33 @@
     "artifact_root": "../.artifacts/content",
     "report_root": "../.artifacts/reports"
   },
+  "prompt": {
+    "enabled": false,
+    "version": "file-governance-v1",
+    "source_path": "../resources/prompts/file_governance_system_v1.md",
+    "dynamic_rules": []
+  },
+  "hooks": {
+    "enabled": false,
+    "before_run": [
+      "validate_request_envelope_hook",
+      "enrich_run_state_hook",
+      "initialize_tool_audit_hook"
+    ],
+    "before_model": [],
+    "after_model": [],
+    "after_run": [
+      "validate_report_result_hook",
+      "flush_tool_audit_hook",
+      "cleanup_run_resources_hook"
+    ],
+    "default_failure_policy": "block",
+    "failure_policies": {
+      "initialize_tool_audit_hook": "ignore",
+      "flush_tool_audit_hook": "ignore",
+      "cleanup_run_resources_hook": "ignore"
+    }
+  },
   "checkpoint": {
     "backend": "sqlite",
     "database_path": "../.artifacts/checkpoints/file-governance.sqlite3"

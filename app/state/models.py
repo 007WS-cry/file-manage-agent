@@ -380,9 +380,11 @@ class ErrorRecord(TypedDict):
         "evidence",
         "llm",
         "validation",
+        "prompt",
+        "hook",
         "unknown",
     ]
-    # 错误类别；evidence 表示 PDF 来源或发送记录匹配错误。
+    # 错误类别；prompt 和 hook 分别表示提示词加载与生命周期 Hook 错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -565,12 +567,104 @@ class PdfMatchWorkerState(TypedDict):
     # 当前 Worker 产生的非致命或致命错误。
 
 
+class PromptState(TypedDict):
+    """System Prompt 状态：记录本次运行实际加载的系统提示词。"""
+
+    enabled: bool
+    # 本次运行是否启用 System Prompt。
+
+    version: str
+    # Prompt 的语义版本，例如 file-governance-v1。
+
+    source_path: str | None
+    # Prompt 资源文件路径；关闭时为 None。
+
+    content: str
+    # 完整 System Prompt 内容；关闭或加载失败时为空字符串。
+
+    content_sha256: str | None
+    # Prompt 内容的 SHA-256，用于测试、审计和版本确认。
+
+    dynamic_rules: list[str]
+    # 根据本次请求追加的只读、证据和人工确认规则。
+
+    status: Literal[
+        "pending",
+        "loaded",
+        "disabled",
+        "failed",
+    ]
+    # Prompt 当前处于等待加载、已加载、已关闭或加载失败状态。
+
+
+class HookConfigState(TypedDict):
+    """Hooks 配置状态：定义生命周期阶段、执行顺序和失败策略。"""
+
+    enabled: bool
+    # 是否启用可扩展 Hooks；关闭后不执行配置中的 Hook。
+
+    before_run: list[str]
+    # 顶层业务流程开始前执行的 Hook 名称，列表顺序即执行顺序。
+
+    before_model: list[str]
+    # 模型调用前执行的 Hook 名称；本版可通过模拟模型测试。
+
+    after_model: list[str]
+    # 模型调用后执行的 Hook 名称；本版可通过模拟模型测试。
+
+    after_run: list[str]
+    # 报告生成后、运行最终收口前执行的 Hook 名称。
+
+    default_failure_policy: Literal["block", "ignore"]
+    # Hook 未单独配置策略时使用的默认失败策略。
+
+    failure_policies: dict[str, Literal["block", "ignore"]]
+    # Hook 名称到失败策略的映射；覆盖默认失败策略。
+
+
+class HookEvent(TypedDict):
+    """Hook 执行事件：记录单个 Hook 的顺序、状态和处理策略。"""
+
+    id: str
+    # Hook 事件唯一 ID。
+
+    phase: Literal[
+        "before_run",
+        "before_model",
+        "after_model",
+        "after_run",
+    ]
+    # Hook 所属生命周期阶段。
+
+    sequence: int
+    # Hook 在当前阶段的执行序号，用于验证调用顺序。
+
+    hook_name: str
+    # 实际执行或跳过的 Hook 函数名称。
+
+    status: Literal[
+        "success",
+        "failed",
+        "skipped",
+    ]
+    # Hook 执行成功、失败或因配置关闭而跳过。
+
+    failure_policy: Literal["block", "ignore"]
+    # 本次 Hook 失败时实际采用的处理策略。
+
+    message: str
+    # 简短执行结果，不保存文档正文或敏感工具输出。
+
+    created_at: str
+    # Hook 事件产生时间，使用带时区的 ISO 8601 格式。
+
+
 class FileGovernanceState(TypedDict):
     """一次完整文件版本治理任务使用的顶层状态。
 
-    该状态在主图和子图之间传递只读输入、文件事实、版本关系、人工选择
-    与最终报告。循环队列等临时字段只保留在子图状态中，原始业务文件始终
-    保持只读；每个版本组分别产生一个主版本推荐结果。
+    该状态在主图和子图之间传递只读输入、文件事实、版本关系、人工选择、
+    生命周期配置与最终报告。循环队列等临时字段只保留在子图状态中，
+    原始业务文件始终保持只读；每个版本组分别产生一个主版本推荐结果。
     """
 
     run: RunState
@@ -581,6 +675,18 @@ class FileGovernanceState(TypedDict):
 
     workspace: WorkspaceState
     # 原始文件、临时产物和报告目录。
+
+    prompt: PromptState
+    # 本次运行加载或关闭的 System Prompt 状态。
+
+    hooks: HookConfigState
+    # 本次运行的生命周期 Hooks 配置。
+
+    hook_events: Annotated[
+        list[HookEvent],
+        merge_by_id,
+    ]
+    # 按事件 ID 合并的 Hook 执行、失败和跳过记录。
 
     human_review: HumanReviewState
     # interrupt 暂停和恢复所需的人工确认数据。

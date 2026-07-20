@@ -1,7 +1,7 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.0` 已完成四批开发计划，
-具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.1` 在 `0.2.0` 四个业务
+子图基础上完成了 `0.3.0` 第一批状态协议与配置，具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -15,11 +15,14 @@
 - 只读本地发送日志加载工具，以及不执行文件 I/O 的纯证据匹配服务；
 - 带 START、END、条件跳过和 LangGraph Send 并行匹配的独立 Evidence 子图；
 - 分阶段应用版本链、发送确认、PDF 来源和分叉规则的 Recommendation 子图；
-- 证据化 Markdown 报告以及贯穿四个子图的端到端错误路由。
+- 证据化 Markdown 报告以及贯穿四个子图的端到端错误路由；
+- 受版本控制的文件治理 System Prompt 资源；
+- Prompt、Hooks、Hook Event 顶层状态协议和严格的初始配置校验。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
-和 CLI，尚未提供 HTTP API 或后台 Worker。
+和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.1` 默认关闭 Prompt 和 Hooks，
+它们尚未接入顶层执行节点，因此现有治理流程与 `0.2.0` 保持一致。
 
 ## 安全边界
 
@@ -41,6 +44,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 
 ```text
 file-manage-agent/
+├── resources/
+│   └── prompts/               # 受版本控制的 System Prompt 资源
 ├── app/
 │   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
@@ -50,7 +55,7 @@ file-manage-agent/
 │   ├── nodes/                 # 仅包含已注册的 LangGraph 节点函数
 │   ├── graphs/                # 四个独立子图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
-├── configs/default.yaml       # 默认扫描、存储和 checkpoint 参数
+├── configs/default.yaml       # 默认治理、生命周期、存储和 checkpoint 参数
 ├── examples/sample_request.json
 ├── examples/sample_delivery_log.json
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
@@ -63,6 +68,16 @@ file-manage-agent/
 
 `app/state/model.py` 仅用于兼容早期单数文件名，新代码应从
 `app.state.models` 导入状态。
+
+## 0.2.1 生命周期状态协议
+
+本批新增 `PromptState`、`HookConfigState` 和 `HookEvent`，并将 `prompt`、`hooks`
+和 `hook_events` 放入顶层 `FileGovernanceState`。状态工厂会复制列表和策略映射，
+拒绝未知字段、重复 Hook 名称以及 `block`、`ignore` 之外的失败策略。
+
+调用 `create_initial_state()` 时不提供 `prompt_config` 和 `hook_config`，即可获得
+完全关闭的新功能配置。显式启用时，Prompt 初始状态为 `pending`；实际读取资源、
+执行 Hook 和产生 Hook Event 将在后续 `0.3.0` 批次接入。
 
 ## 图结构
 
@@ -159,6 +174,8 @@ python -m pip install -e ".[dev]"
 `examples/sample_request.json` 是完整请求信封。相对路径以 JSON 文件所在目录
 为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
 `delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
+示例中的 `prompt` 和 `hooks` 是 `0.2.1` 新增的配置协议，目前显式关闭；本批 CLI
+仍沿用原有执行参数，后续生命周期接入批次才会消费这两个顶层对象。
 
 ```json
 {
@@ -178,6 +195,21 @@ python -m pip install -e ".[dev]"
     "input_readonly": true,
     "artifact_root": "../.artifacts/content",
     "report_root": "../.artifacts/reports"
+  },
+  "prompt": {
+    "enabled": false,
+    "version": "file-governance-v1",
+    "source_path": "../resources/prompts/file_governance_system_v1.md",
+    "dynamic_rules": []
+  },
+  "hooks": {
+    "enabled": false,
+    "before_run": [],
+    "before_model": [],
+    "after_model": [],
+    "after_run": [],
+    "default_failure_policy": "block",
+    "failure_policies": {}
   },
   "checkpoint": {
     "backend": "sqlite",
@@ -207,7 +239,7 @@ mkdir -p data/input
 - `evidence_ref`：指向原始记录的稳定引用，不应包含正文或凭据。
 
 真实发送日志默认被 `.gitignore` 和 `.dockerignore` 排除，只允许通过用户明确
-提供的路径或只读挂载进入运行环境。`0.2.0` 的 Evidence 子图会消费该协议，
+提供的路径或只读挂载进入运行环境。当前 Evidence 子图会消费该协议，
 Recommendation 使用可靠匹配结果加权，最终治理报告展示脱敏记录和证据引用。
 
 ## CLI 启动治理
@@ -278,6 +310,9 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
+    # 0.2.1 默认值即为关闭；这里显式写出便于说明状态协议。
+    prompt_config={"enabled": False},
+    hook_config={"enabled": False},
 )
 
 config = {"configurable": {"thread_id": "governance-run-001"}}
@@ -306,6 +341,7 @@ with open_checkpointer(
 - 扫描扩展名、最大文件数和解析资源上限；
 - 文档分组及自动选择阈值；
 - PDF 来源匹配阈值、本地发送日志读取上限和歧义分差；
+- 默认关闭的 Prompt、Hooks、执行顺序和失败策略；
 - `.artifacts/content/normalized` 和 `intermediate` 产物布局；
 - Markdown 报告目录；
 - SQLite checkpoint 后端及数据库路径。
@@ -332,20 +368,22 @@ python -m compileall -q app tests
 - 四子图端到端顺序、发送证据加权、报告展示和非致命 Evidence 降级；
 - 真实 DOCX 顶层治理及原文件字节不变；
 - SQLite Checkpointer 关闭后重新打开并恢复 `interrupt()`；
-- 最小 CLI 的真实请求文件调用。
+- 最小 CLI 的真实请求文件调用；
+- Prompt 资源中的只读、证据和人工确认规则；
+- Prompt/Hook 默认关闭、显式配置复制和非法失败策略拒绝。
 
 ## Docker
 
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.2.0 -t file-manage-agent:0.2.0 .
+docker build --build-arg APP_VERSION=0.2.1 -t file-manage-agent:0.2.1 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.2.0
+docker run --rm file-manage-agent:0.2.1
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -358,7 +396,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.2.0 \
+  file-manage-agent:0.2.1 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -370,7 +408,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.2.0 \
+  file-manage-agent:0.2.1 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -380,5 +418,6 @@ docker run --rm \
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
+- Prompt 加载节点、Hook 注册表和 before/after 生命周期执行器；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。
