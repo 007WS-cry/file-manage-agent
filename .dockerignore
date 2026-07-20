@@ -79,7 +79,7 @@ site
 resources/prompts/*.local.md
 resources/prompts/*.private.md
 
-# Prompt 调试快照和本地 Hook 审计不进入镜像构建上下文
+# Prompt 调试快照和本地生命周期 Hook 审计不进入镜像构建上下文
 prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json

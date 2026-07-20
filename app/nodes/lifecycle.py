@@ -1,12 +1,57 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
+from app.hooks.runner import (
+    execute_after_run_hooks as run_after_run_hooks,
+)
+from app.hooks.runner import (
+    execute_before_run_hooks as run_before_run_hooks,
+)
+from app.llm.prompt_loader import (
+    load_system_prompt as read_system_prompt,
+)
+from app.llm.prompt_loader import (
+    record_prompt_load_error,
+)
+from app.state.factories import create_hook_config_state, create_prompt_state
 from app.state.models import FileGovernanceState
 from app.utils.runtime import create_error_record, paths_overlap, utc_now_iso
 
-"""本模块仅实现顶层治理运行的初始化、请求校验和最终状态收口节点。"""
+"""本模块实现顶层运行初始化、前后置 Hook、Prompt 加载、请求校验和最终收口节点。"""
+
+
+def _with_lifecycle_defaults(state: FileGovernanceState) -> FileGovernanceState:
+    """为旧版 checkpoint 或手工状态补齐完全关闭的生命周期字段。
+
+    Args:
+        state: 可能来自 0.2.0 checkpoint 或测试夹具的顶层治理状态。
+
+    Returns:
+        包含 Prompt、Hook 配置和 Hook 事件列表的浅复制状态。
+    """
+    normalized_state = dict(state)
+    normalized_state.setdefault("prompt", create_prompt_state())
+    normalized_state.setdefault("hooks", create_hook_config_state())
+    normalized_state.setdefault("hook_events", [])
+    return cast(FileGovernanceState, normalized_state)
+
+
+def _update_run_stage(state: FileGovernanceState, stage: str) -> dict:
+    """复制运行状态并更新当前生命周期阶段。
+
+    Args:
+        state: 包含运行状态的顶层治理状态。
+        stage: 等待记录的节点执行阶段。
+
+    Returns:
+        仅修改 ``current_stage`` 的独立运行状态字典。
+    """
+    run = dict(state.get("run", {}))
+    run["current_stage"] = stage
+    return run
 
 
 def initialize_run(state: FileGovernanceState) -> dict:
@@ -45,7 +90,43 @@ def initialize_run(state: FileGovernanceState) -> dict:
         ),
         "pdf_exports": state.get("pdf_exports", []),
         "deliveries": state.get("deliveries", []),
+        "prompt": state.get("prompt", create_prompt_state()),
+        "hooks": state.get("hooks", create_hook_config_state()),
+        "hook_events": state.get("hook_events", []),
     }
+
+
+def execute_before_run_hooks(state: FileGovernanceState) -> dict:
+    """执行业务校验前的 Hook，并把基础设施异常转换为致命状态错误。
+
+    Args:
+        state: 已完成运行初始化的顶层治理状态。
+
+    Returns:
+        Hook 受限状态更新、执行事件、运行阶段和可选阻断错误。
+    """
+    normalized_state = _with_lifecycle_defaults(state)
+    try:
+        result = run_before_run_hooks(normalized_state)
+        working_state = cast(FileGovernanceState, {**normalized_state, **result})
+        result["run"] = _update_run_stage(
+            working_state,
+            "before_run_hooks_complete",
+        )
+        return result
+    except Exception as exc:
+        return {
+            "run": _update_run_stage(normalized_state, "before_run_hooks_failed"),
+            "errors": [
+                create_error_record(
+                    stage="before_run_hooks",
+                    node_name="execute_before_run_hooks",
+                    category="hook",
+                    message=f"before_run Hook 基础设施执行失败：{exc}",
+                    fatal=True,
+                )
+            ],
+        }
 
 
 def validate_request(state: FileGovernanceState) -> dict:
@@ -157,6 +238,92 @@ def validate_request(state: FileGovernanceState) -> dict:
                     node_name="validate_request",
                     category="validation",
                     message=str(exc),
+                    fatal=True,
+                )
+            ],
+        }
+
+
+def load_system_prompt(state: FileGovernanceState) -> dict:
+    """加载本次运行的受控 System Prompt，并把加载失败写入顶层错误。
+
+    相对路径只能从当前工作目录读取；CLI 已解析的绝对路径则仅允许读取其所在
+    目录中的显式目标文件。节点不访问网络，也不执行 Prompt 中的任何内容。
+
+    Args:
+        state: 已通过请求校验且包含 Prompt 配置的顶层治理状态。
+
+    Returns:
+        已加载、已关闭或加载失败的 Prompt 状态、运行阶段和可选致命错误。
+    """
+    normalized_state = _with_lifecycle_defaults(state)
+    prompt_state = normalized_state["prompt"]
+    try:
+        source_path = prompt_state.get("source_path")
+        if prompt_state.get("enabled") is True and source_path:
+            source = Path(source_path).expanduser()
+            base_directory = source.parent if source.is_absolute() else Path.cwd()
+            allowed_root = base_directory
+        else:
+            base_directory = Path.cwd()
+            allowed_root = base_directory
+        loaded_prompt = read_system_prompt(
+            prompt_state,
+            base_directory=base_directory,
+            allowed_root=allowed_root,
+        )
+        stage = (
+            "system_prompt_loaded"
+            if loaded_prompt["status"] == "loaded"
+            else "system_prompt_disabled"
+        )
+        return {
+            "prompt": loaded_prompt,
+            "run": _update_run_stage(normalized_state, stage),
+        }
+    except Exception as exc:
+        return {
+            "prompt": record_prompt_load_error(prompt_state),
+            "run": _update_run_stage(normalized_state, "system_prompt_failed"),
+            "errors": [
+                create_error_record(
+                    stage="system_prompt",
+                    node_name="load_system_prompt",
+                    category="prompt",
+                    message=f"System Prompt 加载失败：{exc}",
+                    fatal=True,
+                )
+            ],
+        }
+
+
+def execute_after_run_hooks(state: FileGovernanceState) -> dict:
+    """执行报告生成后的 Hook，并把基础设施异常转换为致命状态错误。
+
+    Args:
+        state: 已生成业务报告的顶层治理状态。
+
+    Returns:
+        Hook 受限状态更新、执行事件、运行阶段和可选阻断错误。
+    """
+    normalized_state = _with_lifecycle_defaults(state)
+    try:
+        result = run_after_run_hooks(normalized_state)
+        working_state = cast(FileGovernanceState, {**normalized_state, **result})
+        result["run"] = _update_run_stage(
+            working_state,
+            "after_run_hooks_complete",
+        )
+        return result
+    except Exception as exc:
+        return {
+            "run": _update_run_stage(normalized_state, "after_run_hooks_failed"),
+            "errors": [
+                create_error_record(
+                    stage="after_run_hooks",
+                    node_name="execute_after_run_hooks",
+                    category="hook",
+                    message=f"after_run Hook 基础设施执行失败：{exc}",
                     fatal=True,
                 )
             ],

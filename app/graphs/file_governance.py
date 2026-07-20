@@ -7,13 +7,24 @@ from app.graphs.routers import (
     has_analyzable_documents,
     has_pending_human_review,
     is_request_valid,
+    route_after_run_hooks_result,
+    route_before_run_hooks_result,
     route_evidence_result,
+    route_system_prompt_result,
     route_version_analysis_result,
 )
-from app.nodes.lifecycle import finalize_run, initialize_run, validate_request
+from app.nodes.lifecycle import (
+    execute_after_run_hooks,
+    execute_before_run_hooks,
+    finalize_run,
+    initialize_run,
+    load_system_prompt,
+    validate_request,
+)
 from app.nodes.report import (
     generate_failure_report,
     generate_governance_report,
+    generate_lifecycle_failure_report,
     generate_no_data_report,
 )
 from app.nodes.review import (
@@ -30,14 +41,14 @@ from app.nodes.subgraphs_nodes import (
 from app.state.models import FileGovernanceState
 from app.storage.checkpoints import create_memory_checkpointer
 
-"""本模块构建依次接入四个业务子图并支持人工暂停恢复的顶层治理图。"""
+"""本模块构建接入生命周期节点、四个业务子图和人工暂停恢复的顶层治理图。"""
 
 
 def build_file_governance_graph(
     *,
     checkpointer: BaseCheckpointSaver | None = None,
 ):
-    """构建支持人工暂停恢复的顶层文件版本治理图。
+    """构建支持 Prompt、生命周期 Hook 和人工暂停恢复的顶层文件治理图。
 
     Args:
         checkpointer: 可选 LangGraph Checkpointer。未提供时使用进程内
@@ -49,7 +60,9 @@ def build_file_governance_graph(
     """
     builder = StateGraph(FileGovernanceState)
     builder.add_node("initialize_run", initialize_run)
+    builder.add_node("execute_before_run_hooks", execute_before_run_hooks)
     builder.add_node("validate_request", validate_request)
+    builder.add_node("load_system_prompt", load_system_prompt)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
     builder.add_node("run_version_analysis_subgraph", run_version_analysis_subgraph)
     builder.add_node("run_evidence_subgraph", run_evidence_subgraph)
@@ -60,14 +73,32 @@ def build_file_governance_graph(
     builder.add_node("generate_failure_report", generate_failure_report)
     builder.add_node("generate_no_data_report", generate_no_data_report)
     builder.add_node("generate_governance_report", generate_governance_report)
+    builder.add_node("execute_after_run_hooks", execute_after_run_hooks)
+    builder.add_node("generate_lifecycle_failure_report", generate_lifecycle_failure_report)
     builder.add_node("finalize_run", finalize_run)
 
     builder.add_edge(START, "initialize_run")
-    builder.add_edge("initialize_run", "validate_request")
+    builder.add_edge("initialize_run", "execute_before_run_hooks")
+    builder.add_conditional_edges(
+        "execute_before_run_hooks",
+        route_before_run_hooks_result,
+        {
+            "continue": "validate_request",
+            "failure": "generate_failure_report",
+        },
+    )
     builder.add_conditional_edges(
         "validate_request",
         is_request_valid,
-        {"valid": "run_inventory_subgraph", "invalid": "generate_failure_report"},
+        {"valid": "load_system_prompt", "invalid": "generate_failure_report"},
+    )
+    builder.add_conditional_edges(
+        "load_system_prompt",
+        route_system_prompt_result,
+        {
+            "continue": "run_inventory_subgraph",
+            "failure": "generate_failure_report",
+        },
     )
     builder.add_conditional_edges(
         "run_inventory_subgraph",
@@ -100,9 +131,18 @@ def build_file_governance_graph(
     builder.add_edge("prepare_human_review", "request_human_review")
     builder.add_edge("request_human_review", "apply_human_selection")
     builder.add_edge("apply_human_selection", "generate_governance_report")
-    builder.add_edge("generate_failure_report", "finalize_run")
-    builder.add_edge("generate_no_data_report", "finalize_run")
-    builder.add_edge("generate_governance_report", "finalize_run")
+    builder.add_edge("generate_failure_report", "execute_after_run_hooks")
+    builder.add_edge("generate_no_data_report", "execute_after_run_hooks")
+    builder.add_edge("generate_governance_report", "execute_after_run_hooks")
+    builder.add_conditional_edges(
+        "execute_after_run_hooks",
+        route_after_run_hooks_result,
+        {
+            "finalize": "finalize_run",
+            "failure": "generate_lifecycle_failure_report",
+        },
+    )
+    builder.add_edge("generate_lifecycle_failure_report", "finalize_run")
     builder.add_edge("finalize_run", END)
     selected_checkpointer = (
         checkpointer if checkpointer is not None else create_memory_checkpointer()
