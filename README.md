@@ -1,7 +1,7 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.1` 在 `0.2.0` 四个业务
-子图基础上完成了 `0.3.0` 第一批状态协议与配置，具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.2` 在 `0.2.0` 四个业务
+子图基础上完成了 `0.3.0` 的状态协议、Prompt 与 Hook 基础设施，具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -17,12 +17,16 @@
 - 分阶段应用版本链、发送确认、PDF 来源和分叉规则的 Recommendation 子图；
 - 证据化 Markdown 报告以及贯穿四个子图的端到端错误路由；
 - 受版本控制的文件治理 System Prompt 资源；
-- Prompt、Hooks、Hook Event 顶层状态协议和严格的初始配置校验。
+- Prompt、Hooks、Hook Event 顶层状态协议和严格的初始配置校验；
+- 受路径、符号链接、扩展名、UTF-8 和字节上限约束的 Prompt 加载器；
+- 静态 Hook 白名单、顺序 runner、HookEvent 以及 block/ignore 失败聚合；
+- 请求预检、运行状态补充、报告检查、最小审计入口和安全清理内置 Hook。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
-和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.1` 默认关闭 Prompt 和 Hooks，
-它们尚未接入顶层执行节点，因此现有治理流程与 `0.2.0` 保持一致。
+和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.2` 默认关闭 Prompt 和 Hooks；
+基础模块已可独立调用，但尚未接入顶层执行节点，因此现有治理流程与 `0.2.0`
+保持一致。
 
 ## 安全边界
 
@@ -48,6 +52,8 @@ file-manage-agent/
 │   └── prompts/               # 受版本控制的 System Prompt 资源
 ├── app/
 │   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
+│   ├── llm/                   # System Prompt 受限加载和后续模型扩展入口
+│   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
 │   ├── services/              # 标准化、版本图、证据匹配、推荐和报告服务
 │   ├── storage/               # 标准化/中间产物与 checkpoint
@@ -69,15 +75,23 @@ file-manage-agent/
 `app/state/model.py` 仅用于兼容早期单数文件名，新代码应从
 `app.state.models` 导入状态。
 
-## 0.2.1 生命周期状态协议
+## 0.2.2 Prompt 与 Hook 基础设施
 
-本批新增 `PromptState`、`HookConfigState` 和 `HookEvent`，并将 `prompt`、`hooks`
-和 `hook_events` 放入顶层 `FileGovernanceState`。状态工厂会复制列表和策略映射，
-拒绝未知字段、重复 Hook 名称以及 `block`、`ignore` 之外的失败策略。
+`0.2.1` 新增了 `PromptState`、`HookConfigState` 和 `HookEvent`，并将 `prompt`、
+`hooks` 和 `hook_events` 放入顶层 `FileGovernanceState`。`0.2.2` 在该协议上实现：
+
+- `app.llm.prompt_loader`：只读加载受信任的 `.md`/`.txt` Prompt，拒绝路径越界、
+  符号链接、非 UTF-8 内容和超限文件，追加动态规则后记录 SHA-256；
+- `app.hooks.registry`：通过不可变静态白名单解析六个内置 Hook，不支持配置驱动的
+  Python 模块导入、表达式或 `eval()`；
+- `app.hooks.runner`：按配置顺序执行四个阶段，限制 Hook 只能更新 `run`、`report`，
+  为每次调用生成 HookEvent，并分别聚合 `block` 与 `ignore` 失败；
+- `app.hooks.builtin`：提供请求信封预检、运行状态补充、报告检查、最小工具审计入口
+  和不接触原始文件的清理 Hook。
 
 调用 `create_initial_state()` 时不提供 `prompt_config` 和 `hook_config`，即可获得
-完全关闭的新功能配置。显式启用时，Prompt 初始状态为 `pending`；实际读取资源、
-执行 Hook 和产生 Hook Event 将在后续 `0.3.0` 批次接入。
+完全关闭的新功能配置。显式启用时，Prompt 加载器和 Hook runner 已可独立测试或
+调用；把它们注册为顶层 LangGraph 节点将在后续 `0.3.0` 批次完成。
 
 ## 图结构
 
@@ -174,7 +188,7 @@ python -m pip install -e ".[dev]"
 `examples/sample_request.json` 是完整请求信封。相对路径以 JSON 文件所在目录
 为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
 `delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
-示例中的 `prompt` 和 `hooks` 是 `0.2.1` 新增的配置协议，目前显式关闭；本批 CLI
+示例中的 `prompt` 和 `hooks` 是 `0.2.2` 已实现的配置协议，目前显式关闭；本批 CLI
 仍沿用原有执行参数，后续生命周期接入批次才会消费这两个顶层对象。
 
 ```json
@@ -310,7 +324,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.2.1 默认值即为关闭；这里显式写出便于说明状态协议。
+    # 0.2.2 默认值即为关闭；这里显式写出便于说明状态协议。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
 )
@@ -370,20 +384,23 @@ python -m compileall -q app tests
 - SQLite Checkpointer 关闭后重新打开并恢复 `interrupt()`；
 - 最小 CLI 的真实请求文件调用；
 - Prompt 资源中的只读、证据和人工确认规则；
-- Prompt/Hook 默认关闭、显式配置复制和非法失败策略拒绝。
+- Prompt/Hook 默认关闭、显式配置复制和非法失败策略拒绝；
+- Prompt 路径范围、符号链接、UTF-8、大小、动态规则和 SHA-256；
+- 静态 Hook 注册、顺序执行、跳过事件、block/ignore 和状态写入白名单；
+- 请求预检、状态补充、报告检查、最小审计与只读清理内置 Hook。
 
 ## Docker
 
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.2.1 -t file-manage-agent:0.2.1 .
+docker build --build-arg APP_VERSION=0.2.2 -t file-manage-agent:0.2.2 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.2.1
+docker run --rm file-manage-agent:0.2.2
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -396,7 +413,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.2.1 \
+  file-manage-agent:0.2.2 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -408,7 +425,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.2.1 \
+  file-manage-agent:0.2.2 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -418,6 +435,7 @@ docker run --rm \
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
-- Prompt 加载节点、Hook 注册表和 before/after 生命周期执行器；
+- Prompt 和 before/after Hook 顶层 LangGraph 节点及条件路由；
+- 持久化工具调用审计；当前只记录最小 HookEvent；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。
