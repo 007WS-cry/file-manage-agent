@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sysconfig
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Literal, cast
 
 from app.state.models import (
@@ -11,13 +13,32 @@ from app.state.models import (
     WorkspaceState,
 )
 
-"""本模块负责创建可直接提交给顶层 LangGraph 的文件治理初始状态。"""
+"""本模块负责定位默认受控 Prompt，并创建可提交给顶层 LangGraph 的初始状态。"""
 
 # 默认 System Prompt 版本，与仓库中的受控 Prompt 资源保持一致。
 DEFAULT_PROMPT_VERSION = "file-governance-v1"
 
-# 默认 System Prompt 资源路径；实际加载和路径安全校验将在生命周期节点中完成。
-DEFAULT_PROMPT_SOURCE_PATH = "resources/prompts/file_governance_system_v1.md"
+
+def _resolve_default_prompt_source_path() -> str:
+    """解析源码目录或安装数据目录中的默认 Prompt 资源路径。
+
+    开发和容器环境优先使用仓库根目录下的受控资源；wheel 安装不包含源码根目录时，
+    回退到 setuptools ``data-files`` 安装到 Python 数据前缀的同名资源。函数只进行
+    本地路径定位，不读取 Prompt 内容，也不执行文件中的任何文本。
+
+    Returns:
+        默认 Prompt 资源的绝对路径；文件存在性和安全性由加载节点继续校验。
+    """
+    relative_path = Path("resources/prompts/file_governance_system_v1.md")
+    source_path = Path(__file__).resolve().parents[2] / relative_path
+    if source_path.is_file():
+        return str(source_path)
+    installed_path = Path(sysconfig.get_path("data")) / relative_path
+    return str(installed_path)
+
+
+# 默认 System Prompt 资源路径，兼容源码、容器和 wheel 安装布局。
+DEFAULT_PROMPT_SOURCE_PATH = _resolve_default_prompt_source_path()
 
 
 def _normalize_string_list(value: object, *, field_name: str) -> list[str]:
