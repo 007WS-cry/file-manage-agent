@@ -51,7 +51,7 @@ Thumbs.db
 resources/prompts/*.local.md
 resources/prompts/*.private.md
 
-# Prompt 调试快照和本地 Hook 审计可能包含运行信息，不提交到仓库
+# Prompt 调试快照和本地生命周期 Hook 审计可能包含运行信息，不提交到仓库
 prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json

@@ -14,6 +14,47 @@ from app.state.models import (
 """本模块实现顶层治理图以及 Inventory、Version Analysis、Evidence 子图路由。"""
 
 
+def route_before_run_hooks_result(
+    state: FileGovernanceState,
+) -> Literal["continue", "failure"]:
+    """根据 before_run 阶段的阻断错误选择请求校验或失败报告。
+
+    Args:
+        state: 已执行 before_run Hooks 的顶层治理状态。
+
+    Returns:
+        存在 Hook 阻断或基础设施错误时返回 ``failure``，否则返回 ``continue``。
+    """
+    has_blocking_error = any(
+        error["fatal"]
+        and error["category"] == "hook"
+        and error["stage"] in {"before_run", "before_run_hooks"}
+        for error in state.get("errors", [])
+    )
+    return "failure" if has_blocking_error else "continue"
+
+
+def route_system_prompt_result(
+    state: FileGovernanceState,
+) -> Literal["continue", "failure"]:
+    """根据 Prompt 加载状态选择 Inventory 子图或失败报告。
+
+    Args:
+        state: 已执行 System Prompt 加载节点的顶层治理状态。
+
+    Returns:
+        Prompt 已加载或已关闭时返回 ``continue``，其他状态返回 ``failure``。
+    """
+    prompt_status = state.get("prompt", {}).get("status")
+    if prompt_status not in {"loaded", "disabled"}:
+        return "failure"
+    has_prompt_error = any(
+        error["fatal"] and error["category"] == "prompt"
+        for error in state.get("errors", [])
+    )
+    return "failure" if has_prompt_error else "continue"
+
+
 def is_request_valid(state: FileGovernanceState) -> Literal["valid", "invalid"]:
     """根据请求校验阶段产生的致命错误选择继续或失败报告。"""
     has_validation_error = any(
@@ -107,6 +148,29 @@ def route_parser(
     if extension in {".xlsx", ".docx", ".pdf"}:
         return extension[1:]
     return "unsupported"
+
+
+def route_after_run_hooks_result(
+    state: FileGovernanceState,
+) -> Literal["finalize", "failure"]:
+    """根据 after_run 阶段新增的阻断错误选择最终收口或生命周期失败报告。
+
+    路由只检查 after_run 自身错误，避免把业务阶段已有的致命错误再次误判为
+    生命周期失败；忽略策略产生的失败事件不会创建致命错误，因而正常收口。
+
+    Args:
+        state: 已执行 after_run Hooks 且已包含业务报告的顶层治理状态。
+
+    Returns:
+        after_run 阶段被阻断时返回 ``failure``，否则返回 ``finalize``。
+    """
+    has_blocking_error = any(
+        error["fatal"]
+        and error["category"] == "hook"
+        and error["stage"] in {"after_run", "after_run_hooks"}
+        for error in state.get("errors", [])
+    )
+    return "failure" if has_blocking_error else "finalize"
 
 
 def parse_succeeded(state: InventoryGraphState) -> Literal["success", "failure"]:

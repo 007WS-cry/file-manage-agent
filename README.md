@@ -1,7 +1,7 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.2` 在 `0.2.0` 四个业务
-子图基础上完成了 `0.3.0` 的状态协议、Prompt 与 Hook 基础设施，具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.2.3` 在 `0.2.2` 的状态协议、
+Prompt 与 Hook 基础设施之上完成顶层生命周期接入，具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -20,13 +20,15 @@
 - Prompt、Hooks、Hook Event 顶层状态协议和严格的初始配置校验；
 - 受路径、符号链接、扩展名、UTF-8 和字节上限约束的 Prompt 加载器；
 - 静态 Hook 白名单、顺序 runner、HookEvent 以及 block/ignore 失败聚合；
-- 请求预检、运行状态补充、报告检查、最小审计入口和安全清理内置 Hook。
+- 请求预检、运行状态补充、报告检查、最小审计入口和安全清理内置 Hook；
+- before_run、System Prompt、after_run 顶层节点、条件路由和生命周期失败报告；
+- CLI 请求信封中的可选 `prompt`、`hooks` 配置及旧 checkpoint 关闭兼容模式。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
-和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.2` 默认关闭 Prompt 和 Hooks；
-基础模块已可独立调用，但尚未接入顶层执行节点，因此现有治理流程与 `0.2.0`
-保持一致。
+和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
+节点，但默认仍完全关闭；关闭时不会改变既有业务结果，旧版缺少生命周期字段的
+checkpoint 也会自动补齐关闭配置。
 
 ## 安全边界
 
@@ -43,6 +45,10 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 - 本地发送日志工具只读取用户明确提供的普通 UTF-8 JSON 文件，拒绝符号链接、
   超限文件和未知协议版本，不打开附件、不访问网络且不执行日志内容。
 - 证据匹配遇到多个非重复候选时保留未匹配结果，不依靠排序猜测文件版本。
+- Prompt 只读取显式配置的本地 `.md`/`.txt` 文件，拒绝符号链接、非 UTF-8、
+  超限内容和相对路径越界，并记录实际内容 SHA-256。
+- Hook 只能从静态白名单解析，不能通过请求动态导入模块或执行表达式；状态更新
+  仅允许完整替换 `run` 或 `report`。
 
 ## 目录
 
@@ -91,7 +97,22 @@ file-manage-agent/
 
 调用 `create_initial_state()` 时不提供 `prompt_config` 和 `hook_config`，即可获得
 完全关闭的新功能配置。显式启用时，Prompt 加载器和 Hook runner 已可独立测试或
-调用；把它们注册为顶层 LangGraph 节点将在后续 `0.3.0` 批次完成。
+调用；`0.2.3` 已把它们注册为顶层 LangGraph 生命周期节点。
+
+## 0.2.3 接入顶层 LangGraph
+
+本批将第二批基础设施接入实际治理运行，同时保持生命周期配置和业务请求隔离：
+
+- `execute_before_run_hooks` 在不可关闭的业务请求校验之前执行；阻断失败直接生成
+  失败报告，不进入文件扫描；
+- `load_system_prompt` 在请求校验后受限读取 Prompt；关闭时直接继续，加载失败时
+  记录 `prompt` 类致命错误；
+- 成功、无数据和业务失败报告均进入 `execute_after_run_hooks`；`ignore` 失败只保留
+  HookEvent，`block` 失败追加生命周期收口失败章节后结束；
+- CLI 从请求信封单独解析 `prompt`、`hooks`，再分别传给 `create_initial_state()`，
+  两个对象不会进入业务 `RequestState`；
+- `initialize_run` 会为 0.2.0/0.2.2 checkpoint 或手工状态补齐完全关闭的生命周期
+  字段，保持原有调用兼容性。
 
 ## 图结构
 
@@ -99,13 +120,17 @@ file-manage-agent/
 
 ```text
 initialize_run
+  -> execute_before_run_hooks
   -> validate_request
+  -> load_system_prompt
   -> run_inventory_subgraph
   -> run_version_analysis_subgraph
   -> run_evidence_subgraph
   -> run_recommendation_subgraph
   -> [prepare_human_review -> interrupt -> apply_human_selection]
-  -> generate_governance_report
+  -> generate_governance_report | generate_no_data_report | generate_failure_report
+  -> execute_after_run_hooks
+  -> [generate_lifecycle_failure_report]
   -> finalize_run
 ```
 
@@ -188,8 +213,9 @@ python -m pip install -e ".[dev]"
 `examples/sample_request.json` 是完整请求信封。相对路径以 JSON 文件所在目录
 为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
 `delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
-示例中的 `prompt` 和 `hooks` 是 `0.2.2` 已实现的配置协议，目前显式关闭；本批 CLI
-仍沿用原有执行参数，后续生命周期接入批次才会消费这两个顶层对象。
+示例中的 `prompt` 和 `hooks` 是可选的请求信封对象，目前显式关闭。CLI 会单独解析
+这两个对象并传给状态工厂，不会把它们合并进业务 `request`。启用 Prompt 时，
+`source_path` 的相对路径同样以请求 JSON 所在目录为基准。
 
 ```json
 {
@@ -218,12 +244,24 @@ python -m pip install -e ".[dev]"
   },
   "hooks": {
     "enabled": false,
-    "before_run": [],
+    "before_run": [
+      "validate_request_envelope_hook",
+      "enrich_run_state_hook",
+      "initialize_tool_audit_hook"
+    ],
     "before_model": [],
     "after_model": [],
-    "after_run": [],
+    "after_run": [
+      "validate_report_result_hook",
+      "flush_tool_audit_hook",
+      "cleanup_run_resources_hook"
+    ],
     "default_failure_policy": "block",
-    "failure_policies": {}
+    "failure_policies": {
+      "initialize_tool_audit_hook": "ignore",
+      "flush_tool_audit_hook": "ignore",
+      "cleanup_run_resources_hook": "ignore"
+    }
   },
   "checkpoint": {
     "backend": "sqlite",
@@ -324,7 +362,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.2.2 默认值即为关闭；这里显式写出便于说明状态协议。
+    # 0.2.3 默认值仍为关闭；这里显式写出便于说明生命周期配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
 )
@@ -388,19 +426,21 @@ python -m compileall -q app tests
 - Prompt 路径范围、符号链接、UTF-8、大小、动态规则和 SHA-256；
 - 静态 Hook 注册、顺序执行、跳过事件、block/ignore 和状态写入白名单；
 - 请求预检、状态补充、报告检查、最小审计与只读清理内置 Hook。
+- Prompt/Hook 顶层节点顺序、旧状态关闭兼容和 CLI 请求信封字段隔离；
+- before_run 阻断、Prompt 加载失败、after_run ignore/block 及生命周期失败报告。
 
 ## Docker
 
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.2.2 -t file-manage-agent:0.2.2 .
+docker build --build-arg APP_VERSION=0.2.3 -t file-manage-agent:0.2.3 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.2.2
+docker run --rm file-manage-agent:0.2.3
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -413,7 +453,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.2.2 \
+  file-manage-agent:0.2.3 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -425,7 +465,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.2.2 \
+  file-manage-agent:0.2.3 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -435,7 +475,7 @@ docker run --rm \
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
-- Prompt 和 before/after Hook 顶层 LangGraph 节点及条件路由；
+- before_model、after_model 与真实 LLM 调用的节点接入；
 - 持久化工具调用审计；当前只记录最小 HookEvent；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

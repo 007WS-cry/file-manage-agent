@@ -3,7 +3,7 @@ from __future__ import annotations
 from app.services.reporting import build_report_state, escape_markdown_cell
 from app.state.models import FileGovernanceState
 
-"""本模块实现失败、无数据及包含版本推荐与外部证据的治理报告节点。"""
+"""本模块实现失败、无数据、证据治理及生命周期收口失败报告节点。"""
 
 
 def generate_failure_report(state: FileGovernanceState) -> dict:
@@ -260,3 +260,59 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
     markdown = "\n".join(lines)
     warnings = [error["message"] for error in errors]
     return {"report": build_report_state(state, summary, markdown, warnings)}
+
+
+def generate_lifecycle_failure_report(state: FileGovernanceState) -> dict:
+    """在 after_run Hook 阻断时保留业务结果并追加生命周期失败说明。
+
+    节点只展示 after_run 阶段新产生的阻断错误，不会覆盖已经完成的业务治理
+    内容，也不会再次执行 Hook，从而保证失败分支能够直接进入最终状态收口。
+
+    Args:
+        state: 已包含业务报告和 after_run Hook 阻断错误的顶层治理状态。
+
+    Returns:
+        追加生命周期失败章节并重新持久化后的报告状态更新。
+    """
+    lifecycle_errors = [
+        error
+        for error in state.get("errors", [])
+        if error["fatal"]
+        and error["category"] == "hook"
+        and error["stage"] in {"after_run", "after_run_hooks"}
+    ]
+    report = state.get("report", {})
+    base_markdown = str(report.get("report_markdown", "")).strip()
+    if not base_markdown:
+        base_markdown = "# 文件版本治理报告\n\n业务报告正文未生成。"
+
+    lines = [base_markdown, "", "## 生命周期收口失败", ""]
+    if lifecycle_errors:
+        lines.extend(
+            "- `"
+            f"{escape_markdown_cell(error['node_name'])}`："
+            f"{escape_markdown_cell(error['message'])}"
+            for error in lifecycle_errors
+        )
+    else:
+        lines.append("- after_run 阶段未记录结构化阻断错误，请检查运行日志。")
+    lines.extend(
+        [
+            "",
+            "业务治理结果已保留，但生命周期收口未能安全完成，运行状态标记为失败。",
+        ]
+    )
+
+    warnings = list(report.get("warnings", []))
+    for error in lifecycle_errors:
+        message = error["message"]
+        if message not in warnings:
+            warnings.append(message)
+    return {
+        "report": build_report_state(
+            state,
+            "业务治理结果已生成，但生命周期收口失败。",
+            "\n".join(lines),
+            warnings,
+        )
+    }

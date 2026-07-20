@@ -14,7 +14,7 @@ from app.graphs.file_governance import build_file_governance_graph
 from app.state.factories import create_initial_state
 from app.storage.checkpoints import open_checkpointer
 
-"""本模块提供运行真实目录和跨进程恢复人工审核的最小命令行入口。"""
+"""本模块提供带 Prompt、Hook 请求信封和人工审核恢复能力的命令行入口。"""
 
 
 # CLI 未显式配置 SQLite 数据库时使用的默认 checkpoint 路径。
@@ -172,6 +172,48 @@ def resolve_request_payload(
     return resolved_request, resolved_workspace, resolved_checkpoint
 
 
+def resolve_lifecycle_payload(
+    payload: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """解析请求信封中的可选 Prompt 和 Hook 配置。
+
+    生命周期配置与业务 ``request`` 分开返回，确保 Prompt 内容和 Hook 执行计划
+    不会被塞入 ``RequestState``。Prompt 相对路径以请求 JSON 所在目录为基准解析；
+    具体文件存在性、范围、大小和内容仍由生命周期加载节点受限校验。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+        base_directory: 请求 JSON 所在目录，用于解析 Prompt 相对路径。
+
+    Returns:
+        ``(prompt_config, hook_config)``；缺省对象以 ``None`` 表示完全关闭。
+
+    Raises:
+        ValueError: ``prompt``、``hooks`` 或 Prompt 路径字段类型不合法时抛出。
+    """
+    raw_prompt = payload.get("prompt")
+    raw_hooks = payload.get("hooks")
+    if raw_prompt is not None and not isinstance(raw_prompt, dict):
+        raise ValueError("prompt 必须是对象或 null")
+    if raw_hooks is not None and not isinstance(raw_hooks, dict):
+        raise ValueError("hooks 必须是对象或 null")
+
+    prompt_config = dict(raw_prompt) if raw_prompt is not None else None
+    hook_config = dict(raw_hooks) if raw_hooks is not None else None
+    if prompt_config is not None and "source_path" in prompt_config:
+        raw_source_path = prompt_config["source_path"]
+        if raw_source_path is not None:
+            if not isinstance(raw_source_path, str) or not raw_source_path.strip():
+                raise ValueError("prompt.source_path 必须是非空路径字符串或 null")
+            candidate = Path(raw_source_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = base_directory / candidate
+            prompt_config["source_path"] = str(candidate.resolve())
+    return prompt_config, hook_config
+
+
 def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
     """把 LangGraph Interrupt 对象转换为可输出的 JSON 值。
 
@@ -220,6 +262,10 @@ def run_command(arguments: argparse.Namespace) -> int:
         payload,
         base_directory=request_path.parent,
     )
+    prompt_config, hook_config = resolve_lifecycle_payload(
+        payload,
+        base_directory=request_path.parent,
+    )
     backend = arguments.checkpoint_backend or checkpoint.get("backend", "sqlite")
     if backend not in {"memory", "sqlite"}:
         raise ValueError("checkpoint.backend 只能是 memory 或 sqlite")
@@ -227,7 +273,12 @@ def run_command(arguments: argparse.Namespace) -> int:
     configured_path = checkpoint.get("database_path", DEFAULT_CHECKPOINT_PATH)
     database_path = arguments.checkpoint_path or Path(configured_path)
     thread_id = arguments.thread_id or uuid4().hex
-    state = create_initial_state(request, workspace)
+    state = create_initial_state(
+        request,
+        workspace,
+        prompt_config=prompt_config,
+        hook_config=hook_config,
+    )
     with open_checkpointer(
         backend,
         database_path=database_path,
