@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.2.0"
+version = "0.3.0"
 description = "基于 LangGraph 的只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,8 +26,14 @@ dev = [
     "ruff>=0.12,<1",
 ]
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.data-files]
+"resources/prompts" = ["resources/prompts/file_governance_system_v1.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

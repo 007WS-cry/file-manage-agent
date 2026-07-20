@@ -13,7 +13,7 @@ from app.state.factories import create_initial_state
 from app.storage.artifacts import save_intermediate_artifact
 from app.storage.checkpoints import open_checkpointer
 
-"""本文件集成测试真实 DOCX、顶层治理图、产物隔离、SQLite 恢复和最小 CLI。"""
+"""本文件集成测试真实 DOCX、生命周期顶层图、产物隔离、SQLite 恢复和 CLI。"""
 
 
 def create_docx(path: Path, text: str) -> None:
@@ -106,10 +106,13 @@ def write_delivery_log(
 
 
 def test_top_graph_registers_four_subgraphs_in_required_order() -> None:
-    """0.2.0 顶层图必须按版本分析、证据和推荐顺序连接业务子图。"""
+    """0.2.3 顶层图必须接入生命周期节点并保持四个业务子图顺序。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
+    assert ("initialize_run", "execute_before_run_hooks") in edges
+    assert ("validate_request", "load_system_prompt") in edges
+    assert ("load_system_prompt", "run_inventory_subgraph") in edges
     assert (
         "run_inventory_subgraph",
         "run_version_analysis_subgraph",
@@ -125,6 +128,12 @@ def test_top_graph_registers_four_subgraphs_in_required_order() -> None:
     assert (
         "run_recommendation_subgraph",
         "generate_governance_report",
+    ) in edges
+    assert ("generate_governance_report", "execute_after_run_hooks") in edges
+    assert ("execute_after_run_hooks", "finalize_run") in edges
+    assert (
+        "execute_after_run_hooks",
+        "generate_lifecycle_failure_report",
     ) in edges
 
 
@@ -313,6 +322,8 @@ def test_cli_runs_empty_directory_request(tmp_path: Path, capsys) -> None:
                     "report_root": "reports",
                 },
                 "checkpoint": {"backend": "memory"},
+                "prompt": {"enabled": False},
+                "hooks": {"enabled": False},
             },
             ensure_ascii=False,
         ),

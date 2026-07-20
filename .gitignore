@@ -47,6 +47,18 @@ Thumbs.db
 !.env.example
 *.log
 
+# 本地或私有 Prompt 可能包含临时规则，不提交到仓库
+resources/prompts/*.local.md
+resources/prompts/*.private.md
+
+# 0.3.0 受控 Prompt 必须随源码、wheel 和容器共同交付。
+!resources/prompts/file_governance_system_v1.md
+
+# Prompt 调试快照和本地生命周期 Hook 审计可能包含运行信息，不提交到仓库
+prompt_snapshot*.txt
+prompt_snapshot*.json
+hook_audit*.json
+
 # Codex 或其他本地代理生成的工作目录
 .agents/
 .codex/

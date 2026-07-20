@@ -1,10 +1,10 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.2.0
+ARG APP_VERSION=0.3.0
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="基于 LangGraph 的只读文件版本治理 Agent"
+    org.opencontainers.image.description="支持受控 Prompt 与生命周期 Hooks 的只读 LangGraph 文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -20,8 +20,11 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY configs ./configs
 COPY examples ./examples
+# 受控 Prompt 是运行时资源，必须在安装和切换非 root 用户前复制到镜像。
+COPY resources ./resources
 
-RUN python -m pip install "." \
+RUN test -f /app/resources/prompts/file_governance_system_v1.md \
+    && python -m pip install "." \
     && mkdir -p /data/input /data/artifacts/content \
         /data/artifacts/reports /data/artifacts/checkpoints /data/evidence \
     && chown -R agent:agent /data/input /data/artifacts /data/evidence

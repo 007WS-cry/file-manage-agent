@@ -14,6 +14,40 @@ governance:
   # 防止一次运行扫描过多文件并产生过大的比较矩阵。
   max_files: 500
 
+prompt:
+  # 0.2.3 已接入顶层加载节点；默认关闭时节点以兼容模式直接通过。
+  enabled: false
+
+  # System Prompt 的语义版本和仓库内受控资源路径。
+  version: file-governance-v1
+  source_path: resources/prompts/file_governance_system_v1.md
+
+  # 仅允许追加简短、结构化的运行规则，不在配置中保存业务正文。
+  dynamic_rules: []
+
+hooks:
+  # 0.2.3 已接入顶层前后置节点；默认关闭时仅记录配置中已声明 Hook 的跳过事件。
+  enabled: false
+
+  # 列表顺序就是各生命周期阶段的预期执行顺序。
+  before_run:
+    - validate_request_envelope_hook
+    - enrich_run_state_hook
+    - initialize_tool_audit_hook
+  before_model: []
+  after_model: []
+  after_run:
+    - validate_report_result_hook
+    - flush_tool_audit_hook
+    - cleanup_run_resources_hook
+
+  # 未单独声明时阻断运行；审计和清理失败只记录事件并允许治理结果保留。
+  default_failure_policy: block
+  failure_policies:
+    initialize_tool_audit_hook: ignore
+    flush_tool_audit_hook: ignore
+    cleanup_run_resources_hook: ignore
+
 grouping:
   # 文件名、内容与关键字段综合相似度达到该值时归入同一版本组。
   similarity_threshold: 0.72

@@ -75,6 +75,16 @@ docs
 site
 .mkdocs_cache
 
+# 本地或私有 Prompt 不进入镜像；受控版本 Prompt 继续保留
+resources/prompts/*.local.md
+resources/prompts/*.private.md
+!resources/prompts/file_governance_system_v1.md
+
+# Prompt 调试快照和本地生命周期 Hook 审计不进入镜像构建上下文
+prompt_snapshot*.txt
+prompt_snapshot*.json
+hook_audit*.json
+
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
 docker-compose*.yml
