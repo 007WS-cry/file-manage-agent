@@ -1,10 +1,10 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.3.1
+ARG APP_VERSION=0.3.2
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持确定性 Task System、受控 Prompt 与 Hooks 的只读 LangGraph 文件版本治理 Agent"
+    org.opencontainers.image.description="支持独立 Team Orchestration 子图、Task System 与 Hooks 的只读 LangGraph 文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

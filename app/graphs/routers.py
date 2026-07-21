@@ -8,6 +8,7 @@ from app.state.models import (
     EvidenceGraphState,
     FileGovernanceState,
     InventoryGraphState,
+    TeamOrchestrationGraphState,
     VersionAnalysisGraphState,
 )
 
@@ -244,3 +245,24 @@ def dispatch_pdf_match_jobs(state: EvidenceGraphState) -> list[Send]:
         for job in state.get("pdf_match_jobs", [])
         if job["status"] == "running"
     ]
+
+
+def route_task_dag_validation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["valid", "invalid"]:
+    """根据 Task 创建和 DAG 校验错误决定是否继续团队编排。
+
+    Args:
+        state: 已执行 Task 创建与 DAG 校验节点的团队编排状态。
+
+    Returns:
+        存在当前编排阶段致命错误时返回 ``invalid``，否则返回 ``valid``。
+    """
+    blocking_nodes = {"create_task_dag", "validate_task_dag"}
+    has_blocking_error = any(
+        error.get("stage") == "team_orchestration"
+        and error.get("node_name") in blocking_nodes
+        and error.get("fatal") is True
+        for error in state.get("errors", [])
+    )
+    return "invalid" if has_blocking_error else "valid"
