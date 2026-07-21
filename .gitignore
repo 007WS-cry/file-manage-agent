@@ -63,6 +63,7 @@ hook_audit*.json
 task_dag*.json
 task_snapshot*.json
 todo_snapshot*.json
+orchestration_snapshot*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

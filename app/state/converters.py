@@ -5,10 +5,59 @@ from app.state.models import (
     FileGovernanceState,
     InventoryGraphState,
     RecommendationGraphState,
+    TaskStatusUpdate,
+    TeamOrchestrationGraphState,
     VersionAnalysisGraphState,
 )
 
-"""本模块显式转换顶层状态与四个子图状态，并隔离各子图私有执行字段。"""
+"""本模块显式转换顶层状态与五个子图状态，并隔离各子图私有执行字段。"""
+
+
+def file_governance_to_team_orchestration_state(
+    state: FileGovernanceState,
+    *,
+    task_update: TaskStatusUpdate | None = None,
+) -> TeamOrchestrationGraphState:
+    """把顶层治理状态转换为 Team Orchestration 子图输入。
+
+    顶层运行信息、Task 和 Todo 按值复制。``task_update`` 只作为本次子图调用的
+    私有命令传入；顶层已有业务错误不进入子图，避免干扰 DAG 校验路由。
+
+    Args:
+        state: 包含运行信息和可选已有 Task、Todo 的顶层治理状态。
+        task_update: 本次需要消费的可选 Task 状态更新命令。
+
+    Returns:
+        已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
+    """
+    return TeamOrchestrationGraphState(
+        run=dict(state["run"]),
+        task_update=dict(task_update) if task_update is not None else None,
+        tasks=[dict(task) for task in state.get("tasks", [])],
+        todos=[dict(todo) for todo in state.get("todos", [])],
+        errors=[],
+    )
+
+
+def team_orchestration_state_to_file_governance_update(
+    state: TeamOrchestrationGraphState,
+) -> dict:
+    """把 Team Orchestration 结果过滤为允许写回顶层的字段。
+
+    只返回 Task、Todo 和新产生的结构化错误。子图私有的 ``task_update`` 无论是否
+    已被消费都不会进入 ``FileGovernanceState``，从状态转换边界防止命令泄漏。
+
+    Args:
+        state: 已完成执行的 Team Orchestration 子图状态。
+
+    Returns:
+        可由顶层 reducer 合并的 Task、Todo 和错误字段白名单更新。
+    """
+    return {
+        "tasks": [dict(task) for task in state.get("tasks", [])],
+        "todos": [dict(todo) for todo in state.get("todos", [])],
+        "errors": [dict(error) for error in state.get("errors", [])],
+    }
 
 
 def file_governance_to_inventory_state(

@@ -40,7 +40,7 @@ class TodoDefinition(TypedDict):
     # Todo 的固定展示顺序。
 
 
-# 固定 Task 类型到逻辑角色的映射；0.3.1 只记录职责，不调用真实 Subagent。
+# 固定 Task 类型到逻辑角色的映射；0.3.x 只记录职责，不调用真实 Subagent。
 TASK_ROLE_BY_TYPE: dict[str, str] = {
     "inventory": "content",
     "version_analysis": "version",

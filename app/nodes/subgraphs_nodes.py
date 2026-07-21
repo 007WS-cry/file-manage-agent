@@ -3,20 +3,45 @@ from __future__ import annotations
 from app.graphs.evidence import evidence_graph
 from app.graphs.inventory import inventory_graph
 from app.graphs.recommendation import recommendation_graph
+from app.graphs.team_orchestration import team_orchestration_graph
 from app.graphs.version_analysis import version_analysis_graph
 from app.state.converters import (
     evidence_state_to_file_governance_update,
     file_governance_to_evidence_state,
     file_governance_to_inventory_state,
     file_governance_to_recommendation_state,
+    file_governance_to_team_orchestration_state,
     file_governance_to_version_analysis_state,
     inventory_state_to_file_governance_update,
     recommendation_state_to_file_governance_update,
+    team_orchestration_state_to_file_governance_update,
     version_analysis_state_to_file_governance_update,
 )
-from app.state.models import FileGovernanceState
+from app.state.models import FileGovernanceState, TaskStatusUpdate
 
-"""本模块实现四个治理子图的显式状态转换和同步调用包装节点。"""
+"""本模块实现五个治理子图的显式状态转换和同步调用包装节点。"""
+
+
+def run_team_orchestration_subgraph(
+    state: FileGovernanceState,
+    *,
+    task_update: TaskStatusUpdate | None = None,
+) -> dict:
+    """显式转换状态、同步执行 Team Orchestration 子图并过滤私有命令。
+
+    Args:
+        state: 顶层文件治理状态。
+        task_update: 本次调用需要消费的可选 Task 状态更新命令。
+
+    Returns:
+        仅包含 Task、Todo 和新编排错误的顶层状态更新，不包含 task_update。
+    """
+    subgraph_input = file_governance_to_team_orchestration_state(
+        state,
+        task_update=task_update,
+    )
+    subgraph_result = team_orchestration_graph.invoke(subgraph_input)
+    return team_orchestration_state_to_file_governance_update(subgraph_result)
 
 
 def run_inventory_subgraph(state: FileGovernanceState) -> dict:

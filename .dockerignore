@@ -89,6 +89,7 @@ hook_audit*.json
 task_dag*.json
 task_snapshot*.json
 todo_snapshot*.json
+orchestration_snapshot*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
