@@ -269,6 +269,8 @@ def create_initial_state(
         prompt=create_prompt_state(prompt_config),
         hooks=create_hook_config_state(hook_config),
         hook_events=[],
+        todos=[],
+        tasks=[],
         human_review={
             "pending_group_ids": [],
             "selections": {},

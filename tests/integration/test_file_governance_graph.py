@@ -105,31 +105,51 @@ def write_delivery_log(
     )
 
 
-def test_top_graph_registers_four_subgraphs_in_required_order() -> None:
-    """0.2.3 顶层图必须接入生命周期节点并保持四个业务子图顺序。"""
+def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> None:
+    """0.3.3 顶层图必须用 Task 适配节点串联四个业务子图和报告收口。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert ("initialize_run", "execute_before_run_hooks") in edges
     assert ("validate_request", "load_system_prompt") in edges
-    assert ("load_system_prompt", "run_inventory_subgraph") in edges
+    assert ("load_system_prompt", "plan_run_tasks") in edges
+    assert ("plan_run_tasks", "run_inventory_subgraph") in edges
+    assert ("run_inventory_subgraph", "sync_inventory_task_status") in edges
     assert (
-        "run_inventory_subgraph",
+        "sync_inventory_task_status",
         "run_version_analysis_subgraph",
     ) in edges
     assert (
         "run_version_analysis_subgraph",
-        "run_evidence_subgraph",
+        "sync_version_task_status",
     ) in edges
     assert (
+        "sync_version_task_status",
         "run_evidence_subgraph",
+    ) in edges
+    assert ("run_evidence_subgraph", "sync_evidence_task_status") in edges
+    assert (
+        "sync_evidence_task_status",
         "run_recommendation_subgraph",
     ) in edges
     assert (
         "run_recommendation_subgraph",
+        "sync_recommendation_task_status",
+    ) in edges
+    assert ("apply_human_selection", "sync_human_review_task_status") in edges
+    assert (
+        "sync_human_review_task_status",
         "generate_governance_report",
     ) in edges
-    assert ("generate_governance_report", "execute_after_run_hooks") in edges
+    assert (
+        "sync_human_review_task_status",
+        "generate_failure_report",
+    ) in edges
+    assert ("generate_no_data_report", "sync_report_task_status") in edges
+    assert ("generate_governance_report", "sync_report_task_status") in edges
+    assert ("generate_failure_report", "sync_report_task_status") in edges
+    assert ("generate_failure_report", "execute_after_run_hooks") in edges
+    assert ("sync_report_task_status", "execute_after_run_hooks") in edges
     assert ("execute_after_run_hooks", "finalize_run") in edges
     assert (
         "execute_after_run_hooks",
@@ -206,6 +226,9 @@ def test_invalid_delivery_log_is_nonfatal_and_reaches_recommendation(
     assert result["run"]["status"] == "partial"
     assert len(result["decisions"]) == 1
     assert any(error["stage"] == "evidence" and not error["fatal"] for error in result["errors"])
+    task_statuses = {task["task_type"]: task["status"] for task in result["tasks"]}
+    assert task_statuses["evidence"] == "completed"
+    assert task_statuses["report"] == "completed"
     assert "## 运行警告" in result["report"]["report_markdown"]
 
 
@@ -218,8 +241,7 @@ def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> N
     create_docx(input_root / "contract_v1.docx", "Amount CNY 1000 Clause A")
     create_docx(input_root / "contract_final.docx", "Amount CNY 1200 Clause A")
     source_hashes = {
-        path: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in input_root.iterdir()
+        path: hashlib.sha256(path.read_bytes()).hexdigest() for path in input_root.iterdir()
     }
     state = create_test_state(
         input_root,
@@ -244,8 +266,14 @@ def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> N
     assert result["decisions"][0]["selected_by"] == "rule"
     assert Path(result["report"]["report_path"]).exists()
     assert Path(intermediate_path).parent == artifact_root / "intermediate"
-    assert all(Path(item["content_ref"]).parent == artifact_root / "normalized" for item in result["documents"])
-    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in source_hashes.items())
+    assert all(
+        Path(item["content_ref"]).parent == artifact_root / "normalized"
+        for item in result["documents"]
+    )
+    assert all(
+        hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        for path, digest in source_hashes.items()
+    )
     assert not any(path.suffix in {".json", ".md", ".sqlite3"} for path in input_root.rglob("*"))
 
 
@@ -278,6 +306,8 @@ def test_sqlite_checkpoint_resumes_after_reopen(tmp_path: Path) -> None:
 
     assert paused["run"]["status"] == "waiting_human"
     assert paused.get("__interrupt__")
+    paused_task_by_type = {task["task_type"]: dict(task) for task in paused["tasks"]}
+    assert len(paused_task_by_type) == 6
     group_id = paused["human_review"]["pending_group_ids"][0]
     selected_file_id = paused["version_groups"][0]["file_ids"][-1]
 
@@ -296,6 +326,13 @@ def test_sqlite_checkpoint_resumes_after_reopen(tmp_path: Path) -> None:
     assert resumed["run"]["status"] == "completed"
     assert resumed["decisions"][0]["selected_by"] == "human"
     assert resumed["decisions"][0]["recommended_file_id"] == selected_file_id
+    resumed_task_by_type = {task["task_type"]: task for task in resumed["tasks"]}
+    assert len(resumed_task_by_type) == 6
+    assert len({task["task_id"] for task in resumed["tasks"]}) == 6
+    for task_type in ("inventory", "version_analysis", "evidence", "recommendation"):
+        assert resumed_task_by_type[task_type] == paused_task_by_type[task_type]
+    assert resumed_task_by_type["human_review"]["status"] == "completed"
+    assert resumed_task_by_type["report"]["status"] == "completed"
 
 
 def test_cli_runs_empty_directory_request(tmp_path: Path, capsys) -> None:
@@ -338,4 +375,125 @@ def test_cli_runs_empty_directory_request(tmp_path: Path, capsys) -> None:
     assert captured.err == ""
     assert output["thread_id"] == "cli-empty"
     assert output["status"] == "completed"
+    assert [todo["status"] for todo in output["todos"]] == ["completed"] * 4
+    assert output["task_status_counts"] == {
+        "pending": 0,
+        "running": 0,
+        "completed": 2,
+        "failed": 0,
+        "skipped": 4,
+    }
+    assert "documents" not in output
+    assert "tasks" not in output
+    assert "report_markdown" not in output
     assert Path(output["report_path"]).exists()
+
+
+def test_cli_outputs_task_progress_during_pause_and_after_resume(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    """CLI 应在人工暂停和 SQLite 恢复后输出安全 Todo 与 Task 计数摘要。"""
+    input_root = tmp_path / "input"
+    input_root.mkdir()
+    create_docx(input_root / "proposal_v1.docx", "Amount CNY 1000")
+    create_docx(input_root / "proposal_v2.docx", "Amount CNY 1200")
+    request_path = tmp_path / "request.json"
+    checkpoint_path = tmp_path / "checkpoints" / "governance.sqlite3"
+    response_path = tmp_path / "review_response.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "request": {
+                    "root_directory": "input",
+                    "recursive": True,
+                    "allowed_extensions": [".docx"],
+                    "max_files": 20,
+                    "grouping_similarity_threshold": 0.72,
+                    "auto_select_threshold": 1.0,
+                    "use_llm_summary": False,
+                },
+                "workspace": {
+                    "input_root": "input",
+                    "input_readonly": True,
+                    "artifact_root": "artifacts",
+                    "report_root": "reports",
+                },
+                "checkpoint": {
+                    "backend": "sqlite",
+                    "database_path": "checkpoints/governance.sqlite3",
+                },
+                "prompt": {"enabled": False},
+                "hooks": {"enabled": False},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(["run", str(request_path), "--thread-id", "cli-task-progress-human"])
+    paused_capture = capsys.readouterr()
+    paused_output = json.loads(paused_capture.out)
+
+    assert exit_code == 0
+    assert paused_capture.err == ""
+    assert paused_output["status"] == "waiting_human"
+    assert [todo["status"] for todo in paused_output["todos"]] == [
+        "completed",
+        "completed",
+        "in_progress",
+        "pending",
+    ]
+    assert paused_output["task_status_counts"] == {
+        "pending": 1,
+        "running": 1,
+        "completed": 4,
+        "failed": 0,
+        "skipped": 0,
+    }
+    assert len(paused_output["interrupts"]) == 1
+    assert "documents" not in paused_output
+    assert "tasks" not in paused_output
+    review_group = paused_output["interrupts"][0]["groups"][0]
+    group_id = review_group["group_id"]
+    selected_file_id = review_group["candidates"][-1]["file_id"]
+    response_path.write_text(
+        json.dumps(
+            {
+                "selections": {group_id: selected_file_id},
+                "review_note": "CLI 0.4.0 checkpoint 恢复测试",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    resume_exit_code = main(
+        [
+            "resume",
+            str(response_path),
+            "--thread-id",
+            "cli-task-progress-human",
+            "--checkpoint-path",
+            str(checkpoint_path),
+        ]
+    )
+    resumed_capture = capsys.readouterr()
+    resumed_output = json.loads(resumed_capture.out)
+
+    assert resume_exit_code == 0
+    assert resumed_capture.err == ""
+    assert resumed_output["status"] == "completed"
+    assert [todo["status"] for todo in resumed_output["todos"]] == ["completed"] * 4
+    assert resumed_output["task_status_counts"] == {
+        "pending": 0,
+        "running": 0,
+        "completed": 6,
+        "failed": 0,
+        "skipped": 0,
+    }
+    assert resumed_output["interrupts"] == []
+    assert "documents" not in resumed_output
+    assert "tasks" not in resumed_output
+    assert "report_markdown" not in resumed_output
+    assert Path(resumed_output["report_path"]).exists()

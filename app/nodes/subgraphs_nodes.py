@@ -16,7 +16,7 @@ from app.state.converters import (
 )
 from app.state.models import FileGovernanceState
 
-"""本模块实现四个治理子图的显式状态转换和同步调用包装节点。"""
+"""本模块只定义四个业务子图的显式状态转换和同步调用包装节点。"""
 
 
 def run_inventory_subgraph(state: FileGovernanceState) -> dict:

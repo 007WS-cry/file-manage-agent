@@ -31,6 +31,39 @@ Prompt 中的命令、模板或代码，也不会访问网络。
 HookEvent 只记录简短结果，不应保存业务正文、工具输出或凭据。生产配置应审慎为
 安全校验使用 `block`，仅对允许降级的审计或清理操作使用 `ignore`。
 
+## Task 与 Todo 状态
+
+`TaskItem` 是治理执行状态的唯一事实来源，`TodoItem` 只能由完整 Task DAG 重新
+投影，不能接受用户提交的 Todo 状态覆盖。Task 的 `input_refs`、`output_refs` 和
+`error` 只允许保存状态键、产物引用及简短错误，不得保存文档正文、密钥、客户
+信息或完整工具输出。
+
+Task ID 由 `run_id` 和固定 Task 类型确定性生成。恢复 checkpoint 时必须验证重复
+ID、未知依赖和循环依赖，不能为了继续执行而静默覆盖或删除冲突 Task。本地生成的
+Task DAG、Todo 和进度调试快照默认被 `.gitignore` 与 `.dockerignore` 排除。
+
+Team Orchestration 子图不接收文档正文、工作空间路径或业务工具，只处理运行标识、
+Task、Todo 和结构化错误。单次 `task_update` 是子图私有命令，必须在使用后清空，
+并由状态转换白名单阻止其写回顶层 checkpoint。当前子图只调用确定性 Python 服务，
+不调用 LLM、Subagent、MCP 或本地文件工具。
+
+## CLI 进度输出
+
+CLI 不得直接序列化 `FileGovernanceState`。`run` 和 `resume` 的标准输出只允许包含
+运行 ID、状态、短摘要、报告路径、Todo 白名单字段、五种 Task 状态数量和经过约束
+的 interrupt 载荷。Todo 只公开 ID、标题、状态、关联 Task ID 和顺序；Task 本身的
+输入输出引用、错误详情、时间字段和角色信息均不进入 CLI JSON。
+
+完整 `documents`、文件事实、差异、版本关系、证据记录、Prompt、HookEvent、报告
+Markdown 和 checkpoint 内容不得为了展示进度而加入标准输出。即使以后扩展 Todo
+或 Task 协议，也必须显式更新 CLI 白名单和泄漏测试，不能使用 `dict(result)` 或
+其他全状态透传方式。
+
+`report_path`、Todo ID、Task ID 和人工候选文件名仍可能暴露本地目录结构或业务命名，
+调用方应把 CLI 输出视为受控运行日志，不应上传到公开 CI 日志或遥测系统。本地生成
+的 CLI 输出快照默认由 `.gitignore` 与 `.dockerignore` 排除；公开示例必须使用虚构、
+脱敏的 ID、路径和文件名。
+
 ## 不受信任文档
 
 解析来自未知来源的 Office/PDF 文件仍然存在第三方解析库漏洞风险。生产环境应：

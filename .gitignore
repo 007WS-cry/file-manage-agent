@@ -51,13 +51,23 @@ Thumbs.db
 resources/prompts/*.local.md
 resources/prompts/*.private.md
 
-# 0.3.0 受控 Prompt 必须随源码、wheel 和容器共同交付。
+# 0.3.x 受控 Prompt 必须随源码、wheel 和容器共同交付。
 !resources/prompts/file_governance_system_v1.md
 
 # Prompt 调试快照和本地生命周期 Hook 审计可能包含运行信息，不提交到仓库
 prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
+
+# 0.4.0 Task DAG、Todo 和 CLI 进度快照可能包含运行 ID 与产物引用，不提交到仓库
+task_dag*.json
+task_snapshot*.json
+task_update*.json
+task_progress*.json
+todo_snapshot*.json
+orchestration_snapshot*.json
+cli_output*.json
+cli_progress*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

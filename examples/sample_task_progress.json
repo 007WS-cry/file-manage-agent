@@ -1,0 +1,54 @@
+{
+  "thread_id": "governance-run-001",
+  "status": "completed",
+  "summary": "共完成 1 个版本组的治理建议，识别 0 条 PDF 来源和 0 条发送证据。",
+  "report_path": "/data/artifacts/reports/governance-governance-run-001.md",
+  "todos": [
+    {
+      "id": "governance-run-001:todo:prepare_file_facts",
+      "title": "准备文件事实",
+      "status": "completed",
+      "related_task_ids": [
+        "governance-run-001:inventory"
+      ],
+      "order": 1
+    },
+    {
+      "id": "governance-run-001:todo:build_governance_conclusion",
+      "title": "建立版本治理结论",
+      "status": "completed",
+      "related_task_ids": [
+        "governance-run-001:version_analysis",
+        "governance-run-001:evidence",
+        "governance-run-001:recommendation"
+      ],
+      "order": 2
+    },
+    {
+      "id": "governance-run-001:todo:complete_human_review",
+      "title": "完成人工确认",
+      "status": "completed",
+      "related_task_ids": [
+        "governance-run-001:human_review"
+      ],
+      "order": 3
+    },
+    {
+      "id": "governance-run-001:todo:produce_report",
+      "title": "输出治理报告",
+      "status": "completed",
+      "related_task_ids": [
+        "governance-run-001:report"
+      ],
+      "order": 4
+    }
+  ],
+  "task_status_counts": {
+    "pending": 0,
+    "running": 0,
+    "completed": 5,
+    "failed": 0,
+    "skipped": 1
+  },
+  "interrupts": []
+}
