@@ -1,8 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.3.2` 是从 `0.3.0` 向
-`0.4.0` 开发的第二批版本：在确定性 Task System 上新增独立 Team Orchestration
-子图、状态隔离转换器和同步包装节点。当前具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.3.3` 是从 `0.3.0` 向
+`0.4.0` 开发的第三批版本：把确定性 Team Orchestration 接入顶层治理流程，覆盖
+业务 Task 进度、人工中断恢复、失败阻断和报告收口。当前具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -31,14 +31,18 @@
 - 独立完成 Task 创建、校验、角色分配、状态更新和 Todo 投影的编排子图；
 - 消费后清空且不会泄漏回顶层状态的私有 `task_update`；
 - 不包含 LLM、Subagent 或工具节点的确定性 Team Orchestration 执行路径。
+- 顶层规划节点和六个同步适配节点，按业务实际结果推进 Task 和 Todo；
+- 无需审核时正常跳过 Human Review，interrupt 期间保持 running，恢复后完成；
+- 业务失败只标记源 Task failed，下游以带原因的 skipped 阻断且报告仍可收口；
+- 成功、无数据和业务失败报告统一完成 Report Task，计划前失败安全绕过 Task 同步。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
-一致。旧版缺少生命周期字段的 checkpoint 也会自动补齐关闭配置。`0.3.2` 已提供
-独立 Team Orchestration 子图和顶层同步包装函数，但尚未注册到顶层治理图；按阶段
-同步业务 Task 状态属于下一批。
+一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
+`0.3.3` 已将独立 Team Orchestration 子图注册到顶层阶段适配节点；当前进度完全由
+固定 Task DAG 驱动，不调用 LLM 或 Subagent。
 
 ## 安全边界
 
@@ -85,6 +89,7 @@ file-manage-agent/
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
+├── docs/version-0.3.3-task-progress.md # 0.3.3 顶层 Task 进度与人工审核
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -188,6 +193,25 @@ START
 完整的状态边界、转换规则和独立调用说明见
 [0.3.2 独立 Team Orchestration 子图](docs/version-0.3.2-team-orchestration.md)。
 
+## 0.3.3 顶层 Task 进度与人工审核
+
+本批把固定 DAG 接入真实治理运行，同时保持四个业务节点文件不变：
+
+- `plan_run_tasks()` 幂等创建六个 Task，并在请求和 Prompt 校验通过后启动 Inventory；
+- 四个业务同步节点完成当前 Task，再按实际路由启动后继 Task；非致命 Evidence
+  错误保留部分成功语义，不会错误地把 Evidence Task 标为 failed；
+- Recommendation 无需人工确认时把 Human Review 正常标记为 skipped；需要确认时，
+  Task 在 `interrupt()` 期间保持 running，恢复并应用人工选择后才完成；
+- 业务子图致命失败只把对应 Task 标为 failed，下游业务和审核 Task 使用带阻断原因
+  的 skipped，Todo 因而显示 blocked 而不会把下游误报为自身失败；
+- 无数据路径正常跳过未执行 Task，Report Task 完成后全部 Todo 都进入终态；
+- 单一失败报告节点按 DAG 是否可用分流：计划前失败直接执行 after-run hooks，业务
+  失败则先完成 Report Task，避免主图出现两个同名失败报告节点；
+- 0.3.0 参照图兼容测试继续逐项验证业务事实、治理结论、人工状态和报告正文。
+
+完整的流程、状态转换表和失败收口规则见
+[0.3.3 顶层 Task 进度与人工审核](docs/version-0.3.3-task-progress.md)。
+
 ## 图结构
 
 顶层图：
@@ -197,19 +221,23 @@ initialize_run
   -> execute_before_run_hooks
   -> validate_request
   -> load_system_prompt
-  -> run_inventory_subgraph
-  -> run_version_analysis_subgraph
-  -> run_evidence_subgraph
-  -> run_recommendation_subgraph
-  -> [prepare_human_review -> interrupt -> apply_human_selection]
+  -> plan_run_tasks
+  -> run_inventory_subgraph -> sync_inventory_task_status
+  -> run_version_analysis_subgraph -> sync_version_task_status
+  -> run_evidence_subgraph -> sync_evidence_task_status
+  -> run_recommendation_subgraph -> sync_recommendation_task_status
+  -> [prepare_human_review -> interrupt -> apply_human_selection
+      -> sync_human_review_task_status]
   -> generate_governance_report | generate_no_data_report | generate_failure_report
+  -> [具有合法 Task DAG 时 sync_report_task_status]
   -> execute_after_run_hooks
   -> [generate_lifecycle_failure_report]
   -> finalize_run
 ```
 
-`0.3.2` 尚未改变以上顶层执行顺序。Team Orchestration 子图和同步包装函数已经可
-独立调用和测试，下一批再把规划与各阶段 Task 状态同步节点注册到顶层治理图。
+`generate_failure_report` 始终只有一个节点。请求、Prompt 或 Task 规划前后没有合法
+DAG 的失败直接进入 after-run hooks；四个业务阶段失败则先由同步节点更新失败和
+阻断状态，再由报告同步节点完成 Report Task。
 
 Inventory 子图按队列逐文件解析。单文件失败只产生非致命错误并继续处理；目录
 无法访问或状态引用不一致等问题才形成致命错误。
@@ -445,7 +473,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.3.2 默认值仍为关闭；这里显式写出便于说明生命周期配置。
+    # 0.3.3 默认值仍为关闭；这里显式写出便于说明生命周期配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
 )
@@ -519,19 +547,23 @@ python -m compileall -q app tests
 - Task 更新的依赖检查、终态幂等、产物引用合并和错误收口；
 - 私有 task_update 消费、转换器白名单和顶层包装字段隔离；
 - 重复调用子图时 Task、Todo 和时间字段不重复、不重置。
+- 顶层四业务 Task 的顺序推进、无需人工审核时的正常跳过和报告完成；
+- interrupt 期间 Human Review running、恢复后的审核与报告 Task 完成；
+- 业务失败源 Task、下游阻断跳过、失败报告收口和 Todo blocked 语义；
+- 无数据报告不会遗留 pending Todo，以及 0.3.0 业务与报告内容兼容性。
 
 ## Docker
 
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.3.2 -t file-manage-agent:0.3.2 .
+docker build --build-arg APP_VERSION=0.3.3 -t file-manage-agent:0.3.3 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.3.2
+docker run --rm file-manage-agent:0.3.3
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -544,7 +576,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.3.2 \
+  file-manage-agent:0.3.3 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -556,7 +588,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.3.2 \
+  file-manage-agent:0.3.3 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -568,6 +600,5 @@ docker run --rm \
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
 - before_model、after_model 与真实 LLM 调用的节点接入；
 - 持久化工具调用审计；当前只记录最小 HookEvent；
-- Team Orchestration Task 状态与顶层业务流程的阶段同步节点；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

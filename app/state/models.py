@@ -712,7 +712,7 @@ class TaskItem(TypedDict):
     # Task 当前真实执行状态。
 
     dependencies: list[str]
-    # 当前 Task 执行前必须完成或正常跳过的其他 Task ID。
+    # 普通 Task 启动前须依赖成功终结；Report Task 可在依赖进入任一终态后收口。
 
     assigned_role: Literal[
         "coordinator",

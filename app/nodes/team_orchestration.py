@@ -100,27 +100,33 @@ def _ensure_dependencies_ready(
     task: TaskItem,
     tasks_by_id: dict[str, TaskItem],
 ) -> None:
-    """确认 Task 的所有依赖均已成功完成或正常跳过。
+    """确认 Task 的所有依赖满足当前阶段的启动条件。
+
+    普通业务 Task 只接受已完成或无错误跳过的依赖。报告 Task 是治理运行的统一
+    收口阶段，因此允许依赖以 completed、failed 或 skipped 任一终态结束，确保
+    失败报告仍可记录真实故障，而不会把报告自身误判为失败。
 
     Args:
         task: 等待进入运行或完成状态的目标 Task。
         tasks_by_id: 当前完整 Task DAG 的 ID 索引。
 
     Raises:
-        ValueError: 依赖缺失、尚未完成、失败或因错误被阻断时抛出。
+        ValueError: 依赖缺失或未达到目标 Task 所需终态时抛出。
     """
     for dependency_id in task["dependencies"]:
         dependency = tasks_by_id.get(dependency_id)
         if dependency is None:
             raise ValueError(f"Task {task['task_id']} 引用了未知依赖：{dependency_id}")
+        if task["task_type"] == "report":
+            if dependency["status"] not in {"completed", "failed", "skipped"}:
+                raise ValueError(f"Task {task['task_id']} 的依赖尚未进入终态：{dependency_id}")
+            continue
         dependency_completed = dependency["status"] == "completed"
-        dependency_skipped_normally = (
-            dependency["status"] == "skipped" and not dependency.get("error")
+        dependency_skipped_normally = dependency["status"] == "skipped" and not dependency.get(
+            "error"
         )
         if not dependency_completed and not dependency_skipped_normally:
-            raise ValueError(
-                f"Task {task['task_id']} 的依赖尚未就绪：{dependency_id}"
-            )
+            raise ValueError(f"Task {task['task_id']} 的依赖尚未就绪：{dependency_id}")
 
 
 def create_task_dag(state: TeamOrchestrationGraphState) -> dict:
@@ -178,7 +184,8 @@ def update_task_status(state: TeamOrchestrationGraphState) -> dict:
     """消费一次私有 task_update 并确定性更新目标 Task。
 
     无更新命令时节点保持 Task 不变。终态 Task 只能幂等接收相同状态，不能重新
-    打开；进入 running 或 completed 前必须确认全部依赖已完成或正常跳过。
+    打开；普通 Task 进入 running 或 completed 前必须确认依赖成功终结，Report Task
+    则可在直接依赖进入任一终态后生成成功、无数据或失败报告。
     无论更新成功还是失败，命令都会被清空，防止直接重放子图时重复应用。
 
     Args:
@@ -204,9 +211,7 @@ def update_task_status(state: TeamOrchestrationGraphState) -> dict:
         old_status = target["status"]
         allowed = ALLOWED_TASK_TRANSITIONS.get(old_status, frozenset())
         if new_status not in allowed:
-            raise ValueError(
-                f"Task {task_id} 不允许从 {old_status} 转换为 {new_status}"
-            )
+            raise ValueError(f"Task {task_id} 不允许从 {old_status} 转换为 {new_status}")
 
         if old_status in {"completed", "failed", "skipped"}:
             return {"task_update": None}
