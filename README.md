@@ -1,8 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.3.3` 是从 `0.3.0` 向
-`0.4.0` 开发的第三批版本：把确定性 Team Orchestration 接入顶层治理流程，覆盖
-业务 Task 进度、人工中断恢复、失败阻断和报告收口。当前具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.0` 已完成确定性 Team
+Orchestration 的四批交付：固定 Task DAG、独立编排子图、顶层业务与人工审核同步，
+以及不泄漏正文和大型产物的 CLI 进度摘要。当前具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -35,14 +35,16 @@
 - 无需审核时正常跳过 Human Review，interrupt 期间保持 running，恢复后完成；
 - 业务失败只标记源 Task failed，下游以带原因的 skipped 阻断且报告仍可收口；
 - 成功、无数据和业务失败报告统一完成 Report Task，计划前失败安全绕过 Task 同步。
+- `run`、`resume` 统一输出 Todo 投影和五种 Task 状态数量；
+- CLI 通过字段白名单隔离文档正文、完整报告、Task 引用和大型治理产物。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
-`0.3.3` 已将独立 Team Orchestration 子图注册到顶层阶段适配节点；当前进度完全由
-固定 Task DAG 驱动，不调用 LLM 或 Subagent。
+`0.4.0` 的执行进度完全由固定 Task DAG 驱动，不调用 LLM 或 Subagent；CLI 只展示
+用户所需的最小进度，不直接序列化顶层状态。
 
 ## 安全边界
 
@@ -65,6 +67,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
   仅允许完整替换 `run` 或 `report`。
 - Task 只保存状态键、产物引用和简短错误，不保存完整文档正文；Todo 只能由 Task
   单向生成，不能作为第二套可写执行状态。
+- CLI 只输出 Todo 白名单和 Task 状态计数，不输出 `documents`、完整 Task、报告
+  Markdown、Prompt、HookEvent 或 checkpoint 内容。
 
 ## 目录
 
@@ -79,17 +83,19 @@ file-manage-agent/
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
 │   ├── services/              # 标准化、版本图、推荐、报告和确定性 Task System
 │   ├── storage/               # 标准化/中间产物与 checkpoint
-│   ├── utils/                 # 时间、错误、路径和状态记录查询辅助函数
-│   ├── nodes/                 # 顶层、四业务子图和团队编排节点函数
+│   ├── utils/                 # 生命周期、Task 编排、时间、错误和状态辅助函数
+│   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
 │   ├── graphs/                # 四业务子图、团队编排子图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── configs/default.yaml       # 默认治理、生命周期、存储和 checkpoint 参数
 ├── examples/sample_request.json
 ├── examples/sample_delivery_log.json
+├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
 ├── docs/version-0.3.3-task-progress.md # 0.3.3 顶层 Task 进度与人工审核
+├── docs/release-0.4.0-task-orchestration.md # 0.4.0 正式发布说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -211,6 +217,25 @@ START
 
 完整的流程、状态转换表和失败收口规则见
 [0.3.3 顶层 Task 进度与人工审核](docs/version-0.3.3-task-progress.md)。
+
+## 0.4.0 CLI 展示与版本交付
+
+正式版本在不扩大治理状态暴露面的前提下补齐进度展示：
+
+- `run` 的正常、部分成功、失败、无数据和人工暂停结果，以及 `resume` 的恢复结果，
+  均输出相同结构的 `todos` 与 `task_status_counts`；
+- Todo 只公开 `id`、`title`、`status`、`related_task_ids`、`order`，并按固定顺序排列；
+- Task 只统计 pending、running、completed、failed、skipped 数量，零数量状态仍保留；
+- CLI 不输出完整 Task、文档记录、文件事实、证据集合、报告 Markdown、Prompt、
+  HookEvent 或 checkpoint；
+- 正常完成、无需审核、人工暂停恢复、无数据、业务失败、非致命警告和 checkpoint
+  重放七条路径均纳入最终验收矩阵；
+- `app/nodes` 严格只保留流程图中通过 `add_node()` 注册的节点函数，生命周期和 Task
+  编排辅助逻辑统一迁移到 `app/utils`，并由 AST 结构测试持续约束；
+- 包版本、Python `__version__` 和默认 Docker 镜像版本统一为 `0.4.0`。
+
+完整输出协议、安全边界、升级说明和测试映射见
+[0.4.0 Task Orchestration 正式发布说明](docs/release-0.4.0-task-orchestration.md)。
 
 ## 图结构
 
@@ -420,8 +445,16 @@ file-governance run examples/sample_request.json \
   --checkpoint-backend memory
 ```
 
-CLI 输出固定为 JSON 摘要。自动完成时包含报告路径；需要人工确认时，
-`status` 为 `waiting_human`，并在 `interrupts` 中列出版本组和候选文件。
+CLI 输出固定为最小 JSON 摘要。自动完成时包含报告路径；需要人工确认时，
+`status` 为 `waiting_human`，并在 `interrupts` 中列出版本组和候选文件。所有路径
+都会同时输出：
+
+- `todos`：按 `order` 排列的用户进度，只含 ID、标题、状态和关联 Task ID；
+- `task_status_counts`：固定包含 pending、running、completed、failed、skipped；
+- 原有 `thread_id`、`status`、`summary`、`report_path` 和 `interrupts`。
+
+CLI 不输出完整 Task、文档正文、报告 Markdown 或大型产物。完整脱敏示例见
+[`examples/sample_task_progress.json`](examples/sample_task_progress.json)。
 
 ## CLI 恢复人工审核
 
@@ -473,7 +506,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.3.3 默认值仍为关闭；这里显式写出便于说明生命周期配置。
+    # 0.4.0 默认值仍为关闭；这里显式写出便于说明生命周期配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
 )
@@ -551,19 +584,24 @@ python -m compileall -q app tests
 - interrupt 期间 Human Review running、恢复后的审核与报告 Task 完成；
 - 业务失败源 Task、下游阻断跳过、失败报告收口和 Todo blocked 语义；
 - 无数据报告不会遗留 pending Todo，以及 0.3.0 业务与报告内容兼容性。
+- CLI 最终、人工暂停和恢复输出中的 Todo 顺序与五状态 Task 计数；
+- CLI 字段白名单对文档正文、完整报告和 Task 产物引用的隔离；
+- nodes 目录函数与所有 LangGraph `add_node()` 注册关系的一致性；
+- 正常完成、无需审核、人工暂停恢复、无数据、业务失败、非致命警告和 checkpoint
+  重放七条 0.4.0 发布验收路径。
 
 ## Docker
 
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.3.3 -t file-manage-agent:0.3.3 .
+docker build --build-arg APP_VERSION=0.4.0 -t file-manage-agent:0.4.0 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.3.3
+docker run --rm file-manage-agent:0.4.0
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -576,7 +614,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.3.3 \
+  file-manage-agent:0.4.0 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -588,7 +626,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.3.3 \
+  file-manage-agent:0.4.0 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```

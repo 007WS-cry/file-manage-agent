@@ -18,42 +18,10 @@ from app.llm.prompt_loader import (
 )
 from app.state.factories import create_hook_config_state, create_prompt_state
 from app.state.models import FileGovernanceState
+from app.utils.lifecycle import update_run_stage, with_lifecycle_defaults
 from app.utils.runtime import create_error_record, paths_overlap, utc_now_iso
 
-"""本模块实现顶层运行初始化、前后置 Hook、Prompt 加载、请求校验和最终收口节点。"""
-
-
-def _with_lifecycle_defaults(state: FileGovernanceState) -> FileGovernanceState:
-    """为旧版 checkpoint 或手工状态补齐生命周期和 Task 字段。
-
-    Args:
-        state: 可能来自 0.2.0 checkpoint 或测试夹具的顶层治理状态。
-
-    Returns:
-        包含 Prompt、Hook、Task 和 Todo 默认字段的浅复制状态。
-    """
-    normalized_state = dict(state)
-    normalized_state.setdefault("prompt", create_prompt_state())
-    normalized_state.setdefault("hooks", create_hook_config_state())
-    normalized_state.setdefault("hook_events", [])
-    normalized_state.setdefault("tasks", [])
-    normalized_state.setdefault("todos", [])
-    return cast(FileGovernanceState, normalized_state)
-
-
-def _update_run_stage(state: FileGovernanceState, stage: str) -> dict:
-    """复制运行状态并更新当前生命周期阶段。
-
-    Args:
-        state: 包含运行状态的顶层治理状态。
-        stage: 等待记录的节点执行阶段。
-
-    Returns:
-        仅修改 ``current_stage`` 的独立运行状态字典。
-    """
-    run = dict(state.get("run", {}))
-    run["current_stage"] = stage
-    return run
+"""本模块只定义顶层运行初始化、Hook、Prompt、请求校验和最终收口图节点。"""
 
 
 def initialize_run(state: FileGovernanceState) -> dict:
@@ -109,18 +77,18 @@ def execute_before_run_hooks(state: FileGovernanceState) -> dict:
     Returns:
         Hook 受限状态更新、执行事件、运行阶段和可选阻断错误。
     """
-    normalized_state = _with_lifecycle_defaults(state)
+    normalized_state = with_lifecycle_defaults(state)
     try:
         result = run_before_run_hooks(normalized_state)
         working_state = cast(FileGovernanceState, {**normalized_state, **result})
-        result["run"] = _update_run_stage(
+        result["run"] = update_run_stage(
             working_state,
             "before_run_hooks_complete",
         )
         return result
     except Exception as exc:
         return {
-            "run": _update_run_stage(normalized_state, "before_run_hooks_failed"),
+            "run": update_run_stage(normalized_state, "before_run_hooks_failed"),
             "errors": [
                 create_error_record(
                     stage="before_run_hooks",
@@ -260,7 +228,7 @@ def load_system_prompt(state: FileGovernanceState) -> dict:
     Returns:
         已加载、已关闭或加载失败的 Prompt 状态、运行阶段和可选致命错误。
     """
-    normalized_state = _with_lifecycle_defaults(state)
+    normalized_state = with_lifecycle_defaults(state)
     prompt_state = normalized_state["prompt"]
     try:
         source_path = prompt_state.get("source_path")
@@ -283,12 +251,12 @@ def load_system_prompt(state: FileGovernanceState) -> dict:
         )
         return {
             "prompt": loaded_prompt,
-            "run": _update_run_stage(normalized_state, stage),
+            "run": update_run_stage(normalized_state, stage),
         }
     except Exception as exc:
         return {
             "prompt": record_prompt_load_error(prompt_state),
-            "run": _update_run_stage(normalized_state, "system_prompt_failed"),
+            "run": update_run_stage(normalized_state, "system_prompt_failed"),
             "errors": [
                 create_error_record(
                     stage="system_prompt",
@@ -310,18 +278,18 @@ def execute_after_run_hooks(state: FileGovernanceState) -> dict:
     Returns:
         Hook 受限状态更新、执行事件、运行阶段和可选阻断错误。
     """
-    normalized_state = _with_lifecycle_defaults(state)
+    normalized_state = with_lifecycle_defaults(state)
     try:
         result = run_after_run_hooks(normalized_state)
         working_state = cast(FileGovernanceState, {**normalized_state, **result})
-        result["run"] = _update_run_stage(
+        result["run"] = update_run_stage(
             working_state,
             "after_run_hooks_complete",
         )
         return result
     except Exception as exc:
         return {
-            "run": _update_run_stage(normalized_state, "after_run_hooks_failed"),
+            "run": update_run_stage(normalized_state, "after_run_hooks_failed"),
             "errors": [
                 create_error_record(
                     stage="after_run_hooks",

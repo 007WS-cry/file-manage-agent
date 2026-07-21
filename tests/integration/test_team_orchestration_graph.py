@@ -4,7 +4,6 @@ from copy import deepcopy
 from typing import cast
 
 from app.graphs.team_orchestration import build_team_orchestration_graph
-from app.nodes.subgraphs_nodes import run_team_orchestration_subgraph
 from app.services.task_system import build_task_id, create_task_dag
 from app.state.converters import (
     file_governance_to_team_orchestration_state,
@@ -18,6 +17,7 @@ from app.state.models import (
     TeamOrchestrationGraphState,
 )
 from app.utils.runtime import create_error_record
+from app.utils.task_tracking import run_team_orchestration_subgraph
 
 """本模块验证独立 Team Orchestration 子图、幂等重放和顶层状态隔离边界。"""
 
