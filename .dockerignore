@@ -85,6 +85,11 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
+# Task DAG、Todo 和进度调试快照可能包含运行 ID 与产物引用，只允许在运行时生成
+task_dag*.json
+task_snapshot*.json
+todo_snapshot*.json
+
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
 docker-compose*.yml

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypedDict
 
-from app.state.reducers import merge_by_id
+from app.state.reducers import merge_by_id, merge_by_task_id
 
 """本模块定义文件版本治理的顶层状态、子图状态和业务记录结构。"""
 
@@ -659,6 +659,109 @@ class HookEvent(TypedDict):
     # Hook 事件产生时间，使用带时区的 ISO 8601 格式。
 
 
+class TodoItem(TypedDict):
+    """面向用户展示的高层进度项，所有状态均由关联 Task 推导。"""
+
+    id: str
+    # Todo 的稳定唯一 ID。
+
+    title: str
+    # 面向用户展示的中文 Todo 标题。
+
+    status: Literal[
+        "pending",
+        "in_progress",
+        "completed",
+        "blocked",
+    ]
+    # Todo 当前展示状态，不允许脱离 Task 单独修改。
+
+    related_task_ids: list[str]
+    # 决定该 Todo 状态的底层 Task ID 列表。
+
+    order: int
+    # Todo 在用户界面或 CLI 输出中的固定显示顺序。
+
+
+class TaskItem(TypedDict):
+    """Task System 中的真实执行状态，是 Todo 和执行进度的唯一事实来源。"""
+
+    task_id: str
+    # Task 的稳定唯一 ID，建议使用“run_id:task_type”。
+
+    task_type: Literal[
+        "inventory",
+        "version_analysis",
+        "evidence",
+        "recommendation",
+        "human_review",
+        "report",
+    ]
+    # Task 所代表的治理阶段类型。
+
+    title: str
+    # 面向日志、Todo 和调试输出的中文任务标题。
+
+    status: Literal[
+        "pending",
+        "running",
+        "completed",
+        "failed",
+        "skipped",
+    ]
+    # Task 当前真实执行状态。
+
+    dependencies: list[str]
+    # 当前 Task 执行前必须完成或正常跳过的其他 Task ID。
+
+    assigned_role: Literal[
+        "coordinator",
+        "content",
+        "version",
+        "evidence",
+    ]
+    # 预分配的逻辑角色；0.3.1 中仍由主 Agent 实际执行。
+
+    input_refs: list[str]
+    # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
+
+    output_refs: list[str]
+    # Task 完成后产生的状态记录或产物引用。
+
+    error: str | None
+    # Task 失败或被失败依赖阻断时的简短错误；正常状态为 None。
+
+    created_at: str
+    # Task 首次创建时间，使用带时区的 ISO 8601 格式。
+
+    updated_at: str
+    # Task 最近一次真实状态变化时间，使用带时区的 ISO 8601 格式。
+
+
+class TaskStatusUpdate(TypedDict):
+    """顶层流程传给 Team Orchestration 子图的一次 Task 状态变更。"""
+
+    task_id: str
+    # 本次需要更新的目标 Task ID。
+
+    status: Literal[
+        "running",
+        "completed",
+        "failed",
+        "skipped",
+    ]
+    # 目标 Task 需要进入的新状态。
+
+    output_refs: list[str]
+    # 本阶段新产生的状态记录或产物引用。
+
+    error: str | None
+    # 失败或阻断原因；成功和正常跳过时为 None。
+
+    updated_at: str
+    # 本次状态变更发生时间，使用带时区的 ISO 8601 格式。
+
+
 class FileGovernanceState(TypedDict):
     """一次完整文件版本治理任务使用的顶层状态。
 
@@ -687,6 +790,18 @@ class FileGovernanceState(TypedDict):
         merge_by_id,
     ]
     # 按事件 ID 合并的 Hook 执行、失败和跳过记录。
+
+    todos: Annotated[
+        list[TodoItem],
+        merge_by_id,
+    ]
+    # 面向用户展示的 Todo；状态必须由 tasks 单向推导。
+
+    tasks: Annotated[
+        list[TaskItem],
+        merge_by_task_id,
+    ]
+    # 当前治理运行的真实 Task DAG 和执行状态。
 
     human_review: HumanReviewState
     # interrupt 暂停和恢复所需的人工确认数据。
@@ -726,6 +841,34 @@ class FileGovernanceState(TypedDict):
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
     # 所有阶段产生的文件级或运行级错误。
+
+
+class TeamOrchestrationGraphState(TypedDict):
+    """团队编排子图使用的 Task 规划、状态推进和 Todo 投影状态。"""
+
+    run: RunState
+    # 当前顶层治理运行信息，用于生成稳定 Task ID。
+
+    task_update: TaskStatusUpdate | None
+    # 顶层流程传入的单次状态更新；首次创建 DAG 时可以为 None。
+
+    tasks: Annotated[
+        list[TaskItem],
+        merge_by_task_id,
+    ]
+    # 按 task_id 合并的真实 Task 列表。
+
+    todos: Annotated[
+        list[TodoItem],
+        merge_by_id,
+    ]
+    # 由最新 Task 列表重新生成的用户可见 Todo。
+
+    errors: Annotated[
+        list[ErrorRecord],
+        merge_by_id,
+    ]
+    # Task DAG 校验或状态转换产生的结构化错误。
 
 
 class InventoryGraphState(TypedDict):

@@ -1,7 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.3.0` 已完成 Prompt 与 Hook
-状态协议、基础设施、顶层生命周期接入以及兼容性和分发交付，具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.3.1` 是从 `0.3.0` 向
+`0.4.0` 开发的第一批版本：保留已有 Prompt、Hook 和四个业务子图，并新增确定性
+Task System 的状态协议与纯服务层。当前具备以下能力：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -22,13 +23,18 @@
 - 静态 Hook 白名单、顺序 runner、HookEvent 以及 block/ignore 失败聚合；
 - 请求预检、运行状态补充、报告检查、最小审计入口和安全清理内置 Hook；
 - before_run、System Prompt、after_run 顶层节点、条件路由和生命周期失败报告；
-- CLI 请求信封中的可选 `prompt`、`hooks` 配置及旧 checkpoint 关闭兼容模式。
+- CLI 请求信封中的可选 `prompt`、`hooks` 配置及旧 checkpoint 关闭兼容模式；
+- `TaskItem`、`TodoItem`、`TaskStatusUpdate` 和 Team Orchestration 子图状态协议；
+- 按 `task_id` 稳定合并且不重置已有字段的 LangGraph Task reducer；
+- 六阶段固定 Task DAG、确定性 ID、拓扑排序、环检测和固定逻辑角色映射；
+- 仅以 Task 为事实来源、不会读取旧 Todo 状态的用户进度纯投影。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
-节点；`0.3.0` 默认仍将两者完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
-一致。旧版缺少生命周期字段的 checkpoint 也会自动补齐关闭配置。
+节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
+一致。旧版缺少生命周期字段的 checkpoint 也会自动补齐关闭配置。`0.3.1` 的
+Task System 目前是独立纯服务层，尚未接入顶层图执行进度；该接入属于下一批。
 
 ## 安全边界
 
@@ -49,6 +55,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
   超限内容和相对路径越界，并记录实际内容 SHA-256。
 - Hook 只能从静态白名单解析，不能通过请求动态导入模块或执行表达式；状态更新
   仅允许完整替换 `run` 或 `report`。
+- Task 只保存状态键、产物引用和简短错误，不保存完整文档正文；Todo 只能由 Task
+  单向生成，不能作为第二套可写执行状态。
 
 ## 目录
 
@@ -61,7 +69,7 @@ file-manage-agent/
 │   ├── llm/                   # System Prompt 受限加载和后续模型扩展入口
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
-│   ├── services/              # 标准化、版本图、证据匹配、推荐和报告服务
+│   ├── services/              # 标准化、版本图、推荐、报告和确定性 Task System
 │   ├── storage/               # 标准化/中间产物与 checkpoint
 │   ├── utils/                 # 时间、错误、路径和状态记录查询辅助函数
 │   ├── nodes/                 # 仅包含已注册的 LangGraph 节点函数
@@ -71,9 +79,10 @@ file-manage-agent/
 ├── examples/sample_request.json
 ├── examples/sample_delivery_log.json
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
+├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
-│   ├── unit/                  # 分组、版本图和推荐规则单元测试
+│   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
 │   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
 ├── Dockerfile
 └── pyproject.toml
@@ -130,6 +139,24 @@ file-manage-agent/
 完整的配置、路由、失败策略、兼容范围和升级步骤见
 [0.3.0 Prompt 与生命周期 Hooks](docs/version-0.3-prompt-hooks.md)。
 
+## 0.3.1 确定性 Task System 第一批
+
+本批先建立 `0.4.0` Team Orchestration 所需的状态与纯服务边界，不修改现有四个
+业务子图和顶层执行顺序：
+
+- 固定创建 Inventory、Version Analysis、Evidence、Recommendation、Human Review
+  和 Report 六个 Task，Task ID 使用 `run_id:task_type`；
+- `create_task_dag()` 支持从不完整 checkpoint 补齐缺失 Task，已有 Task 的状态、
+  输出、错误、`created_at` 和 `updated_at` 保持不变；
+- `topologically_sort_tasks()` 和 `validate_task_dag()` 拒绝重复 ID、重复依赖、
+  未知依赖、自依赖和循环依赖；
+- `assign_tasks_to_roles()` 只写固定逻辑角色，不调用 LLM 或 Subagent；
+- `update_todos_from_tasks()` 不接收旧 Todo，确保 Todo 只能由 Task 单向生成；
+- Task 和 Todo 调试快照默认不进入 Git 或 Docker 构建上下文。
+
+完整字段、幂等边界、Todo 推导规则和测试范围见
+[0.3.1 确定性 Task System](docs/version-0.3.1-task-system.md)。
+
 ## 图结构
 
 顶层图：
@@ -149,6 +176,9 @@ initialize_run
   -> [generate_lifecycle_failure_report]
   -> finalize_run
 ```
+
+`0.3.1` 尚未改变以上执行顺序。确定性 Task System 已可独立调用和测试，下一批再
+通过 Team Orchestration 子图把 Task 状态同步节点接入顶层图。
 
 Inventory 子图按队列逐文件解析。单文件失败只产生非致命错误并继续处理；目录
 无法访问或状态引用不一致等问题才形成致命错误。
@@ -384,7 +414,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.3.0 默认值仍为关闭；这里显式写出便于说明生命周期配置。
+    # 0.3.1 默认值仍为关闭；这里显式写出便于说明生命周期配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
 )
@@ -451,19 +481,22 @@ python -m compileall -q app tests
 - Prompt/Hook 顶层节点顺序、旧状态关闭兼容和 CLI 请求信封字段隔离；
 - before_run 阻断、Prompt 加载失败、after_run ignore/block 及生命周期失败报告。
 - Prompt 和 Hooks 同时关闭时与 0.2.0 参照顶层路径的业务结果兼容性。
+- 固定 Task DAG 的确定性创建、幂等补齐、角色映射和已有状态保护；
+- 重复 ID、重复依赖、未知依赖、自依赖和循环依赖拒绝；
+- Todo 对 Task 状态的确定性纯投影、正常跳过和失败阻断语义。
 
 ## Docker
 
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.3.0 -t file-manage-agent:0.3.0 .
+docker build --build-arg APP_VERSION=0.3.1 -t file-manage-agent:0.3.1 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.3.0
+docker run --rm file-manage-agent:0.3.1
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -476,7 +509,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.3.0 \
+  file-manage-agent:0.3.1 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -488,7 +521,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.3.0 \
+  file-manage-agent:0.3.1 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -500,5 +533,6 @@ docker run --rm \
 - LLM 差异摘要客户端；当前始终使用确定性摘要；
 - before_model、after_model 与真实 LLM 调用的节点接入；
 - 持久化工具调用审计；当前只记录最小 HookEvent；
+- Team Orchestration 子图及 Task 状态与顶层业务流程的同步节点；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

@@ -31,6 +31,17 @@ Prompt 中的命令、模板或代码，也不会访问网络。
 HookEvent 只记录简短结果，不应保存业务正文、工具输出或凭据。生产配置应审慎为
 安全校验使用 `block`，仅对允许降级的审计或清理操作使用 `ignore`。
 
+## Task 与 Todo 状态
+
+`TaskItem` 是治理执行状态的唯一事实来源，`TodoItem` 只能由完整 Task DAG 重新
+投影，不能接受用户提交的 Todo 状态覆盖。Task 的 `input_refs`、`output_refs` 和
+`error` 只允许保存状态键、产物引用及简短错误，不得保存文档正文、密钥、客户
+信息或完整工具输出。
+
+Task ID 由 `run_id` 和固定 Task 类型确定性生成。恢复 checkpoint 时必须验证重复
+ID、未知依赖和循环依赖，不能为了继续执行而静默覆盖或删除冲突 Task。本地生成的
+Task DAG、Todo 和进度调试快照默认被 `.gitignore` 与 `.dockerignore` 排除。
+
 ## 不受信任文档
 
 解析来自未知来源的 Office/PDF 文件仍然存在第三方解析库漏洞风险。生产环境应：
