@@ -14,13 +14,31 @@ from app.graphs.file_governance import build_file_governance_graph
 from app.state.factories import create_initial_state
 from app.storage.checkpoints import open_checkpointer
 
-"""本模块提供带 Prompt、Hook 请求信封和人工审核恢复能力的命令行入口。"""
+"""本模块提供带生命周期配置、人工恢复和最小 Task 进度摘要的命令行入口。"""
 
 
 # CLI 未显式配置 SQLite 数据库时使用的默认 checkpoint 路径。
 DEFAULT_CHECKPOINT_PATH = Path(".artifacts/checkpoints/file-governance.sqlite3")
 # CLI 允许读取的请求或人工恢复 JSON 文件最大字节数。
 MAX_CLI_JSON_BYTES = 1024 * 1024
+
+# CLI 固定统计的 Task 状态顺序，包含零数量状态以保持输出协议稳定。
+TASK_STATUS_VALUES: tuple[str, ...] = (
+    "pending",
+    "running",
+    "completed",
+    "failed",
+    "skipped",
+)
+
+# CLI 允许从 Todo 投影中公开的最小字段，不包含未来可能扩展的内部数据。
+TODO_OUTPUT_FIELDS: tuple[str, ...] = (
+    "id",
+    "title",
+    "status",
+    "related_task_ids",
+    "order",
+)
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -229,8 +247,55 @@ def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
     return values
 
 
+def serialize_todos(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """按固定字段白名单序列化用户可见 Todo 进度。
+
+    本函数不会透传 Todo 之外的顶层状态，也不会输出 Task 输入输出引用、文件记录、
+    文档正文、报告 Markdown 或其他大型产物。返回顺序优先使用 Todo 的固定 order。
+
+    Args:
+        result: 图调用返回的顶层状态对象。
+
+    Returns:
+        只包含 ID、标题、状态、关联 Task ID 和顺序的 Todo 列表。
+    """
+    todos: list[dict[str, Any]] = []
+    for item in result.get("todos", []):
+        if not isinstance(item, dict):
+            continue
+        serialized = {field_name: item.get(field_name) for field_name in TODO_OUTPUT_FIELDS}
+        related_task_ids = serialized.get("related_task_ids")
+        serialized["related_task_ids"] = (
+            list(related_task_ids) if isinstance(related_task_ids, list) else []
+        )
+        todos.append(serialized)
+    return sorted(
+        todos,
+        key=lambda item: item["order"] if isinstance(item.get("order"), int) else sys.maxsize,
+    )
+
+
+def count_task_statuses(result: dict[str, Any]) -> dict[str, int]:
+    """统计顶层状态中五种固定 Task 状态的数量。
+
+    Args:
+        result: 图调用返回的顶层状态对象。
+
+    Returns:
+        始终包含 pending、running、completed、failed、skipped 的计数字典。
+    """
+    counts = {status: 0 for status in TASK_STATUS_VALUES}
+    for task in result.get("tasks", []):
+        if not isinstance(task, dict):
+            continue
+        status = task.get("status")
+        if isinstance(status, str) and status in counts:
+            counts[status] += 1
+    return counts
+
+
 def print_result(result: dict[str, Any], *, thread_id: str) -> None:
-    """把运行结果压缩为适合 CLI 消费的 JSON 摘要并输出。
+    """把运行结果压缩为不含正文和大型产物的 CLI JSON 摘要并输出。
 
     Args:
         result: 顶层文件治理图返回的状态。
@@ -242,6 +307,8 @@ def print_result(result: dict[str, Any], *, thread_id: str) -> None:
         "status": result.get("run", {}).get("status", "unknown"),
         "summary": report.get("summary", ""),
         "report_path": report.get("report_path"),
+        "todos": serialize_todos(result),
+        "task_status_counts": count_task_statuses(result),
         "interrupts": serialize_interrupts(result),
     }
     print(json.dumps(output, ensure_ascii=False, indent=2))
