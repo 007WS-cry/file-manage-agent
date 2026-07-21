@@ -10,7 +10,9 @@ from app.graphs.routers import (
     route_after_run_hooks_result,
     route_before_run_hooks_result,
     route_evidence_result,
+    route_failure_report_task_sync,
     route_system_prompt_result,
+    route_team_orchestration_result,
     route_version_analysis_result,
 )
 from app.nodes.lifecycle import (
@@ -38,17 +40,26 @@ from app.nodes.subgraphs_nodes import (
     run_recommendation_subgraph,
     run_version_analysis_subgraph,
 )
+from app.nodes.task_tracking import (
+    plan_run_tasks,
+    sync_evidence_task_status,
+    sync_human_review_task_status,
+    sync_inventory_task_status,
+    sync_recommendation_task_status,
+    sync_report_task_status,
+    sync_version_task_status,
+)
 from app.state.models import FileGovernanceState
 from app.storage.checkpoints import create_memory_checkpointer
 
-"""本模块构建接入生命周期节点、四个业务子图和人工暂停恢复的顶层治理图。"""
+"""本模块构建接入 Task 进度、生命周期、四个业务子图和人工暂停恢复的顶层治理图。"""
 
 
 def build_file_governance_graph(
     *,
     checkpointer: BaseCheckpointSaver | None = None,
 ):
-    """构建支持 Prompt、生命周期 Hook 和人工暂停恢复的顶层文件治理图。
+    """构建支持确定性 Task、Prompt、生命周期 Hook 和人工恢复的顶层治理图。
 
     Args:
         checkpointer: 可选 LangGraph Checkpointer。未提供时使用进程内
@@ -63,16 +74,23 @@ def build_file_governance_graph(
     builder.add_node("execute_before_run_hooks", execute_before_run_hooks)
     builder.add_node("validate_request", validate_request)
     builder.add_node("load_system_prompt", load_system_prompt)
+    builder.add_node("plan_run_tasks", plan_run_tasks)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
+    builder.add_node("sync_inventory_task_status", sync_inventory_task_status)
     builder.add_node("run_version_analysis_subgraph", run_version_analysis_subgraph)
+    builder.add_node("sync_version_task_status", sync_version_task_status)
     builder.add_node("run_evidence_subgraph", run_evidence_subgraph)
+    builder.add_node("sync_evidence_task_status", sync_evidence_task_status)
     builder.add_node("run_recommendation_subgraph", run_recommendation_subgraph)
+    builder.add_node("sync_recommendation_task_status", sync_recommendation_task_status)
     builder.add_node("prepare_human_review", prepare_human_review)
     builder.add_node("request_human_review", request_human_review)
     builder.add_node("apply_human_selection", apply_human_selection)
+    builder.add_node("sync_human_review_task_status", sync_human_review_task_status)
     builder.add_node("generate_failure_report", generate_failure_report)
     builder.add_node("generate_no_data_report", generate_no_data_report)
     builder.add_node("generate_governance_report", generate_governance_report)
+    builder.add_node("sync_report_task_status", sync_report_task_status)
     builder.add_node("execute_after_run_hooks", execute_after_run_hooks)
     builder.add_node("generate_lifecycle_failure_report", generate_lifecycle_failure_report)
     builder.add_node("finalize_run", finalize_run)
@@ -96,12 +114,21 @@ def build_file_governance_graph(
         "load_system_prompt",
         route_system_prompt_result,
         {
-            "continue": "run_inventory_subgraph",
+            "continue": "plan_run_tasks",
             "failure": "generate_failure_report",
         },
     )
     builder.add_conditional_edges(
-        "run_inventory_subgraph",
+        "plan_run_tasks",
+        route_team_orchestration_result,
+        {
+            "success": "run_inventory_subgraph",
+            "failure": "generate_failure_report",
+        },
+    )
+    builder.add_edge("run_inventory_subgraph", "sync_inventory_task_status")
+    builder.add_conditional_edges(
+        "sync_inventory_task_status",
         has_analyzable_documents,
         {
             "analyzable": "run_version_analysis_subgraph",
@@ -109,18 +136,21 @@ def build_file_governance_graph(
             "failure": "generate_failure_report",
         },
     )
+    builder.add_edge("run_version_analysis_subgraph", "sync_version_task_status")
     builder.add_conditional_edges(
-        "run_version_analysis_subgraph",
+        "sync_version_task_status",
         route_version_analysis_result,
         {"success": "run_evidence_subgraph", "failure": "generate_failure_report"},
     )
+    builder.add_edge("run_evidence_subgraph", "sync_evidence_task_status")
     builder.add_conditional_edges(
-        "run_evidence_subgraph",
+        "sync_evidence_task_status",
         route_evidence_result,
         {"success": "run_recommendation_subgraph", "failure": "generate_failure_report"},
     )
+    builder.add_edge("run_recommendation_subgraph", "sync_recommendation_task_status")
     builder.add_conditional_edges(
-        "run_recommendation_subgraph",
+        "sync_recommendation_task_status",
         has_pending_human_review,
         {
             "review": "prepare_human_review",
@@ -130,10 +160,26 @@ def build_file_governance_graph(
     )
     builder.add_edge("prepare_human_review", "request_human_review")
     builder.add_edge("request_human_review", "apply_human_selection")
-    builder.add_edge("apply_human_selection", "generate_governance_report")
-    builder.add_edge("generate_failure_report", "execute_after_run_hooks")
-    builder.add_edge("generate_no_data_report", "execute_after_run_hooks")
-    builder.add_edge("generate_governance_report", "execute_after_run_hooks")
+    builder.add_edge("apply_human_selection", "sync_human_review_task_status")
+    builder.add_conditional_edges(
+        "sync_human_review_task_status",
+        route_team_orchestration_result,
+        {
+            "success": "generate_governance_report",
+            "failure": "generate_failure_report",
+        },
+    )
+    builder.add_conditional_edges(
+        "generate_failure_report",
+        route_failure_report_task_sync,
+        {
+            "sync": "sync_report_task_status",
+            "skip": "execute_after_run_hooks",
+        },
+    )
+    builder.add_edge("generate_no_data_report", "sync_report_task_status")
+    builder.add_edge("generate_governance_report", "sync_report_task_status")
+    builder.add_edge("sync_report_task_status", "execute_after_run_hooks")
     builder.add_conditional_edges(
         "execute_after_run_hooks",
         route_after_run_hooks_result,

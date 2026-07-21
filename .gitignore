@@ -59,9 +59,11 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# Task DAG、Todo 和进度调试快照可能包含运行 ID 与产物引用，不提交到仓库
+# 0.3.3 Task DAG、Todo 和顶层进度快照可能包含运行 ID 与产物引用，不提交到仓库
 task_dag*.json
 task_snapshot*.json
+task_update*.json
+task_progress*.json
 todo_snapshot*.json
 orchestration_snapshot*.json
 

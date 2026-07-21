@@ -124,6 +124,8 @@ def test_missing_lifecycle_fields_use_fully_disabled_compatibility_defaults(
     state.pop("prompt")
     state.pop("hooks")
     state.pop("hook_events")
+    state.pop("tasks")
+    state.pop("todos")
 
     result = invoke_lifecycle_graph(state, thread_id="legacy-state-defaults")
 
@@ -131,10 +133,9 @@ def test_missing_lifecycle_fields_use_fully_disabled_compatibility_defaults(
     assert result["prompt"]["status"] == "disabled"
     assert result["hooks"]["enabled"] is False
     assert result["hook_events"] == []
-    assert not any(
-        error["category"] in {"prompt", "hook"}
-        for error in result["errors"]
-    )
+    assert len(result["tasks"]) == 6
+    assert all(todo["status"] == "completed" for todo in result["todos"])
+    assert not any(error["category"] in {"prompt", "hook"} for error in result["errors"])
 
 
 def test_prompt_load_failure_stops_before_inventory_and_generates_report(
@@ -154,6 +155,8 @@ def test_prompt_load_failure_stops_before_inventory_and_generates_report(
     assert result["run"]["status"] == "failed"
     assert result["prompt"]["status"] == "failed"
     assert result["files"] == []
+    assert result["tasks"] == []
+    assert result["todos"] == []
     assert any(error["category"] == "prompt" and error["fatal"] for error in result["errors"])
     assert result["report"]["summary"] == "文件版本治理未能安全完成。"
 
@@ -175,11 +178,12 @@ def test_blocking_before_run_hook_stops_business_graph(
 
     assert result["run"]["status"] == "failed"
     assert result["files"] == []
+    assert result["tasks"] == []
+    assert result["todos"] == []
     assert result["hook_events"][0]["status"] == "failed"
     assert result["hook_events"][0]["failure_policy"] == "block"
     assert any(
-        error["category"] == "hook" and error["stage"] == "before_run"
-        for error in result["errors"]
+        error["category"] == "hook" and error["stage"] == "before_run" for error in result["errors"]
     )
 
 
@@ -223,11 +227,12 @@ def test_blocking_after_run_hook_generates_lifecycle_failure_report(
 
     assert result["run"]["status"] == "failed"
     assert result["report"]["summary"] == "业务治理结果已生成，但生命周期收口失败。"
+    assert result["tasks"][-1]["task_type"] == "report"
+    assert result["tasks"][-1]["status"] == "completed"
     assert "未发现可用于版本分析的标准化文档" in result["report"]["report_markdown"]
     assert "## 生命周期收口失败" in result["report"]["report_markdown"]
     assert any(
-        error["category"] == "hook" and error["stage"] == "after_run"
-        for error in result["errors"]
+        error["category"] == "hook" and error["stage"] == "after_run" for error in result["errors"]
     )
 
 

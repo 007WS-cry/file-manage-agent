@@ -105,31 +105,51 @@ def write_delivery_log(
     )
 
 
-def test_top_graph_registers_four_subgraphs_in_required_order() -> None:
-    """0.2.3 顶层图必须接入生命周期节点并保持四个业务子图顺序。"""
+def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> None:
+    """0.3.3 顶层图必须用 Task 适配节点串联四个业务子图和报告收口。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert ("initialize_run", "execute_before_run_hooks") in edges
     assert ("validate_request", "load_system_prompt") in edges
-    assert ("load_system_prompt", "run_inventory_subgraph") in edges
+    assert ("load_system_prompt", "plan_run_tasks") in edges
+    assert ("plan_run_tasks", "run_inventory_subgraph") in edges
+    assert ("run_inventory_subgraph", "sync_inventory_task_status") in edges
     assert (
-        "run_inventory_subgraph",
+        "sync_inventory_task_status",
         "run_version_analysis_subgraph",
     ) in edges
     assert (
         "run_version_analysis_subgraph",
-        "run_evidence_subgraph",
+        "sync_version_task_status",
     ) in edges
     assert (
+        "sync_version_task_status",
         "run_evidence_subgraph",
+    ) in edges
+    assert ("run_evidence_subgraph", "sync_evidence_task_status") in edges
+    assert (
+        "sync_evidence_task_status",
         "run_recommendation_subgraph",
     ) in edges
     assert (
         "run_recommendation_subgraph",
+        "sync_recommendation_task_status",
+    ) in edges
+    assert ("apply_human_selection", "sync_human_review_task_status") in edges
+    assert (
+        "sync_human_review_task_status",
         "generate_governance_report",
     ) in edges
-    assert ("generate_governance_report", "execute_after_run_hooks") in edges
+    assert (
+        "sync_human_review_task_status",
+        "generate_failure_report",
+    ) in edges
+    assert ("generate_no_data_report", "sync_report_task_status") in edges
+    assert ("generate_governance_report", "sync_report_task_status") in edges
+    assert ("generate_failure_report", "sync_report_task_status") in edges
+    assert ("generate_failure_report", "execute_after_run_hooks") in edges
+    assert ("sync_report_task_status", "execute_after_run_hooks") in edges
     assert ("execute_after_run_hooks", "finalize_run") in edges
     assert (
         "execute_after_run_hooks",
@@ -218,8 +238,7 @@ def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> N
     create_docx(input_root / "contract_v1.docx", "Amount CNY 1000 Clause A")
     create_docx(input_root / "contract_final.docx", "Amount CNY 1200 Clause A")
     source_hashes = {
-        path: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in input_root.iterdir()
+        path: hashlib.sha256(path.read_bytes()).hexdigest() for path in input_root.iterdir()
     }
     state = create_test_state(
         input_root,
@@ -244,8 +263,14 @@ def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> N
     assert result["decisions"][0]["selected_by"] == "rule"
     assert Path(result["report"]["report_path"]).exists()
     assert Path(intermediate_path).parent == artifact_root / "intermediate"
-    assert all(Path(item["content_ref"]).parent == artifact_root / "normalized" for item in result["documents"])
-    assert all(hashlib.sha256(path.read_bytes()).hexdigest() == digest for path, digest in source_hashes.items())
+    assert all(
+        Path(item["content_ref"]).parent == artifact_root / "normalized"
+        for item in result["documents"]
+    )
+    assert all(
+        hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        for path, digest in source_hashes.items()
+    )
     assert not any(path.suffix in {".json", ".md", ".sqlite3"} for path in input_root.rglob("*"))
 
 

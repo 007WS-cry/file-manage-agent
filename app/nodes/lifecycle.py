@@ -24,18 +24,20 @@ from app.utils.runtime import create_error_record, paths_overlap, utc_now_iso
 
 
 def _with_lifecycle_defaults(state: FileGovernanceState) -> FileGovernanceState:
-    """为旧版 checkpoint 或手工状态补齐完全关闭的生命周期字段。
+    """为旧版 checkpoint 或手工状态补齐生命周期和 Task 字段。
 
     Args:
         state: 可能来自 0.2.0 checkpoint 或测试夹具的顶层治理状态。
 
     Returns:
-        包含 Prompt、Hook 配置和 Hook 事件列表的浅复制状态。
+        包含 Prompt、Hook、Task 和 Todo 默认字段的浅复制状态。
     """
     normalized_state = dict(state)
     normalized_state.setdefault("prompt", create_prompt_state())
     normalized_state.setdefault("hooks", create_hook_config_state())
     normalized_state.setdefault("hook_events", [])
+    normalized_state.setdefault("tasks", [])
+    normalized_state.setdefault("todos", [])
     return cast(FileGovernanceState, normalized_state)
 
 
@@ -61,7 +63,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
         state: 调用方提交的顶层状态；推荐由 ``create_initial_state`` 创建。
 
     Returns:
-        进入 ``running`` 状态的运行信息及缺省证据、人工审核和报告字段。
+        进入 ``running`` 状态的运行信息及缺省 Task、证据、人工审核和报告字段。
     """
     previous_run = state.get("run", {})
     run_id = previous_run.get("run_id") or uuid4().hex
@@ -93,6 +95,8 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "prompt": state.get("prompt", create_prompt_state()),
         "hooks": state.get("hooks", create_hook_config_state()),
         "hook_events": state.get("hook_events", []),
+        "tasks": state.get("tasks", []),
+        "todos": state.get("todos", []),
     }
 
 

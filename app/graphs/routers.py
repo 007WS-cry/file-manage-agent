@@ -4,6 +4,7 @@ from typing import Literal
 
 from langgraph.types import Send
 
+from app.services.task_system import TASK_DAG_TEMPLATE, build_task_id, validate_task_dag
 from app.state.models import (
     EvidenceGraphState,
     FileGovernanceState,
@@ -50,8 +51,7 @@ def route_system_prompt_result(
     if prompt_status not in {"loaded", "disabled"}:
         return "failure"
     has_prompt_error = any(
-        error["fatal"] and error["category"] == "prompt"
-        for error in state.get("errors", [])
+        error["fatal"] and error["category"] == "prompt" for error in state.get("errors", [])
     )
     return "failure" if has_prompt_error else "continue"
 
@@ -77,8 +77,7 @@ def has_analyzable_documents(
         if file_record["parse_status"] == "parsed"
     }
     has_document = any(
-        document["file_id"] in parsed_file_ids
-        for document in state.get("documents", [])
+        document["file_id"] in parsed_file_ids for document in state.get("documents", [])
     )
     return "analyzable" if has_document else "empty"
 
@@ -127,6 +126,59 @@ def route_evidence_result(state: FileGovernanceState) -> Literal["success", "fai
         没有致命错误时返回 ``success``，否则返回 ``failure``。
     """
     return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
+
+
+def route_team_orchestration_result(state: FileGovernanceState) -> Literal["success", "failure"]:
+    """根据 Task 规划或状态同步结果决定继续业务流程还是生成失败报告。
+
+    Args:
+        state: 已执行顶层 Task 适配节点的文件治理状态。
+
+    Returns:
+        存在 Team Orchestration 致命错误时返回 ``failure``，否则返回 ``success``。
+    """
+    has_orchestration_error = any(
+        error.get("stage") == "team_orchestration" and error.get("fatal") is True
+        for error in state.get("errors", [])
+    )
+    return "failure" if has_orchestration_error else "success"
+
+
+def route_failure_report_task_sync(
+    state: FileGovernanceState,
+) -> Literal["sync", "skip"]:
+    """判断失败报告是否具有可安全收口的 Task DAG。
+
+    请求校验、Prompt 或 Task 规划阶段可能在固定 DAG 创建前失败，此时失败报告
+    直接进入 after-run hooks。业务子图失败时 DAG 已合法创建，报告则继续同步
+    Report Task，避免在主图中复制 ``generate_failure_report`` 节点。
+
+    Args:
+        state: 已生成失败报告的顶层文件治理状态。
+
+    Returns:
+        DAG 完整且没有编排致命错误时返回 ``sync``，否则返回 ``skip``。
+    """
+    if any(
+        error.get("stage") == "team_orchestration" and error.get("fatal") is True
+        for error in state.get("errors", [])
+    ):
+        return "skip"
+    try:
+        tasks = state.get("tasks", [])
+        validate_task_dag(tasks)
+        run_id = state["run"]["run_id"]
+        expected_ids = {
+            build_task_id(run_id, definition["task_type"]) for definition in TASK_DAG_TEMPLATE
+        }
+        actual_ids = {task["task_id"] for task in tasks}
+        if len(tasks) != len(expected_ids) or actual_ids != expected_ids:
+            return "skip"
+        if any(task["task_id"] != build_task_id(run_id, task["task_type"]) for task in tasks):
+            return "skip"
+    except (KeyError, TypeError, ValueError):
+        return "skip"
+    return "sync"
 
 
 def has_pending_parse_jobs(state: InventoryGraphState) -> Literal["pending", "done"]:
@@ -178,8 +230,7 @@ def parse_succeeded(state: InventoryGraphState) -> Literal["success", "failure"]
     """根据当前标准化文档和错误字段判断文件解析是否成功。"""
     return (
         "success"
-        if state.get("current_document") is not None
-        and state.get("current_parse_error") is None
+        if state.get("current_document") is not None and state.get("current_parse_error") is None
         else "failure"
     )
 
@@ -197,8 +248,7 @@ def comparison_succeeded(
     """根据当前差异草稿和错误字段判断文件对比较是否成功。"""
     return (
         "success"
-        if state.get("current_diff") is not None
-        and state.get("current_comparison_error") is None
+        if state.get("current_diff") is not None and state.get("current_comparison_error") is None
         else "failure"
     )
 
@@ -214,9 +264,7 @@ def has_pdf_match_jobs(
     Returns:
         存在待处理任务时返回 ``pdf_match``，否则返回 ``done``。
     """
-    has_jobs = any(
-        job["status"] == "pending" for job in state.get("pdf_match_jobs", [])
-    )
+    has_jobs = any(job["status"] == "pending" for job in state.get("pdf_match_jobs", []))
     return "pdf_match" if has_jobs else "done"
 
 
