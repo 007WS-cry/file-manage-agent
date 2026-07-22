@@ -5,11 +5,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
+from app.llm.config import create_llm_config_state
 from app.state.models import (
+    AgentMemberState,
     FileGovernanceState,
     HookConfigState,
     PromptState,
     RequestState,
+    TeamState,
     WorkspaceState,
 )
 
@@ -39,6 +42,12 @@ def _resolve_default_prompt_source_path() -> str:
 
 # 默认 System Prompt 资源路径，兼容源码、容器和 wheel 安装布局。
 DEFAULT_PROMPT_SOURCE_PATH = _resolve_default_prompt_source_path()
+
+# 0.4.1 固定 Agent Team 使用的 Team Protocol 版本。
+DEFAULT_TEAM_PROTOCOL_VERSION = "team-protocol-v1"
+
+# 0.4.1 固定团队允许的最大 Subagent 并发数。
+DEFAULT_MAX_PARALLEL_AGENTS = 3
 
 
 def _normalize_string_list(value: object, *, field_name: str) -> list[str]:
@@ -235,12 +244,64 @@ def create_hook_config_state(
     )
 
 
+def create_team_state() -> TeamState:
+    """创建协调者和三个固定角色组成的初始 Agent Team 状态。
+
+    0.4.1 只建立稳定成员、职责和协议状态，不在状态工厂中创建模型 Client、执行
+    Subagent 或分配业务 Task，因而不会产生网络、文件或其他外部副作用。
+
+    Returns:
+        四个成员均为空闲、没有当前 Task 且 Skills 为空的固定 Team 状态。
+    """
+    members = [
+        AgentMemberState(
+            id="coordinator-agent",
+            role="coordinator",
+            status="idle",
+            current_task_id=None,
+            tool_names=[],
+            skill_ids=[],
+        ),
+        AgentMemberState(
+            id="content-subagent",
+            role="content",
+            status="idle",
+            current_task_id=None,
+            tool_names=[],
+            skill_ids=[],
+        ),
+        AgentMemberState(
+            id="version-subagent",
+            role="version",
+            status="idle",
+            current_task_id=None,
+            tool_names=[],
+            skill_ids=[],
+        ),
+        AgentMemberState(
+            id="evidence-subagent",
+            role="evidence",
+            status="idle",
+            current_task_id=None,
+            tool_names=[],
+            skill_ids=[],
+        ),
+    ]
+    return TeamState(
+        coordinator_id="coordinator-agent",
+        members=members,
+        protocol_version=DEFAULT_TEAM_PROTOCOL_VERSION,
+        max_parallel_agents=DEFAULT_MAX_PARALLEL_AGENTS,
+    )
+
+
 def create_initial_state(
     request: RequestState,
     workspace: WorkspaceState,
     *,
     prompt_config: Mapping[str, object] | None = None,
     hook_config: Mapping[str, object] | None = None,
+    llm_config: Mapping[str, object] | None = None,
 ) -> FileGovernanceState:
     """创建可直接传给顶层 LangGraph 的完整初始状态。
 
@@ -249,6 +310,7 @@ def create_initial_state(
         workspace: 只读输入根目录以及可写产物、报告目录。
         prompt_config: 可选 System Prompt 配置；省略时保持完全关闭。
         hook_config: 可选生命周期 Hook 配置；省略时保持完全关闭。
+        llm_config: 可选 LLM 配置；省略时关闭真实模型并使用安全 Mock 配置。
 
     Returns:
         所有 reducer 列表、生命周期配置、证据和人工审核字段均已初始化的状态。
@@ -268,9 +330,13 @@ def create_initial_state(
         workspace=dict(workspace),
         prompt=create_prompt_state(prompt_config),
         hooks=create_hook_config_state(hook_config),
+        llm=create_llm_config_state(llm_config),
+        team=create_team_state(),
         hook_events=[],
         todos=[],
         tasks=[],
+        team_messages=[],
+        llm_calls=[],
         human_review={
             "pending_group_ids": [],
             "selections": {},

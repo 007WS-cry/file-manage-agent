@@ -1,22 +1,49 @@
 from __future__ import annotations
 
 from app.state.models import (
+    ContentSubagentInput,
     EvidenceGraphState,
+    EvidenceSubagentInput,
     FileGovernanceState,
     InventoryGraphState,
     RecommendationGraphState,
     TaskStatusUpdate,
     TeamOrchestrationGraphState,
+    TeamState,
     VersionAnalysisGraphState,
+    VersionSubagentInput,
 )
 
 """本模块显式转换顶层状态与五个子图状态，并隔离各子图私有执行字段。"""
+
+
+def _copy_team_state(team: TeamState) -> TeamState:
+    """复制 Team 状态及其成员列表，避免子图修改顶层可变对象。
+
+    Args:
+        team: 顶层状态中的固定 Agent Team。
+
+    Returns:
+        成员字典和列表均与输入解除可变引用关系的 Team 状态。
+    """
+    return TeamState(
+        coordinator_id=team["coordinator_id"],
+        members=[dict(member) for member in team.get("members", [])],
+        protocol_version=team["protocol_version"],
+        max_parallel_agents=team["max_parallel_agents"],
+    )
 
 
 def file_governance_to_team_orchestration_state(
     state: FileGovernanceState,
     *,
     task_update: TaskStatusUpdate | None = None,
+    dispatch_request: (
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | None
+    ) = None,
 ) -> TeamOrchestrationGraphState:
     """把顶层治理状态转换为 Team Orchestration 子图输入。
 
@@ -26,15 +53,26 @@ def file_governance_to_team_orchestration_state(
     Args:
         state: 包含运行信息和可选已有 Task、Todo 的顶层治理状态。
         task_update: 本次需要消费的可选 Task 状态更新命令。
+        dispatch_request: 后续批次使用的可选固定 Subagent 分派请求。
 
     Returns:
         已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
     """
     return TeamOrchestrationGraphState(
         run=dict(state["run"]),
+        llm=dict(state["llm"]),
+        team=_copy_team_state(state["team"]),
         task_update=dict(task_update) if task_update is not None else None,
+        dispatch_request=(
+            dict(dispatch_request) if dispatch_request is not None else None
+        ),
+        dispatch_result=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
+        team_messages=[
+            dict(message) for message in state.get("team_messages", [])
+        ],
+        llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=[],
     )
 
@@ -44,8 +82,8 @@ def team_orchestration_state_to_file_governance_update(
 ) -> dict:
     """把 Team Orchestration 结果过滤为允许写回顶层的字段。
 
-    只返回 Task、Todo 和新产生的结构化错误。子图私有的 ``task_update`` 无论是否
-    已被消费都不会进入 ``FileGovernanceState``，从状态转换边界防止命令泄漏。
+    0.4.1 尚未注册 Subagent 节点，因此继续只返回 Task、Todo 和新产生的结构化
+    错误。``task_update``、分派字段及只读传入的 Team/LLM 状态均不会重复写回顶层。
 
     Args:
         state: 已完成执行的 Team Orchestration 子图状态。
@@ -127,6 +165,8 @@ def file_governance_to_version_analysis_state(
     """
     return VersionAnalysisGraphState(
         request=dict(state["request"]),
+        llm=dict(state["llm"]),
+        team=_copy_team_state(state["team"]),
         files=list(state.get("files", [])),
         documents=list(state.get("documents", [])),
         version_groups=list(state.get("version_groups", [])),
@@ -145,6 +185,10 @@ def file_governance_to_version_analysis_state(
             "selections": {},
             "review_note": state["human_review"].get("review_note"),
         },
+        team_messages=[
+            dict(message) for message in state.get("team_messages", [])
+        ],
+        llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=list(state.get("errors", [])),
     )
 

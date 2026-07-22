@@ -79,3 +79,44 @@ def merge_by_task_id(
         merged[task_id] = {**old_item, **item}
 
     return list(merged.values())
+
+
+def merge_by_message_id(
+    old_items: list[dict[str, Any]] | None,
+    new_items: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """按照 ``message_id`` 合并 Team Message 并保持首次出现顺序。
+
+    该 reducer 只执行确定性字段合并，不负责验证 Team Protocol、推进消息状态
+    或创建新消息。协议校验由后续 Agent Team 批次的独立模块负责。
+
+    Args:
+        old_items: 状态中已有的 Team Message；首次调用时可以为 ``None``。
+        new_items: 节点新返回的完整或局部消息；没有更新时可以为 ``None``。
+
+    Returns:
+        按消息首次出现顺序排列的合并结果。相同 ``message_id`` 的新字段覆盖旧字段。
+
+    Raises:
+        ValueError: 任意消息缺少非空字符串形式的 ``message_id`` 时抛出。
+    """
+    merged: dict[str, dict[str, Any]] = {}
+
+    for item in old_items or []:
+        message_id = item.get("message_id")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError(
+                "参与 merge_by_message_id 的每条消息都必须包含非空 message_id"
+            )
+        merged[message_id] = dict(item)
+
+    for item in new_items or []:
+        message_id = item.get("message_id")
+        if not isinstance(message_id, str) or not message_id:
+            raise ValueError(
+                "参与 merge_by_message_id 的每条消息都必须包含非空 message_id"
+            )
+        old_item = merged.get(message_id, {})
+        merged[message_id] = {**old_item, **item}
+
+    return list(merged.values())

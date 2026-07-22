@@ -48,6 +48,31 @@ hooks:
     flush_tool_audit_hook: ignore
     cleanup_run_resources_hook: ignore
 
+llm:
+  # 0.4.1 默认关闭真实模型；关闭时统一 Client 强制使用 Mock Provider，且不访问网络。
+  enabled: false
+
+  # 首批支持 mock 和 openai；启用真实模型时改为 openai。
+  provider: mock
+
+  # 模型名称只保存在配置和审计中，不在业务节点中硬编码。
+  model: mock-structured-v1
+
+  # Mock Provider 不使用密钥；OpenAI Provider 应设置为 OPENAI_API_KEY 等环境变量名。
+  api_key_env: null
+
+  # 文件版本治理摘要默认使用低温度，减少同一输入下的输出漂移。
+  temperature: 0.0
+
+  # 单次 Pydantic 结构化响应允许使用的最大输出 Token 数。
+  max_output_tokens: 800
+
+  # 单次 Provider 调用超时时间，单位为秒。
+  timeout_seconds: 30.0
+
+  # 模型失败时允许后续 Agent 批次使用确定性逻辑继续。
+  fallback_enabled: true
+
 grouping:
   # 文件名、内容与关键字段综合相似度达到该值时归入同一版本组。
   similarity_threshold: 0.72

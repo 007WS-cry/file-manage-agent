@@ -1,27 +1,56 @@
 from app.state.models import (
+    AgentMemberState,
+    ContentSubagentGraphState,
+    ContentSubagentInput,
+    ContentSubagentOutput,
+    EvidenceSubagentGraphState,
+    EvidenceSubagentInput,
+    EvidenceSubagentOutput,
     FileGovernanceState,
     HookConfigState,
     HookEvent,
+    LLMCallRecord,
+    LLMConfigState,
     PromptState,
     TaskItem,
     TaskStatusUpdate,
+    TeamMessage,
     TeamOrchestrationGraphState,
+    TeamState,
     TodoItem,
+    VersionSubagentGraphState,
+    VersionSubagentInput,
+    VersionSubagentOutput,
 )
-from app.state.reducers import merge_by_id, merge_by_task_id
+from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_id
 
 """本包集中导出文件版本治理的状态模型和 LangGraph reducer。"""
 
 # 本状态包允许外部直接导入的公共接口名称。
 __all__ = [
+    "AgentMemberState",
+    "ContentSubagentGraphState",
+    "ContentSubagentInput",
+    "ContentSubagentOutput",
+    "EvidenceSubagentGraphState",
+    "EvidenceSubagentInput",
+    "EvidenceSubagentOutput",
     "FileGovernanceState",
     "HookConfigState",
     "HookEvent",
+    "LLMCallRecord",
+    "LLMConfigState",
     "PromptState",
     "TaskItem",
     "TaskStatusUpdate",
+    "TeamMessage",
     "TeamOrchestrationGraphState",
+    "TeamState",
     "TodoItem",
+    "VersionSubagentGraphState",
+    "VersionSubagentInput",
+    "VersionSubagentOutput",
     "merge_by_id",
+    "merge_by_message_id",
     "merge_by_task_id",
 ]

@@ -1,8 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.0` 已完成确定性 Team
-Orchestration 的四批交付：固定 Task DAG、独立编排子图、顶层业务与人工审核同步，
-以及不泄漏正文和大型产物的 CLI 进度摘要。当前具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.1` 在 `0.4.0` 的确定性
+Team Orchestration 基础上完成首批 LLM 基础设施与状态契约：统一 Client、真实和
+Mock Provider、Pydantic 结构化输出、调用超时及脱敏 Token/耗时审计。当前具备：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -37,14 +37,19 @@ Orchestration 的四批交付：固定 Task DAG、独立编排子图、顶层业
 - 成功、无数据和业务失败报告统一完成 Report Task，计划前失败安全绕过 Task 同步。
 - `run`、`resume` 统一输出 Todo 投影和五种 Task 状态数量；
 - CLI 通过字段白名单隔离文档正文、完整报告、Task 引用和大型治理产物。
+- 默认不访问网络的统一 LLM 配置，以及只从环境变量读取密钥的 OpenAI Provider；
+- 可注入、可模拟超时和非法输出的 Mock Provider；
+- Content、Version、Evidence 三类独立 Pydantic 输出及产物引用白名单校验；
+- 不记录 Prompt、响应正文和 API Key 的 LLM 调用耗时、Token 和错误审计协议。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
-`0.4.0` 的执行进度完全由固定 Task DAG 驱动，不调用 LLM 或 Subagent；CLI 只展示
-用户所需的最小进度，不直接序列化顶层状态。
+`0.4.1` 的业务图仍完全由固定 Task DAG 和确定性节点驱动；统一 LLM Client 尚未
+注册为 LangGraph 节点，因此默认行为与 `0.4.0` 一致。CLI 只展示用户所需的最小
+进度，不输出 LLM 配置、Team Message 或调用审计。
 
 ## 安全边界
 
@@ -69,6 +74,10 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
   单向生成，不能作为第二套可写执行状态。
 - CLI 只输出 Todo 白名单和 Task 状态计数，不输出 `documents`、完整 Task、报告
   Markdown、Prompt、HookEvent 或 checkpoint 内容。
+- LLM 配置只能保存 API Key 的环境变量名称；实际密钥不得进入请求 JSON、YAML、
+  LangGraph 状态、checkpoint、日志、Team Message 或模型调用审计。
+- 关闭 `llm.enabled` 时统一 Client 强制使用 Mock Provider，即使其他字段预配置了
+  真实 Provider 也不会读取密钥或发起网络调用。
 
 ## 目录
 
@@ -78,7 +87,8 @@ file-manage-agent/
 │   └── prompts/               # 受版本控制的 System Prompt 资源
 ├── app/
 │   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
-│   ├── llm/                   # System Prompt 受限加载和后续模型扩展入口
+│   ├── llm/                   # Prompt、统一 Client、Provider 和结构化输出校验
+│   │   └── providers/         # Provider 抽象、Mock 与 OpenAI 实现
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
 │   ├── services/              # 标准化、版本图、推荐、报告和确定性 Task System
@@ -88,6 +98,7 @@ file-manage-agent/
 │   ├── graphs/                # 四业务子图、团队编排子图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── configs/default.yaml       # 默认治理、生命周期、存储和 checkpoint 参数
+├── .env.example               # 只声明密钥环境变量名称的安全示例
 ├── examples/sample_request.json
 ├── examples/sample_delivery_log.json
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
@@ -96,6 +107,7 @@ file-manage-agent/
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
 ├── docs/version-0.3.3-task-progress.md # 0.3.3 顶层 Task 进度与人工审核
 ├── docs/release-0.4.0-task-orchestration.md # 0.4.0 正式发布说明
+├── docs/version-0.4.1-llm-foundation.md # 0.4.1 LLM 基础设施说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -236,6 +248,24 @@ START
 
 完整输出协议、安全边界、升级说明和测试映射见
 [0.4.0 Task Orchestration 正式发布说明](docs/release-0.4.0-task-orchestration.md)。
+
+## 0.4.1 统一 LLM 基础设施和状态契约
+
+本版本是从 `0.4.0` 向固定 Agent Team 演进的第一批，不修改既有业务图执行顺序：
+
+- 新增统一 `LLMClient`，按配置选择 Mock 或 OpenAI Provider；
+- 真实 Provider 只接受 `api_key_env`，调用时才读取环境变量，不保存实际密钥；
+- 默认 `llm.enabled=false` 且使用 Mock，升级后不会自动产生外部请求或费用；
+- 三个固定 Subagent 的输入、Pydantic 输出和内部图状态全部定义在
+  `app/state/models.py`；
+- `TeamMessage`、`TeamState`、`LLMConfigState`、`LLMCallRecord` 进入顶层状态协议；
+- 调用成功记录 Provider、模型、耗时和 Token；失败与超时只记录脱敏错误摘要；
+- Pydantic 输出禁止额外字段，产物引用还必须通过调用方白名单校验；
+- 旧 checkpoint 在初始化时补齐安全关闭的 LLM、固定 Team、空消息和空审计列表。
+
+本批不会调用三个 Subagent，也不会修改版本差异摘要。业务图接入将在后续批次完成。
+完整配置和安全边界见
+[0.4.1 LLM 基础设施](docs/version-0.4.1-llm-foundation.md)。
 
 ## 图结构
 
@@ -506,9 +536,14 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.4.0 默认值仍为关闭；这里显式写出便于说明生命周期配置。
+    # 0.4.1 默认值仍为关闭；这里显式写出便于说明生命周期与 LLM 配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
+    llm_config={
+        "enabled": False,
+        "provider": "mock",
+        "model": "mock-structured-v1",
+    },
 )
 
 config = {"configurable": {"thread_id": "governance-run-001"}}
@@ -538,6 +573,7 @@ with open_checkpointer(
 - 文档分组及自动选择阈值；
 - PDF 来源匹配阈值、本地发送日志读取上限和歧义分差；
 - 默认关闭的 Prompt、Hooks、执行顺序和失败策略；
+- 默认关闭真实模型的 Provider、模型名、温度、Token 上限、超时和回退配置；
 - `.artifacts/content/normalized` 和 `intermediate` 产物布局；
 - Markdown 报告目录；
 - SQLite checkpoint 后端及数据库路径。
@@ -587,6 +623,10 @@ python -m compileall -q app tests
 - CLI 最终、人工暂停和恢复输出中的 Todo 顺序与五状态 Task 计数；
 - CLI 字段白名单对文档正文、完整报告和 Task 产物引用的隔离；
 - nodes 目录函数与所有 LangGraph `add_node()` 注册关系的一致性；
+- LLM 配置未知字段、直接密钥、非法范围和环境变量名称拒绝；
+- Mock 结构化调用、Token 记录、确定性超时和非法 Pydantic 输出失败审计；
+- OpenAI Provider 的结构化参数传递、Token 提取和缺失环境变量拒绝；
+- 三个 Subagent 输出的额外字段拒绝和产物引用白名单；
 - 正常完成、无需审核、人工暂停恢复、无数据、业务失败、非致命警告和 checkpoint
   重放七条 0.4.0 发布验收路径。
 
@@ -595,13 +635,13 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.4.0 -t file-manage-agent:0.4.0 .
+docker build --build-arg APP_VERSION=0.4.1 -t file-manage-agent:0.4.1 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.4.0
+docker run --rm file-manage-agent:0.4.1
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -614,7 +654,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.4.0 \
+  file-manage-agent:0.4.1 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -626,7 +666,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.4.0 \
+  file-manage-agent:0.4.1 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -635,7 +675,8 @@ docker run --rm \
 
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
-- LLM 差异摘要客户端；当前始终使用确定性摘要；
+- 统一 LLM Client 与业务图、三个固定 Subagent 的实际节点接入；
+- LLM 版本差异摘要；当前版本分析仍始终使用确定性摘要；
 - before_model、after_model 与真实 LLM 调用的节点接入；
 - 持久化工具调用审计；当前只记录最小 HookEvent；
 - 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
