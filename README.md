@@ -1,13 +1,14 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.1` 在 `0.4.0` 的确定性
-Team Orchestration 基础上完成首批 LLM 基础设施与状态契约：统一 Client、真实和
-Mock Provider、Pydantic 结构化输出、调用超时及脱敏 Token/耗时审计。当前具备：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.2` 在统一 LLM 基础设施上
+实现三个固定 Subagent 和最小 Team Protocol：输入只允许短预览、结构化摘要与受控
+引用，输出只允许 Pydantic 摘要与引用，失败也会返回结构化 error 消息。当前具备：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
 - 可解释主版本评分和低置信度人工确认；
-- Inventory、Version Analysis、Evidence、Recommendation 四个子图和顶层治理图；
+- Inventory、Version Analysis、Evidence、Recommendation 四个业务子图和顶层治理图；
+- Content、Version、Evidence 三个可独立调用的固定 Subagent 子图；
 - 标准化内容及中间 JSON 产物的隔离、原子持久化；
 - 进程内或 SQLite LangGraph checkpoint；
 - 可跨进程恢复 `interrupt()` 的最小 CLI；
@@ -41,15 +42,17 @@ Mock Provider、Pydantic 结构化输出、调用超时及脱敏 Token/耗时审
 - 可注入、可模拟超时和非法输出的 Mock Provider；
 - Content、Version、Evidence 三类独立 Pydantic 输出及产物引用白名单校验；
 - 不记录 Prompt、响应正文和 API Key 的 LLM 调用耗时、Token 和错误审计协议。
+- 固定 Subagent 注册表、最小输入信封、assignment/result/error Team Message；
+- 模型失败、超时或引用越权时的确定性摘要回退和 fallback 审计。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
-`0.4.1` 的业务图仍完全由固定 Task DAG 和确定性节点驱动；统一 LLM Client 尚未
-注册为 LangGraph 节点，因此默认行为与 `0.4.0` 一致。CLI 只展示用户所需的最小
-进度，不输出 LLM 配置、Team Message 或调用审计。
+`0.4.2` 已在三个独立 Subagent 图中注册统一 LLM Client 节点；既有四个业务图和
+顶层图尚未调用这些子图，因此默认文件治理结果仍与 `0.4.0` 一致。CLI 只展示用户
+所需的最小进度，不输出 LLM 配置、Team Message、Prompt 或调用审计。
 
 ## 安全边界
 
@@ -78,6 +81,10 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
   LangGraph 状态、checkpoint、日志、Team Message 或模型调用审计。
 - 关闭 `llm.enabled` 时统一 Client 强制使用 Mock Provider，即使其他字段预配置了
   真实 Provider 也不会读取密钥或发起网络调用。
+- Subagent 输入拒绝未知正文型字段、超长预览、超长结构化字符串和非受控引用；
+  Subagent 不会主动打开 `artifact_refs` 指向的文件。
+- Team Message 的发送方和接收方必须属于固定 Team，result/error 必须返回唯一
+  coordinator，模型输出引用必须属于当前输入白名单。
 
 ## 目录
 
@@ -89,13 +96,14 @@ file-manage-agent/
 │   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
 │   ├── llm/                   # Prompt、统一 Client、Provider 和结构化输出校验
 │   │   └── providers/         # Provider 抽象、Mock 与 OpenAI 实现
+│   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
 │   ├── services/              # 标准化、版本图、推荐、报告和确定性 Task System
 │   ├── storage/               # 标准化/中间产物与 checkpoint
 │   ├── utils/                 # 生命周期、Task 编排、时间、错误和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
-│   ├── graphs/                # 四业务子图、团队编排子图与顶层治理图
+│   ├── graphs/                # 四业务图、团队图、三个 Subagent 图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── configs/default.yaml       # 默认治理、生命周期、存储和 checkpoint 参数
 ├── .env.example               # 只声明密钥环境变量名称的安全示例
@@ -108,6 +116,7 @@ file-manage-agent/
 ├── docs/version-0.3.3-task-progress.md # 0.3.3 顶层 Task 进度与人工审核
 ├── docs/release-0.4.0-task-orchestration.md # 0.4.0 正式发布说明
 ├── docs/version-0.4.1-llm-foundation.md # 0.4.1 LLM 基础设施说明
+├── docs/version-0.4.2-fixed-subagents.md # 0.4.2 固定 Subagent 与 Team Protocol
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -266,6 +275,23 @@ START
 本批不会调用三个 Subagent，也不会修改版本差异摘要。业务图接入将在后续批次完成。
 完整配置和安全边界见
 [0.4.1 LLM 基础设施](docs/version-0.4.1-llm-foundation.md)。
+
+## 0.4.2 三个固定 Subagent 和 Team Protocol
+
+第二批在第一批状态与 LLM Client 契约上完成三个独立子图：
+
+- Content Subagent 只接收短内容预览、结构摘要、关键字段和产物引用；
+- Version Subagent 只接收文件安全标签、相似度、关键修改和排序信号；
+- Evidence Subagent 只接收 PDF 来源摘要、发送证据摘要和产物引用；
+- 固定注册表只允许 `content`、`version`、`evidence` 三个角色，不支持动态招聘；
+- 每个子图先创建合法 assignment 消息，结束时创建 result 或 error 消息；
+- Pydantic 输出只包含 `summary` 和 `artifact_refs`，引用必须属于输入白名单；
+- 模型失败、超时或输出越权时，按配置进入角色专属确定性回退；
+- 流程分支由 `graphs/routers.py` 中被 `add_conditional_edges()` 明确调用的路由实现。
+
+三个 Subagent 当前可以独立调用，但尚未接入既有 Inventory、Version Analysis 和
+Evidence 业务图，避免本批改变 `0.4.0` 的确定性治理结论。详细协议、分支语义和
+测试矩阵见 [0.4.2 固定 Subagent 与 Team Protocol](docs/version-0.4.2-fixed-subagents.md)。
 
 ## 图结构
 
@@ -536,7 +562,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.4.1 默认值仍为关闭；这里显式写出便于说明生命周期与 LLM 配置。
+    # 0.4.2 默认值仍为关闭；这里显式写出便于说明生命周期与 LLM 配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
     llm_config={
@@ -635,13 +661,13 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.4.1 -t file-manage-agent:0.4.1 .
+docker build --build-arg APP_VERSION=0.4.2 -t file-manage-agent:0.4.2 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.4.1
+docker run --rm file-manage-agent:0.4.2
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -654,7 +680,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.4.1 \
+  file-manage-agent:0.4.2 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -666,7 +692,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.4.1 \
+  file-manage-agent:0.4.2 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -675,9 +701,9 @@ docker run --rm \
 
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
-- 统一 LLM Client 与业务图、三个固定 Subagent 的实际节点接入；
+- 三个固定 Subagent 与既有业务图、Team Orchestration 顶层执行路径的整合；
 - LLM 版本差异摘要；当前版本分析仍始终使用确定性摘要；
-- before_model、after_model 与真实 LLM 调用的节点接入；
+- 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 持久化工具调用审计；当前只记录最小 HookEvent；
-- 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
+- 邮件 MCP 证据、长期 Memory、Skills 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

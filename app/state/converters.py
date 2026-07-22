@@ -82,8 +82,9 @@ def team_orchestration_state_to_file_governance_update(
 ) -> dict:
     """把 Team Orchestration 结果过滤为允许写回顶层的字段。
 
-    0.4.1 尚未注册 Subagent 节点，因此继续只返回 Task、Todo 和新产生的结构化
-    错误。``task_update``、分派字段及只读传入的 Team/LLM 状态均不会重复写回顶层。
+    0.4.2 的三个 Subagent 仍是独立子图，尚未进入本编排图，因此这里只返回 Task、
+    Todo 和新产生的结构化错误。``task_update``、分派字段及只读传入的 Team/LLM
+    状态均不会重复写回顶层。
 
     Args:
         state: 已完成执行的 Team Orchestration 子图状态。

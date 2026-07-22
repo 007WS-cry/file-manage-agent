@@ -43,10 +43,10 @@ def _resolve_default_prompt_source_path() -> str:
 # 默认 System Prompt 资源路径，兼容源码、容器和 wheel 安装布局。
 DEFAULT_PROMPT_SOURCE_PATH = _resolve_default_prompt_source_path()
 
-# 0.4.1 固定 Agent Team 使用的 Team Protocol 版本。
+# 0.4.2 三个固定 Subagent 使用的 Team Protocol 版本。
 DEFAULT_TEAM_PROTOCOL_VERSION = "team-protocol-v1"
 
-# 0.4.1 固定团队允许的最大 Subagent 并发数。
+# 0.4.2 固定团队允许的最大 Subagent 并发数。
 DEFAULT_MAX_PARALLEL_AGENTS = 3
 
 
@@ -247,8 +247,8 @@ def create_hook_config_state(
 def create_team_state() -> TeamState:
     """创建协调者和三个固定角色组成的初始 Agent Team 状态。
 
-    0.4.1 只建立稳定成员、职责和协议状态，不在状态工厂中创建模型 Client、执行
-    Subagent 或分配业务 Task，因而不会产生网络、文件或其他外部副作用。
+    状态工厂只建立稳定成员、职责和协议状态，不创建模型 Client、执行 Subagent
+    或分配业务 Task，因而不会产生网络、文件或其他外部副作用。
 
     Returns:
         四个成员均为空闲、没有当前 Task 且 Skills 为空的固定 Team 状态。

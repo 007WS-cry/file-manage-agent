@@ -49,7 +49,7 @@ hooks:
     cleanup_run_resources_hook: ignore
 
 llm:
-  # 0.4.1 默认关闭真实模型；关闭时统一 Client 强制使用 Mock Provider，且不访问网络。
+  # 0.4.2 默认关闭真实模型；关闭时三个 Subagent 强制使用 Mock Provider 且不访问网络。
   enabled: false
 
   # 首批支持 mock 和 openai；启用真实模型时改为 openai。

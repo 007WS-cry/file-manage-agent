@@ -12,9 +12,9 @@ from app.llm.schemas import (
     validate_structured_output,
 )
 
-"""本包集中提供 Prompt 加载、统一 LLM Client、Provider 配置和结构化输出校验。"""
+"""本包集中提供 Prompt、统一 LLM Client、Provider 及固定 Subagent 输出校验。"""
 
-# 本包当前允许外部直接调用的 Prompt、Client 和结构化输出公共接口。
+# 本包当前允许固定 Subagent 和外部调用方直接使用的 LLM 公共接口。
 __all__ = [
     "LLMClient",
     "LLMInvocationResult",
