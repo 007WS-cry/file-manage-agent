@@ -12,7 +12,7 @@
     "auto_select_threshold": 0.82,
     "pdf_match_threshold": 0.82,
     "delivery_log_path": "sample_delivery_log.json",
-    "use_llm_summary": false
+    "use_llm_summary": true
   },
   "workspace": {
     "input_root": "../data/input",
@@ -48,10 +48,10 @@
     }
   },
   "llm": {
-    "enabled": false,
-    "provider": "mock",
-    "model": "mock-structured-v1",
-    "api_key_env": null,
+    "enabled": true,
+    "provider": "openai",
+    "model": "gpt-4.1-mini",
+    "api_key_env": "OPENAI_API_KEY",
     "temperature": 0.0,
     "max_output_tokens": 800,
     "timeout_seconds": 30.0,
@@ -59,6 +59,6 @@
   },
   "checkpoint": {
     "backend": "sqlite",
-    "database_path": "../.artifacts/checkpoints/file-governance-0.5.sqlite3"
+    "database_path": "../.artifacts/checkpoints/file-governance-llm-0.5.sqlite3"
   }
 }

@@ -16,9 +16,18 @@ from app.llm.schemas import validate_structured_output
 
 """本模块通过环境变量读取密钥并调用 OpenAI SDK 的 Pydantic 结构化输出接口。"""
 
+# OpenAI SDK 官方支持的自定义 API 根地址环境变量，供临时兼容中转站使用。
+OPENAI_BASE_URL_ENV = "OPENAI_BASE_URL"
+
+# 选择 Responses 或 Chat Completions 兼容接口的临时环境变量。
+OPENAI_API_MODE_ENV = "OPENAI_API_MODE"
+
+# 0.5.0 临时兼容层允许的 OpenAI API 调用模式。
+SUPPORTED_OPENAI_API_MODES = frozenset({"auto", "responses", "chat_completions"})
+
 
 class OpenAILLMProvider(LLMProvider):
-    """使用 OpenAI Responses 或 Chat Completions 结构化输出的真实 Provider。"""
+    """使用 OpenAI 或兼容中转站结构化接口的真实 Provider。"""
 
     name = "openai"
     # 写入 LLM 调用审计记录的固定 Provider 名称。
@@ -31,8 +40,8 @@ class OpenAILLMProvider(LLMProvider):
     ) -> None:
         """创建仅保存环境变量名称的 OpenAI Provider。
 
-        未注入 SDK Client 时，本构造函数才从指定环境变量读取 API Key 并创建官方
-        SDK Client。密钥只短暂存在于进程内存，不会写入实例字段、状态或日志。
+        未注入 SDK Client 时，本构造函数才从指定环境变量读取 API Key，并读取可选
+        ``OPENAI_BASE_URL`` 创建官方 SDK Client。密钥和自定义地址都不会写入图状态。
 
         Args:
             api_key_env: 保存 OpenAI API Key 的环境变量名称。
@@ -56,7 +65,7 @@ class OpenAILLMProvider(LLMProvider):
         # 官方或测试注入的 SDK Client，不进入 LangGraph 状态。
 
     def _create_sdk_client(self) -> Any:
-        """从环境变量读取密钥并创建官方 OpenAI SDK Client。
+        """从环境变量读取密钥和可选中转地址并创建 OpenAI SDK Client。
 
         Returns:
             已配置 API Key 的同步 OpenAI Client。
@@ -75,7 +84,34 @@ class OpenAILLMProvider(LLMProvider):
             raise LLMProviderConfigurationError(
                 "未安装 openai 依赖，无法创建 OpenAI Provider"
             ) from exc
-        return OpenAI(api_key=api_key)
+        client_options: dict[str, str] = {"api_key": api_key}
+        base_url = os.environ.get(OPENAI_BASE_URL_ENV, "").strip()
+        if base_url:
+            client_options["base_url"] = base_url
+        return OpenAI(**client_options)
+
+    @staticmethod
+    def _resolve_api_mode() -> str:
+        """读取当前 OpenAI 兼容接口选择模式。
+
+        ``auto`` 保持原有行为并优先使用 Responses API；只实现传统 OpenAI 兼容接口
+        的中转站可以设置 ``chat_completions``，避免先请求不受支持的 ``/responses``。
+
+        Returns:
+            ``auto``、``responses`` 或 ``chat_completions``。
+
+        Raises:
+            LLMProviderConfigurationError: 环境变量包含未知模式时抛出。
+        """
+        api_mode = os.environ.get(OPENAI_API_MODE_ENV, "auto").strip().casefold()
+        if not api_mode:
+            api_mode = "auto"
+        if api_mode not in SUPPORTED_OPENAI_API_MODES:
+            supported = ", ".join(sorted(SUPPORTED_OPENAI_API_MODES))
+            raise LLMProviderConfigurationError(
+                f"环境变量 {OPENAI_API_MODE_ENV} 只能是：{supported}"
+            )
+        return api_mode
 
     @staticmethod
     def _read_usage_value(usage: object, *field_names: str) -> int | None:
@@ -212,8 +248,8 @@ class OpenAILLMProvider(LLMProvider):
     ) -> LLMProviderResponse:
         """调用可用的 OpenAI 结构化输出接口并统一转换错误。
 
-        优先使用 Responses API 的 ``parse`` 接口；旧版兼容 Client 可回退到
-        Chat Completions ``parse``。异常信息只保留异常类型，不回显 Prompt 或密钥。
+        ``auto`` 模式优先使用 Responses API；``chat_completions`` 可供只实现传统
+        OpenAI 兼容接口的中转站使用。异常信息只保留异常类型，不回显 Prompt 或密钥。
 
         Args:
             model: OpenAI 模型名称。
@@ -232,8 +268,11 @@ class OpenAILLMProvider(LLMProvider):
             LLMProviderError: SDK、模型或结构化响应失败时抛出。
         """
         try:
+            api_mode = self._resolve_api_mode()
             responses_api = getattr(self._sdk_client, "responses", None)
-            if callable(getattr(responses_api, "parse", None)):
+            if api_mode in {"auto", "responses"} and callable(
+                getattr(responses_api, "parse", None)
+            ):
                 return self._call_responses_api(
                     model=model,
                     system_prompt=system_prompt,
@@ -243,10 +282,16 @@ class OpenAILLMProvider(LLMProvider):
                     max_output_tokens=max_output_tokens,
                     timeout_seconds=timeout_seconds,
                 )
+            if api_mode == "responses":
+                raise LLMProviderConfigurationError(
+                    "当前 OpenAI SDK Client 不支持 Responses Pydantic parse 接口"
+                )
 
             chat_api = getattr(self._sdk_client, "chat", None)
             completions_api = getattr(chat_api, "completions", None)
-            if callable(getattr(completions_api, "parse", None)):
+            if api_mode in {"auto", "chat_completions"} and callable(
+                getattr(completions_api, "parse", None)
+            ):
                 return self._call_chat_completions_api(
                     model=model,
                     system_prompt=system_prompt,

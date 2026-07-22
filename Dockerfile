@@ -1,10 +1,10 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.4.4
+ARG APP_VERSION=0.5.0
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持三个业务阶段分派、固定 Agent Team、受控摘要与确定性回退的只读 LangGraph 文件版本治理 Agent"
+    org.opencontainers.image.description="支持固定 Agent Team、受控结构化摘要、兼容升级与安全 checkpoint 的只读 LangGraph 文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

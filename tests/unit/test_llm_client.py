@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -9,7 +10,11 @@ from app.llm.client import LLMClient
 from app.llm.config import create_llm_config_state
 from app.llm.providers.base import LLMProviderConfigurationError
 from app.llm.providers.mock import MockLLMProvider
-from app.llm.providers.openai import OpenAILLMProvider
+from app.llm.providers.openai import (
+    OPENAI_API_MODE_ENV,
+    OPENAI_BASE_URL_ENV,
+    OpenAILLMProvider,
+)
 from app.state.models import ContentSubagentOutput
 
 """本模块验证统一 LLM Client、真实 Provider 适配、Mock、超时和脱敏审计。"""
@@ -198,8 +203,11 @@ def test_invalid_mock_payload_returns_failed_audit() -> None:
     assert "结构化输出校验失败" in str(result.call_record["error_message"])
 
 
-def test_openai_provider_uses_structured_api_and_records_usage() -> None:
+def test_openai_provider_uses_structured_api_and_records_usage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """OpenAI 适配器应传递模型参数并读取结构化结果和 Token 用量。"""
+    monkeypatch.delenv(OPENAI_API_MODE_ENV, raising=False)
     config = create_llm_config_state(
         {
             "enabled": True,
@@ -228,8 +236,11 @@ def test_openai_provider_uses_structured_api_and_records_usage() -> None:
     assert sdk_client.responses.last_request["timeout"] == 12.5
 
 
-def test_openai_provider_uses_public_chat_parse_as_compatibility_path() -> None:
+def test_openai_provider_uses_public_chat_parse_as_compatibility_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Responses API 不可用时应回退到公开 Chat Completions parse 接口。"""
+    monkeypatch.delenv(OPENAI_API_MODE_ENV, raising=False)
     config = create_llm_config_state(
         {
             "enabled": True,
@@ -255,6 +266,78 @@ def test_openai_provider_uses_public_chat_parse_as_compatibility_path() -> None:
         is ContentSubagentOutput
     )
     assert sdk_client.chat.completions.last_request["max_tokens"] == 128
+
+
+def test_openai_provider_passes_custom_base_url_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenAI Provider 应把环境变量中的中转站地址传给 SDK 且不写入状态。"""
+    captured_options: dict[str, str] = {}
+
+    def create_sdk_client(**options: str) -> SimpleNamespace:
+        """记录 Provider 创建 SDK Client 时传入的安全测试参数。
+
+        Args:
+            options: OpenAI Provider 传入 SDK 构造器的关键字参数。
+
+        Returns:
+            不执行网络调用的最小测试 Client。
+        """
+        captured_options.update(options)
+        return SimpleNamespace()
+
+    secret_value = "relay-secret-must-not-be-stored"
+    relay_base_url = "https://relay.example.test/v1"
+    monkeypatch.setenv("RELAY_TEST_API_KEY", secret_value)
+    monkeypatch.setenv(OPENAI_BASE_URL_ENV, relay_base_url)
+    monkeypatch.setitem(
+        sys.modules,
+        "openai",
+        SimpleNamespace(OpenAI=create_sdk_client),
+    )
+
+    provider = OpenAILLMProvider(api_key_env="RELAY_TEST_API_KEY")
+
+    assert captured_options == {
+        "api_key": secret_value,
+        "base_url": relay_base_url,
+    }
+    assert provider.api_key_env == "RELAY_TEST_API_KEY"
+    assert secret_value not in repr(provider)
+    assert relay_base_url not in repr(provider)
+
+
+def test_openai_compatible_relay_can_force_chat_completions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """中转站兼容模式应跳过 Responses 并直接调用 Chat Completions parse。"""
+    config = create_llm_config_state(
+        {
+            "enabled": True,
+            "provider": "openai",
+            "model": "relay-compatible-model",
+            "api_key_env": "RELAY_TEST_API_KEY",
+            "max_output_tokens": 128,
+        }
+    )
+    responses_api = FakeResponsesAPI()
+    chat_completions_api = FakeChatCompletionsAPI()
+    sdk_client = SimpleNamespace(
+        responses=responses_api,
+        chat=SimpleNamespace(completions=chat_completions_api),
+    )
+    provider = OpenAILLMProvider(
+        api_key_env="RELAY_TEST_API_KEY",
+        sdk_client=sdk_client,
+    )
+    monkeypatch.setenv(OPENAI_API_MODE_ENV, "chat_completions")
+
+    result = _invoke(LLMClient(config, providers={"openai": provider}))
+
+    assert isinstance(result.output, ContentSubagentOutput)
+    assert result.call_record["status"] == "success"
+    assert responses_api.last_request is None
+    assert chat_completions_api.last_request is not None
 
 
 def test_openai_provider_requires_api_key_environment_variable(
