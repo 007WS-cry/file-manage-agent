@@ -722,7 +722,7 @@ class TaskItem(TypedDict):
         "version",
         "evidence",
     ]
-    # 当前 Task 的固定负责角色；0.4.1 只建立协议，后续批次再实际调用 Subagent。
+    # 当前 Task 的固定负责角色；0.4.2 已实现三个独立 Subagent 子图。
 
     input_refs: list[str]
     # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
@@ -771,7 +771,7 @@ class LLMConfigState(TypedDict):
     # 是否允许调用真实模型；关闭时固定使用 Mock 或确定性回退。
 
     provider: Literal["openai", "mock"]
-    # 当前模型 Provider；0.4.1 首批实现 OpenAI Provider 和 Mock Provider。
+    # 当前模型 Provider；支持 OpenAI Provider 和 Mock Provider。
 
     model: str
     # Provider 使用的模型名称，由配置提供，不在业务节点中硬编码。
@@ -863,7 +863,7 @@ class AgentMemberState(TypedDict):
     # Agent 当前允许使用的工具名称。
 
     skill_ids: list[str]
-    # 为后续 Skills 预留的引用；0.4.1 中保持为空列表。
+    # 为后续 Skills 预留的引用；0.4.2 中保持为空列表。
 
 
 class TeamState(TypedDict):
@@ -1045,14 +1045,26 @@ class ContentSubagentGraphState(TypedDict):
     input: ContentSubagentInput
     # 已经过 Team Protocol 校验的最小输入。
 
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
     llm: LLMConfigState
     # 当前运行使用的统一 LLM 配置。
+
+    system_prompt: str
+    # 固定职责和只读边界组成的系统提示词，不包含业务正文。
+
+    user_prompt: str
+    # 只由内容预览、结构摘要、关键字段和受控引用组成的用户提示词。
 
     output: ContentSubagentOutput | None
     # Pydantic 校验后的结果；调用前为 None。
 
     fallback_used: bool
     # 是否使用了确定性内容摘要回退。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
 
     llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
     # 本子图产生的模型调用审计记录。
@@ -1067,14 +1079,26 @@ class VersionSubagentGraphState(TypedDict):
     input: VersionSubagentInput
     # 已经过 Team Protocol 校验的版本差异输入。
 
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
     llm: LLMConfigState
     # 当前运行使用的统一 LLM 配置。
+
+    system_prompt: str
+    # 固定版本解释职责和只读边界组成的系统提示词。
+
+    user_prompt: str
+    # 只由差异、相似度、排序信号和受控引用组成的用户提示词。
 
     output: VersionSubagentOutput | None
     # Pydantic 校验后的版本解释结果。
 
     fallback_used: bool
     # 是否使用了现有确定性关键修改摘要。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
 
     llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
     # 本子图产生的模型调用审计记录。
@@ -1089,14 +1113,26 @@ class EvidenceSubagentGraphState(TypedDict):
     input: EvidenceSubagentInput
     # 已经过 Team Protocol 校验的证据摘要输入。
 
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
     llm: LLMConfigState
     # 当前运行使用的统一 LLM 配置。
+
+    system_prompt: str
+    # 固定证据解释职责和只读边界组成的系统提示词。
+
+    user_prompt: str
+    # 只由 PDF、发送证据摘要和受控引用组成的用户提示词。
 
     output: EvidenceSubagentOutput | None
     # Pydantic 校验后的证据解释结果。
 
     fallback_used: bool
     # 是否使用了确定性证据说明回退。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
 
     llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
     # 本子图产生的模型调用审计记录。
@@ -1225,7 +1261,7 @@ class TeamOrchestrationGraphState(TypedDict):
         | EvidenceSubagentInput
         | None
     )
-    # 可选 Subagent 分派请求；0.4.1 的确定性状态同步调用保持为 None。
+    # 可选 Subagent 分派请求；0.4.2 独立子图尚未接入本编排图时保持为 None。
 
     dispatch_result: (
         ContentSubagentOutput

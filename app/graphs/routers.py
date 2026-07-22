@@ -6,11 +6,14 @@ from langgraph.types import Send
 
 from app.services.task_system import TASK_DAG_TEMPLATE, build_task_id, validate_task_dag
 from app.state.models import (
+    ContentSubagentGraphState,
     EvidenceGraphState,
+    EvidenceSubagentGraphState,
     FileGovernanceState,
     InventoryGraphState,
     TeamOrchestrationGraphState,
     VersionAnalysisGraphState,
+    VersionSubagentGraphState,
 )
 
 """本模块实现顶层治理图以及 Inventory、Version Analysis、Evidence 子图路由。"""
@@ -314,3 +317,94 @@ def route_task_dag_validation(
         for error in state.get("errors", [])
     )
     return "invalid" if has_blocking_error else "valid"
+
+
+def route_subagent_input_validation(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["valid", "invalid"]:
+    """根据三个固定 Subagent 的输入协议校验结果选择 Prompt 或错误消息。
+
+    Args:
+        state: 已执行角色专属输入校验节点的 Subagent 子图状态。
+
+    Returns:
+        当前输入校验节点产生错误时返回 ``invalid``，否则返回 ``valid``。
+    """
+    input_nodes = {
+        "validate_content_subagent_input",
+        "validate_version_subagent_input",
+        "validate_evidence_subagent_input",
+    }
+    has_input_error = any(
+        error.get("node_name") in input_nodes for error in state.get("errors", [])
+    )
+    return "invalid" if has_input_error else "valid"
+
+
+def route_subagent_prompt_validation(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["invoke", "error"]:
+    """根据最小 Prompt 和固定 before-model 安全检查结果决定是否调用模型。
+
+    Args:
+        state: 已生成 Prompt 并执行固定 before-model 安全检查的子图状态。
+
+    Returns:
+        Prompt 构造或安全检查失败时返回 ``error``，否则返回 ``invoke``。
+    """
+    prompt_nodes = {
+        "build_content_subagent_prompt",
+        "build_version_subagent_prompt",
+        "build_evidence_subagent_prompt",
+        "execute_before_model_hooks",
+    }
+    has_prompt_error = any(
+        error.get("node_name") in prompt_nodes for error in state.get("errors", [])
+    )
+    return "error" if has_prompt_error else "invoke"
+
+
+def route_subagent_llm_result(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["validate", "fallback", "error"]:
+    """根据结构化模型结果和回退开关选择输出校验、确定性回退或错误消息。
+
+    Args:
+        state: 已调用统一 LLM Client 并执行 after-model 安全检查的子图状态。
+
+    Returns:
+        有输出时返回 ``validate``；无输出且允许回退时返回 ``fallback``；
+        其他情况返回 ``error``。
+    """
+    if state.get("output") is not None:
+        return "validate"
+    if state.get("llm", {}).get("fallback_enabled") is True:
+        return "fallback"
+    return "error"
+
+
+def route_subagent_output_validation(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["persist", "fallback", "error"]:
+    """根据输出 Schema 和引用白名单校验结果选择固化、回退或错误消息。
+
+    Args:
+        state: 已执行角色专属输出校验节点的 Subagent 子图状态。
+
+    Returns:
+        输出合法时返回 ``persist``；输出被拒绝且允许回退时返回 ``fallback``；
+        其他情况返回 ``error``。
+    """
+    if state.get("output") is not None:
+        return "persist"
+    if state.get("llm", {}).get("fallback_enabled") is True:
+        return "fallback"
+    return "error"
