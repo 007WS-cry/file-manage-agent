@@ -13,7 +13,7 @@ from app.state.factories import create_initial_state
 from app.storage.artifacts import save_intermediate_artifact
 from app.storage.checkpoints import open_checkpointer
 
-"""本文件集成测试真实 DOCX、生命周期顶层图、产物隔离、SQLite 恢复和 CLI。"""
+"""本文件集成测试真实 DOCX、阶段分派顶层图、产物隔离、SQLite 恢复和 CLI。"""
 
 
 def create_docx(path: Path, text: str) -> None:
@@ -106,7 +106,7 @@ def write_delivery_log(
 
 
 def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> None:
-    """0.3.3 顶层图必须用 Task 适配节点串联四个业务子图和报告收口。"""
+    """0.4.4 顶层图必须在 Content、Evidence 阶段后接入固定 Subagent 分派。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
@@ -117,6 +117,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     assert ("run_inventory_subgraph", "sync_inventory_task_status") in edges
     assert (
         "sync_inventory_task_status",
+        "dispatch_content_subagent_task",
+    ) in edges
+    assert (
+        "dispatch_content_subagent_task",
         "run_version_analysis_subgraph",
     ) in edges
     assert (
@@ -130,6 +134,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     assert ("run_evidence_subgraph", "sync_evidence_task_status") in edges
     assert (
         "sync_evidence_task_status",
+        "dispatch_evidence_subagent_task",
+    ) in edges
+    assert (
+        "dispatch_evidence_subagent_task",
         "run_recommendation_subgraph",
     ) in edges
     assert (

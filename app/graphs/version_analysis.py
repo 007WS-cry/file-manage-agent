@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from langgraph.graph import END, START, StateGraph
 
-from app.graphs.routers import comparison_succeeded, has_pending_comparisons
+from app.graphs.routers import (
+    comparison_succeeded,
+    has_pending_comparisons,
+    has_valid_version_subagent_summary,
+)
 from app.nodes.version_analysis import (
     add_duplicate_version_edges,
+    apply_subagent_summary,
     build_comparison_queue,
     build_version_chains,
     build_version_edges,
@@ -14,14 +19,17 @@ from app.nodes.version_analysis import (
     group_related_documents,
     infer_version_direction,
     load_next_comparison,
+    prepare_version_subagent_input,
     record_comparison_error,
     record_diff_result,
-    summarize_key_changes,
+    retain_deterministic_summary,
+    summarize_key_changes_deterministically,
+    summarize_key_changes_with_subagent,
     validate_version_results,
 )
 from app.state.models import VersionAnalysisGraphState
 
-"""本模块构建只负责版本分组、文件比较和版本建链的 Version Analysis 子图。"""
+"""本模块构建版本分组、确定性比较、Version 摘要升级和版本建链子图。"""
 
 
 def build_version_analysis_graph():
@@ -38,7 +46,17 @@ def build_version_analysis_graph():
     builder.add_node("load_next_comparison", load_next_comparison)
     builder.add_node("compare_document_pair", compare_document_pair)
     builder.add_node("infer_version_direction", infer_version_direction)
-    builder.add_node("summarize_key_changes", summarize_key_changes)
+    builder.add_node(
+        "summarize_key_changes_deterministically",
+        summarize_key_changes_deterministically,
+    )
+    builder.add_node("prepare_version_subagent_input", prepare_version_subagent_input)
+    builder.add_node(
+        "summarize_key_changes_with_subagent",
+        summarize_key_changes_with_subagent,
+    )
+    builder.add_node("apply_subagent_summary", apply_subagent_summary)
+    builder.add_node("retain_deterministic_summary", retain_deterministic_summary)
     builder.add_node("record_diff_result", record_diff_result)
     builder.add_node("record_comparison_error", record_comparison_error)
     builder.add_node("build_version_edges", build_version_edges)
@@ -57,9 +75,31 @@ def build_version_analysis_graph():
     )
     builder.add_edge("load_next_comparison", "compare_document_pair")
     builder.add_edge("compare_document_pair", "infer_version_direction")
-    builder.add_edge("infer_version_direction", "summarize_key_changes")
+    builder.add_edge("infer_version_direction", "summarize_key_changes_deterministically")
+    builder.add_edge(
+        "summarize_key_changes_deterministically",
+        "prepare_version_subagent_input",
+    )
+    builder.add_edge(
+        "prepare_version_subagent_input",
+        "summarize_key_changes_with_subagent",
+    )
     builder.add_conditional_edges(
-        "summarize_key_changes",
+        "summarize_key_changes_with_subagent",
+        has_valid_version_subagent_summary,
+        {
+            "apply": "apply_subagent_summary",
+            "deterministic": "retain_deterministic_summary",
+            "comparison_failure": "record_comparison_error",
+        },
+    )
+    builder.add_conditional_edges(
+        "apply_subagent_summary",
+        comparison_succeeded,
+        {"success": "record_diff_result", "failure": "record_comparison_error"},
+    )
+    builder.add_conditional_edges(
+        "retain_deterministic_summary",
         comparison_succeeded,
         {"success": "record_diff_result", "failure": "record_comparison_error"},
     )

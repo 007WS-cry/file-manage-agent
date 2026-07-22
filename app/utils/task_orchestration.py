@@ -151,9 +151,9 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
         tool_names = raw_member.get("tool_names")
         skill_ids = raw_member.get("skill_ids")
         if tool_names != []:
-            raise ValueError("0.4.3 固定 Subagent 不配置工具或 Worktree 能力")
+            raise ValueError("0.4.4 固定 Subagent 不配置工具或 Worktree 能力")
         if skill_ids != []:
-            raise ValueError("0.4.3 不允许固定团队提前配置 Skills")
+            raise ValueError("0.4.4 不允许固定团队提前配置 Skills")
         normalized_members.append(
             AgentMemberState(
                 id=agent_id,

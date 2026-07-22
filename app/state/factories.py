@@ -43,10 +43,10 @@ def _resolve_default_prompt_source_path() -> str:
 # 默认 System Prompt 资源路径，兼容源码、容器和 wheel 安装布局。
 DEFAULT_PROMPT_SOURCE_PATH = _resolve_default_prompt_source_path()
 
-# 0.4.3 固定团队编排和三个 Subagent 共用的 Team Protocol 版本。
+# 0.4.4 三个业务阶段和固定 Subagent 共用的 Team Protocol 版本。
 DEFAULT_TEAM_PROTOCOL_VERSION = "team-protocol-v1"
 
-# 0.4.3 固定团队允许的最大 Subagent 并发数；当前编排图仍按单请求串行调用。
+# 0.4.4 固定团队允许的最大 Subagent 并发数；当前编排图仍按单请求串行调用。
 DEFAULT_MAX_PARALLEL_AGENTS = 3
 
 

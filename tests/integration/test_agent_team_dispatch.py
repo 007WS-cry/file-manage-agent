@@ -190,7 +190,7 @@ def test_orchestration_rejects_dynamic_team_members() -> None:
 
 
 def test_orchestration_rejects_worktree_tool_configuration() -> None:
-    """0.4.3 固定成员不得提前配置 Worktree 或其他工具能力。"""
+    """0.4.4 固定成员不得提前配置 Worktree 或其他工具能力。"""
     state = _dispatch_state(_content_request())
     state["team"] = dict(state["team"])
     state["team"]["members"] = [dict(member) for member in state["team"]["members"]]

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
-from app.services.reporting import build_report_state, escape_markdown_cell
+from app.services.reporting import (
+    build_report_state,
+    build_version_summary_lines,
+    escape_markdown_cell,
+)
 from app.state.models import FileGovernanceState
 
-"""本模块实现失败、无数据、证据治理及生命周期收口失败报告节点。"""
+"""本模块实现失败、无数据、版本摘要、证据治理及生命周期收口报告节点。"""
 
 
 def generate_failure_report(state: FileGovernanceState) -> dict:
@@ -123,6 +127,8 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
                 markers.append("完全重复件")
             suffix = f"（{'、'.join(markers)}）" if markers else ""
             lines.append(f"{index}. `{file_record['file_name']}`{suffix}")
+
+        lines.extend(build_version_summary_lines(state, group["id"]))
 
         lines.extend(
             [
