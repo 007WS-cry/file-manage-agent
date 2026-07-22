@@ -382,11 +382,12 @@ class ErrorRecord(TypedDict):
         "evidence",
         "llm",
         "validation",
+        "protocol",
         "prompt",
         "hook",
         "unknown",
     ]
-    # 错误类别；prompt 和 hook 分别表示提示词加载与生命周期 Hook 错误。
+    # 错误类别；protocol 表示 Team Message 或分派契约错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -722,7 +723,7 @@ class TaskItem(TypedDict):
         "version",
         "evidence",
     ]
-    # 当前 Task 的固定负责角色；0.4.2 已实现三个独立 Subagent 子图。
+    # 当前 Task 的固定负责角色；0.4.3 由 Team Orchestration 实际选择并调用。
 
     input_refs: list[str]
     # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
@@ -863,7 +864,7 @@ class AgentMemberState(TypedDict):
     # Agent 当前允许使用的工具名称。
 
     skill_ids: list[str]
-    # 为后续 Skills 预留的引用；0.4.2 中保持为空列表。
+    # 为后续 Skills 预留的引用；0.4.3 中必须保持为空列表。
 
 
 class TeamState(TypedDict):
@@ -1261,7 +1262,7 @@ class TeamOrchestrationGraphState(TypedDict):
         | EvidenceSubagentInput
         | None
     )
-    # 可选 Subagent 分派请求；0.4.2 独立子图尚未接入本编排图时保持为 None。
+    # 可选 Subagent 分派请求；状态同步调用或请求消费完成后为 None。
 
     dispatch_result: (
         ContentSubagentOutput

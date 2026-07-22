@@ -53,7 +53,7 @@ def file_governance_to_team_orchestration_state(
     Args:
         state: 包含运行信息和可选已有 Task、Todo 的顶层治理状态。
         task_update: 本次需要消费的可选 Task 状态更新命令。
-        dispatch_request: 后续批次使用的可选固定 Subagent 分派请求。
+        dispatch_request: 本次 Team Orchestration 调用使用的可选固定 Subagent 请求。
 
     Returns:
         已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
@@ -82,19 +82,24 @@ def team_orchestration_state_to_file_governance_update(
 ) -> dict:
     """把 Team Orchestration 结果过滤为允许写回顶层的字段。
 
-    0.4.2 的三个 Subagent 仍是独立子图，尚未进入本编排图，因此这里只返回 Task、
-    Todo 和新产生的结构化错误。``task_update``、分派字段及只读传入的 Team/LLM
-    状态均不会重复写回顶层。
+    0.4.3 返回 Task、Todo、固定团队运行状态、协议消息、模型审计和新错误。
+    ``task_update``、``dispatch_request`` 与 ``dispatch_result`` 仍是单次调用私有字段，
+    不会进入顶层状态。
 
     Args:
         state: 已完成执行的 Team Orchestration 子图状态。
 
     Returns:
-        可由顶层 reducer 合并的 Task、Todo 和错误字段白名单更新。
+        可由顶层 reducer 合并且不包含私有分派载荷的字段白名单更新。
     """
     return {
+        "team": _copy_team_state(state["team"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
+        "team_messages": [
+            dict(message) for message in state.get("team_messages", [])
+        ],
+        "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }
 

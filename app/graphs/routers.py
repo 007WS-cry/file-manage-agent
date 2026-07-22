@@ -319,6 +319,113 @@ def route_task_dag_validation(
     return "invalid" if has_blocking_error else "valid"
 
 
+def route_team_initialization_result(
+    state: TeamOrchestrationGraphState,
+) -> Literal["valid", "invalid"]:
+    """根据固定团队初始化结果决定是否继续实际角色分配。
+
+    Args:
+        state: 已执行固定团队初始化节点的 Team Orchestration 状态。
+
+    Returns:
+        团队合法时返回 ``valid``；初始化产生致命错误时返回 ``invalid``。
+    """
+    has_error = any(
+        error.get("node_name") == "initialize_fixed_agent_team"
+        and error.get("fatal") is True
+        for error in state.get("errors", [])
+    )
+    return "invalid" if has_error else "valid"
+
+
+def route_orchestration_action(
+    state: TeamOrchestrationGraphState,
+) -> Literal["status_sync", "dispatch", "invalid"]:
+    """在 Task 状态同步、固定 Subagent 分派和非法命令之间选择路径。
+
+    Args:
+        state: 已完成团队初始化、角色分配和命令互斥校验的编排状态。
+
+    Returns:
+        无分派请求时返回 ``status_sync``，有请求时返回 ``dispatch``，
+        当前编排准备阶段存在致命错误时返回 ``invalid``。
+    """
+    blocking_nodes = {"assign_tasks_to_roles", "validate_orchestration_action"}
+    if any(
+        error.get("node_name") in blocking_nodes and error.get("fatal") is True
+        for error in state.get("errors", [])
+    ):
+        return "invalid"
+    return "dispatch" if state.get("dispatch_request") is not None else "status_sync"
+
+
+def route_subagent_payload_validation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["assign", "fallback"]:
+    """根据最小输入、真实 Task 和固定角色校验结果选择分派或协调者回退。
+
+    Args:
+        state: 已执行 Subagent 分派载荷校验节点的编排状态。
+
+    Returns:
+        当前载荷合法时返回 ``assign``，存在校验错误时返回 ``fallback``。
+    """
+    has_error = any(
+        error.get("node_name") == "validate_subagent_payload"
+        for error in state.get("errors", [])
+    )
+    return "fallback" if has_error else "assign"
+
+
+def select_subagent(
+    state: TeamOrchestrationGraphState,
+) -> Literal["content", "version", "evidence", "fallback"]:
+    """根据已验证 dispatch_request 的辨识字段选择唯一固定 Subagent。
+
+    Args:
+        state: 已创建 assignment Team Message 的编排状态。
+
+    Returns:
+        返回 ``content``、``version`` 或 ``evidence``；请求或 assignment
+        不完整时返回 ``fallback``。
+    """
+    if any(
+        error.get("node_name") == "create_assignment_message"
+        for error in state.get("errors", [])
+    ):
+        return "fallback"
+    request = state.get("dispatch_request")
+    if not isinstance(request, dict):
+        return "fallback"
+    if "document_id" in request:
+        return "content"
+    if "comparison_id" in request:
+        return "version"
+    if "group_id" in request:
+        return "evidence"
+    return "fallback"
+
+
+def route_team_message_validation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["merge", "fallback"]:
+    """根据 Subagent 返回消息与结构化结果的一致性选择合并或协调者回退。
+
+    Args:
+        state: 已执行 Team Message 校验节点的编排状态。
+
+    Returns:
+        当前响应合法且具有结构化结果时返回 ``merge``，否则返回 ``fallback``。
+    """
+    has_error = any(
+        error.get("node_name") == "validate_team_message"
+        for error in state.get("errors", [])
+    )
+    if has_error or state.get("dispatch_result") is None:
+        return "fallback"
+    return "merge"
+
+
 def route_subagent_input_validation(
     state: ContentSubagentGraphState
     | VersionSubagentGraphState

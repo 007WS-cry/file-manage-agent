@@ -9,10 +9,13 @@ from app.state.converters import (
     team_orchestration_state_to_file_governance_update,
 )
 from app.state.models import (
+    ContentSubagentInput,
     ErrorRecord,
+    EvidenceSubagentInput,
     FileGovernanceState,
     TaskItem,
     TaskStatusUpdate,
+    VersionSubagentInput,
 )
 from app.utils.runtime import utc_now_iso
 
@@ -47,19 +50,27 @@ def run_team_orchestration_subgraph(
     state: FileGovernanceState,
     *,
     task_update: TaskStatusUpdate | None = None,
+    dispatch_request: (
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | None
+    ) = None,
 ) -> dict:
-    """显式转换状态、同步执行 Team Orchestration 子图并过滤私有命令。
+    """显式转换状态并执行一次 Task 同步或固定 Subagent 分派。
 
     Args:
         state: 顶层文件治理状态。
         task_update: 本次调用需要消费的可选 Task 状态更新命令。
+        dispatch_request: 本次调用需要消费的可选固定 Subagent 最小输入。
 
     Returns:
-        仅包含 Task、Todo 和新编排错误的顶层状态更新，不包含 task_update。
+        不包含状态命令和分派私有字段的顶层白名单更新。
     """
     subgraph_input = file_governance_to_team_orchestration_state(
         state,
         task_update=task_update,
+        dispatch_request=dispatch_request,
     )
     subgraph_result = team_orchestration_graph.invoke(subgraph_input)
     return team_orchestration_state_to_file_governance_update(subgraph_result)
