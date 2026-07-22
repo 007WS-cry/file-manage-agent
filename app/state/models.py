@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypedDict
 
+from langgraph.channels import UntrackedValue
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_id
@@ -1330,8 +1331,8 @@ class InventoryGraphState(TypedDict):
     current_file_id: str | None
     # 当前正在解析的文件 ID。
 
-    current_raw_content: RawExtractedContent | None
-    # 当前解析器产生的临时原始内容。
+    current_raw_content: Annotated[RawExtractedContent | None, UntrackedValue]
+    # 当前解析器产生的临时原始内容；UntrackedValue 确保正文不会写入 checkpoint。
 
     current_document: DocumentRecord | None
     # 当前完成标准化、等待正式写入结果列表的文档记录。
