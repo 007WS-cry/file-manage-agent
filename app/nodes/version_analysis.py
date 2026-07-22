@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services.document_grouping import (
     group_related_documents as group_related_documents_service,
 )
+from app.services.task_system import build_task_id
 from app.services.version_graph import (
     build_version_chains as build_version_chains_service,
 )
@@ -21,11 +22,21 @@ from app.services.version_graph import (
 from app.services.version_graph import (
     infer_version_direction as infer_version_direction_service,
 )
-from app.state.models import ComparisonJob, DiffRecord, VersionAnalysisGraphState
+from app.state.models import (
+    ComparisonJob,
+    DiffRecord,
+    VersionAnalysisGraphState,
+    VersionSubagentInput,
+)
 from app.utils.runtime import create_error_record
 from app.utils.state_lookup import find_comparison_job_by_id
+from app.utils.task_orchestration import find_latest_subagent_message
+from app.utils.task_tracking import (
+    build_bounded_protocol_text_list,
+    run_version_subagent_orchestration,
+)
 
-"""本模块实现版本分组、文件对比较、关系建边和版本链校验的 LangGraph 节点。"""
+"""本模块只实现版本分组、比较、Version 摘要升级、建边和建链的图节点。"""
 
 
 def group_related_documents(state: VersionAnalysisGraphState) -> dict:
@@ -56,6 +67,8 @@ def group_related_documents(state: VersionAnalysisGraphState) -> dict:
             "comparison_queue": [],
             "current_comparison_id": None,
             "current_diff": None,
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
             "current_comparison_error": None,
         }
     except (OSError, TypeError, ValueError) as exc:
@@ -132,6 +145,8 @@ def build_comparison_queue(state: VersionAnalysisGraphState) -> dict:
         "comparison_queue": queue,
         "current_comparison_id": None,
         "current_diff": None,
+        "current_version_subagent_input": None,
+        "current_version_subagent_output": None,
         "current_comparison_error": None,
     }
 
@@ -143,6 +158,8 @@ def load_next_comparison(state: VersionAnalysisGraphState) -> dict:
         return {
             "current_comparison_id": None,
             "current_diff": None,
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
             "current_comparison_error": "比较队列为空",
         }
     job_id = queue[0]
@@ -155,6 +172,8 @@ def load_next_comparison(state: VersionAnalysisGraphState) -> dict:
             "comparison_queue": queue[1:],
             "current_comparison_id": job_id,
             "current_diff": None,
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
             "current_comparison_error": "比较队列引用了不存在的任务",
         }
     updated_job = dict(job)
@@ -164,6 +183,8 @@ def load_next_comparison(state: VersionAnalysisGraphState) -> dict:
         "comparison_jobs": [ComparisonJob(**updated_job)],
         "current_comparison_id": job_id,
         "current_diff": None,
+        "current_version_subagent_input": None,
+        "current_version_subagent_output": None,
         "current_comparison_error": None,
     }
 
@@ -228,11 +249,16 @@ def infer_version_direction(state: VersionAnalysisGraphState) -> dict:
         return {"current_diff": None, "current_comparison_error": str(exc)}
 
 
-def summarize_key_changes(state: VersionAnalysisGraphState) -> dict:
-    """为当前差异生成不依赖 LLM 的稳定中文关键修改摘要。
+def summarize_key_changes_deterministically(
+    state: VersionAnalysisGraphState,
+) -> dict:
+    """为当前差异生成稳定中文摘要并登记确定性来源。
 
-    ``use_llm_summary`` 尚未接入模型客户端；即使请求该选项，节点也
-    使用确定性摘要，避免因模型不可用而阻断版本治理。
+    Args:
+        state: 已完成版本方向推断的当前文件对比较状态。
+
+    Returns:
+        只更新摘要及来源字段、不改变差异事实、方向或置信度的差异草稿。
     """
     diff = state.get("current_diff")
     if diff is None or state.get("current_comparison_error"):
@@ -246,10 +272,182 @@ def summarize_key_changes(state: VersionAnalysisGraphState) -> dict:
         summary = f"标准化内容相似度为 {diff['content_similarity']:.2f}。"
     if diff["older_file_id"] is None:
         summary += " 当前证据不足以判断版本先后。"
-    if state["request"].get("use_llm_summary"):
-        summary += " 当前未配置 LLM 摘要器，已使用确定性摘要。"
-    updated["summary"] = summary
+    updated.update(
+        {
+            "summary": summary,
+            "summary_source": "deterministic",
+            "summary_message_id": None,
+            "summary_artifact_ref": None,
+        }
+    )
     return {"current_diff": DiffRecord(**updated)}
+
+
+def prepare_version_subagent_input(state: VersionAnalysisGraphState) -> dict:
+    """根据确定性比较结果构造不含完整正文的 Version 最小输入。
+
+    Args:
+        state: 已生成确定性摘要、相似度、关键修改和顺序证据的版本分析状态。
+
+    Returns:
+        ``use_llm_summary`` 开启时返回 Version 输入，否则显式清空单次分派字段。
+    """
+    diff = state.get("current_diff")
+    if (
+        diff is None
+        or state.get("current_comparison_error")
+        or not state["request"].get("use_llm_summary")
+    ):
+        return {
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
+        }
+
+    file_by_id = {item["id"]: item for item in state.get("files", [])}
+    document_by_file_id = {
+        item["file_id"]: item for item in state.get("documents", [])
+    }
+    try:
+        file_ids = [diff["file_a_id"], diff["file_b_id"]]
+        labels = [file_by_id[file_id]["file_name"] for file_id in file_ids]
+        if labels[0] == labels[1]:
+            labels = [
+                f"{label[:240]} [{file_id[:8]}]"
+                for label, file_id in zip(labels, file_ids, strict=True)
+            ]
+        else:
+            labels = [label[:256] for label in labels]
+        artifact_refs = []
+        for file_id in file_ids:
+            content_ref = document_by_file_id[file_id]["content_ref"]
+            if content_ref not in artifact_refs:
+                artifact_refs.append(content_ref)
+        request = VersionSubagentInput(
+            task_id=build_task_id(state["run"]["run_id"], "version_analysis"),
+            comparison_id=diff["id"],
+            file_labels=labels,
+            structural_similarity=diff["structural_similarity"],
+            content_similarity=diff["content_similarity"],
+            key_changes=build_bounded_protocol_text_list(diff["key_changes"]),
+            ordering_signals=build_bounded_protocol_text_list(
+                diff["ordering_signals"]
+            ),
+            artifact_refs=artifact_refs,
+        )
+        return {
+            "current_version_subagent_input": request,
+            "current_version_subagent_output": None,
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        return {
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
+            "errors": [
+                create_error_record(
+                    stage="version_subagent",
+                    node_name="prepare_version_subagent_input",
+                    category="validation",
+                    message=str(error)[:1_000],
+                    fatal=False,
+                )
+            ],
+        }
+
+
+def summarize_key_changes_with_subagent(
+    state: VersionAnalysisGraphState,
+) -> dict:
+    """通过 Team Orchestration 请求 Version Subagent 解释当前差异。
+
+    Args:
+        state: 包含真实 Task DAG、固定团队和可选 Version 最小输入的子图状态。
+
+    Returns:
+        未启用 LLM 摘要时返回空输出；否则返回编排产生的结构化结果、消息与审计。
+    """
+    request = state.get("current_version_subagent_input")
+    if request is None:
+        return {"current_version_subagent_output": None}
+    try:
+        return run_version_subagent_orchestration(state, request)
+    except Exception as error:
+        return {
+            "current_version_subagent_output": None,
+            "errors": [
+                create_error_record(
+                    stage="version_subagent",
+                    node_name="summarize_key_changes_with_subagent",
+                    category="protocol",
+                    message=(
+                        f"{type(error).__name__}: Version Subagent 分派未完成，"
+                        "已保留确定性摘要。"
+                    ),
+                    fatal=False,
+                )
+            ],
+        }
+
+
+def apply_subagent_summary(state: VersionAnalysisGraphState) -> dict:
+    """把成功 Version Subagent 摘要及协议来源写入当前差异草稿。
+
+    Args:
+        state: 路由已确认模型调用成功、输出合法且未使用回退的版本分析状态。
+
+    Returns:
+        只替换摘要和来源字段并清空单次分派输入输出的差异草稿。
+    """
+    diff = state.get("current_diff")
+    output = state.get("current_version_subagent_output")
+    request = state.get("current_version_subagent_input")
+    if diff is None or output is None or request is None:
+        return {
+            "current_comparison_error": "应用 Version Subagent 摘要时缺少差异、输入或输出",
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
+        }
+    message = find_latest_subagent_message(
+        state.get("team_messages", []),
+        task_id=request["task_id"],
+        agent_id="version-subagent",
+    )
+    if message is None or message.get("message_type") != "result":
+        return {
+            "current_comparison_error": "Version Subagent 摘要缺少合法 result Team Message",
+            "current_version_subagent_input": None,
+            "current_version_subagent_output": None,
+        }
+    updated = dict(diff)
+    updated.update(
+        {
+            "summary": output.summary,
+            "summary_source": "version_subagent",
+            "summary_message_id": message["message_id"],
+            "summary_artifact_ref": (
+                output.artifact_refs[0] if output.artifact_refs else None
+            ),
+        }
+    )
+    return {
+        "current_diff": DiffRecord(**updated),
+        "current_version_subagent_input": None,
+        "current_version_subagent_output": None,
+    }
+
+
+def retain_deterministic_summary(state: VersionAnalysisGraphState) -> dict:
+    """在未启用模型或模型回退时保留已经生成的确定性摘要。
+
+    Args:
+        state: 没有可应用的成功 Version Subagent 输出的版本分析状态。
+
+    Returns:
+        清空单次分派输入输出的更新；确定性差异事实和摘要保持不变。
+    """
+    return {
+        "current_version_subagent_input": None,
+        "current_version_subagent_output": None,
+    }
 
 
 def record_diff_result(state: VersionAnalysisGraphState) -> dict:
@@ -273,6 +471,8 @@ def record_diff_result(state: VersionAnalysisGraphState) -> dict:
         "diffs": [diff],
         "current_comparison_id": None,
         "current_diff": None,
+        "current_version_subagent_input": None,
+        "current_version_subagent_output": None,
         "current_comparison_error": None,
     }
 
@@ -306,6 +506,8 @@ def record_comparison_error(state: VersionAnalysisGraphState) -> dict:
         ],
         "current_comparison_id": None,
         "current_diff": None,
+        "current_version_subagent_input": None,
+        "current_version_subagent_output": None,
         "current_comparison_error": None,
     }
 

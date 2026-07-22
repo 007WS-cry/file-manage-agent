@@ -9,10 +9,15 @@ from app.hooks.registry import DEFAULT_HOOK_REGISTRY, resolve_registered_hook
 from app.state.models import ErrorRecord, FileGovernanceState, HookEvent
 from app.utils.runtime import create_error_record, utc_now_iso
 
-"""本模块顺序执行静态注册 Hook，并聚合事件、受限状态更新和阻断型错误。"""
+"""本模块顺序执行静态 Hook，并保护固定 Agent 状态、聚合事件和阻断错误。"""
 
 # Hook 允许修改的顶层字段；业务事实、请求、工作空间和原始文件列表均不可修改。
 HOOK_MUTABLE_STATE_FIELDS = frozenset({"run", "report"})
+
+# 固定 Agent 协议、团队与模型审计字段；生命周期 Hook 必须始终保持只读。
+HOOK_AGENT_PROTECTED_STATE_FIELDS = frozenset(
+    {"llm", "team", "team_messages", "llm_calls", "tasks", "todos"}
+)
 
 
 def are_hooks_enabled(state: FileGovernanceState) -> bool:
@@ -268,7 +273,7 @@ def invoke_registered_hook(
 
     Raises:
         TypeError: Hook 返回值、说明或状态更新类型不正确时抛出。
-        ValueError: Hook 未注册或返回不允许修改的顶层字段时抛出。
+        ValueError: Hook 未注册、尝试修改固定 Agent 状态或返回其他受保护字段时抛出。
     """
     selected_registry = registry if registry is not None else DEFAULT_HOOK_REGISTRY
     hook_function = resolve_registered_hook(hook_name, registry=selected_registry)
@@ -283,6 +288,14 @@ def invoke_registered_hook(
         raise TypeError(f"Hook {hook_name} 的 state_update 必须是对象")
 
     normalized_update = dict(state_update)
+    protected_agent_fields = sorted(
+        set(normalized_update) & HOOK_AGENT_PROTECTED_STATE_FIELDS
+    )
+    if protected_agent_fields:
+        raise ValueError(
+            f"Hook {hook_name} 不得修改顶层字段（固定 Agent 状态）："
+            f"{', '.join(protected_agent_fields)}"
+        )
     disallowed_fields = sorted(set(normalized_update) - HOOK_MUTABLE_STATE_FIELDS)
     if disallowed_fields:
         raise ValueError(

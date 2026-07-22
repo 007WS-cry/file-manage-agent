@@ -241,7 +241,16 @@ class DiffRecord(TypedDict):
     # 金额、日期、条款和表格值等关键修改。
 
     summary: str
-    # 确定性规则或 LLM 生成的差异摘要。
+    # 当前生效的关键修改摘要。
+
+    summary_source: Literal["deterministic", "version_subagent"]
+    # 摘要来自确定性规则还是成功返回的 Version Subagent。
+
+    summary_message_id: str | None
+    # 产生当前摘要的 Team Message ID；确定性摘要时为 None。
+
+    summary_artifact_ref: str | None
+    # 详细版本解释的首个受控产物引用；未生成独立产物时为 None。
 
     ordering_signals: list[str]
     # 支撑版本先后关系的证据。
@@ -723,7 +732,7 @@ class TaskItem(TypedDict):
         "version",
         "evidence",
     ]
-    # 当前 Task 的固定负责角色；0.4.3 由 Team Orchestration 实际选择并调用。
+    # 当前 Task 的固定负责角色；0.4.4 由 Team Orchestration 实际选择并调用。
 
     input_refs: list[str]
     # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
@@ -864,7 +873,7 @@ class AgentMemberState(TypedDict):
     # Agent 当前允许使用的工具名称。
 
     skill_ids: list[str]
-    # 为后续 Skills 预留的引用；0.4.3 中必须保持为空列表。
+    # 为后续 Skills 预留的引用；0.4.4 中必须保持为空列表。
 
 
 class TeamState(TypedDict):
@@ -1343,6 +1352,9 @@ class InventoryGraphState(TypedDict):
 class VersionAnalysisGraphState(TypedDict):
     """版本分组、比较、建链和当前推荐子图使用的状态。"""
 
+    run: RunState
+    # 当前顶层治理运行信息，用于构造真实 Version Analysis Task ID。
+
     request: RequestState
     # 分组相似度和自动选择置信度等参数。
 
@@ -1351,6 +1363,12 @@ class VersionAnalysisGraphState(TypedDict):
 
     team: TeamState
     # 用于定位固定 Version Subagent 和协调 Agent 的团队状态。
+
+    tasks: Annotated[list[TaskItem], merge_by_task_id]
+    # Team Orchestration 校验 Version Subagent 分派所需的真实 Task DAG。
+
+    todos: Annotated[list[TodoItem], merge_by_id]
+    # 由 Task 单向生成并随内部编排调用同步的用户进度投影。
 
     files: Annotated[list[FileRecord], merge_by_id]
     # 参与版本分析的文件记录。
@@ -1372,6 +1390,12 @@ class VersionAnalysisGraphState(TypedDict):
 
     current_diff: DiffRecord | None
     # 当前比较任务尚未正式写入结果列表的差异草稿。
+
+    current_version_subagent_input: VersionSubagentInput | None
+    # 根据当前确定性差异构造、且不包含完整正文的 Version 最小输入。
+
+    current_version_subagent_output: VersionSubagentOutput | None
+    # Team Orchestration 返回的可选 Version Pydantic 结构化结果。
 
     current_comparison_error: str | None
     # 当前文件对比较产生的错误。

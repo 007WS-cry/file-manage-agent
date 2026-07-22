@@ -256,6 +256,42 @@ def comparison_succeeded(
     )
 
 
+def has_valid_version_subagent_summary(
+    state: VersionAnalysisGraphState,
+) -> Literal["apply", "deterministic", "comparison_failure"]:
+    """在成功模型摘要、确定性回退和比较失败之间选择后续路径。
+
+    只有结构化输出存在，且对应 Version Subagent 审计状态为 ``success``、没有
+    使用协调者回退时才允许替换摘要。模型超时、缺少密钥、非法输出和协议回退
+    均保留确定性摘要，不改变版本方向、相似度、关键修改或置信度。
+
+    Args:
+        state: 已完成可选 Version Subagent 编排调用的版本分析状态。
+
+    Returns:
+        比较本身失败时返回 ``comparison_failure``；成功模型输出返回 ``apply``；
+        其余可降级情况返回 ``deterministic``。
+    """
+    if state.get("current_diff") is None or state.get("current_comparison_error"):
+        return "comparison_failure"
+    output = state.get("current_version_subagent_output")
+    request = state.get("current_version_subagent_input")
+    if output is None or request is None:
+        return "deterministic"
+    matching_calls = [
+        call
+        for call in state.get("llm_calls", [])
+        if call.get("task_id") == request["task_id"]
+        and call.get("agent_id") == "version-subagent"
+    ]
+    if not matching_calls:
+        return "deterministic"
+    latest_call = matching_calls[-1]
+    if latest_call.get("status") != "success" or latest_call.get("fallback_used"):
+        return "deterministic"
+    return "apply"
+
+
 def has_pdf_match_jobs(
     state: EvidenceGraphState,
 ) -> Literal["pdf_match", "done"]:

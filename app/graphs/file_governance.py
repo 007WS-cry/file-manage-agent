@@ -41,6 +41,8 @@ from app.nodes.subgraphs_nodes import (
     run_version_analysis_subgraph,
 )
 from app.nodes.task_tracking import (
+    dispatch_content_subagent_task,
+    dispatch_evidence_subagent_task,
     plan_run_tasks,
     sync_evidence_task_status,
     sync_human_review_task_status,
@@ -52,7 +54,7 @@ from app.nodes.task_tracking import (
 from app.state.models import FileGovernanceState
 from app.storage.checkpoints import create_memory_checkpointer
 
-"""本模块构建接入 Task 进度、生命周期、四个业务子图和人工暂停恢复的顶层治理图。"""
+"""本模块构建接入生命周期、四业务子图、阶段后 Subagent 分派和人工恢复的顶层图。"""
 
 
 def build_file_governance_graph(
@@ -77,10 +79,12 @@ def build_file_governance_graph(
     builder.add_node("plan_run_tasks", plan_run_tasks)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
     builder.add_node("sync_inventory_task_status", sync_inventory_task_status)
+    builder.add_node("dispatch_content_subagent_task", dispatch_content_subagent_task)
     builder.add_node("run_version_analysis_subgraph", run_version_analysis_subgraph)
     builder.add_node("sync_version_task_status", sync_version_task_status)
     builder.add_node("run_evidence_subgraph", run_evidence_subgraph)
     builder.add_node("sync_evidence_task_status", sync_evidence_task_status)
+    builder.add_node("dispatch_evidence_subagent_task", dispatch_evidence_subagent_task)
     builder.add_node("run_recommendation_subgraph", run_recommendation_subgraph)
     builder.add_node("sync_recommendation_task_status", sync_recommendation_task_status)
     builder.add_node("prepare_human_review", prepare_human_review)
@@ -131,8 +135,16 @@ def build_file_governance_graph(
         "sync_inventory_task_status",
         has_analyzable_documents,
         {
-            "analyzable": "run_version_analysis_subgraph",
+            "analyzable": "dispatch_content_subagent_task",
             "empty": "generate_no_data_report",
+            "failure": "generate_failure_report",
+        },
+    )
+    builder.add_conditional_edges(
+        "dispatch_content_subagent_task",
+        route_team_orchestration_result,
+        {
+            "success": "run_version_analysis_subgraph",
             "failure": "generate_failure_report",
         },
     )
@@ -146,7 +158,18 @@ def build_file_governance_graph(
     builder.add_conditional_edges(
         "sync_evidence_task_status",
         route_evidence_result,
-        {"success": "run_recommendation_subgraph", "failure": "generate_failure_report"},
+        {
+            "success": "dispatch_evidence_subagent_task",
+            "failure": "generate_failure_report",
+        },
+    )
+    builder.add_conditional_edges(
+        "dispatch_evidence_subagent_task",
+        route_team_orchestration_result,
+        {
+            "success": "run_recommendation_subgraph",
+            "failure": "generate_failure_report",
+        },
     )
     builder.add_edge("run_recommendation_subgraph", "sync_recommendation_task_status")
     builder.add_conditional_edges(
