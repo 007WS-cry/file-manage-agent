@@ -85,7 +85,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.4.2 Task、LLM、Subagent 和 Team Protocol 调试快照只允许在运行时生成
+# 0.4.3 Task、LLM、固定团队分派和 Team Protocol 快照只允许在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -102,6 +102,9 @@ subagent_output*.json
 subagent_prompt*.json
 team_message*.json
 team_protocol*.json
+dispatch_request*.json
+dispatch_result*.json
+coordinator_fallback*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

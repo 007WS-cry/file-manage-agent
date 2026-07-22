@@ -10,6 +10,7 @@ from app.services.task_system import (
     assign_tasks_to_roles,
     build_task_id,
     create_task_dag,
+    resolve_subagent_task,
     topologically_sort_tasks,
     update_todos_from_tasks,
     validate_task_dag,
@@ -229,6 +230,46 @@ def test_role_assignment_uses_fixed_mapping_without_touching_runtime_fields() ->
     assert assigned[0]["status"] == "running"
     assert assigned[0]["output_refs"] == ["partial-files"]
     assert assigned[0]["updated_at"] == "2026-07-21T08:00:30+00:00"
+
+
+@pytest.mark.parametrize(
+    ("task_type", "expected_role"),
+    [
+        ("inventory", "content"),
+        ("version_analysis", "version"),
+        ("evidence", "evidence"),
+    ],
+)
+def test_resolve_subagent_task_accepts_only_three_fixed_roles(
+    task_type: str,
+    expected_role: str,
+) -> None:
+    """前三类 Task 应解析为唯一实际固定角色。"""
+    task = resolve_subagent_task(_create_tasks(), build_task_id(RUN_ID, task_type))
+
+    assert task["task_type"] == task_type
+    assert task["assigned_role"] == expected_role
+
+
+def test_resolve_subagent_task_rejects_coordinator_and_failed_tasks() -> None:
+    """协调者 Task 和已经失败的 Subagent Task 均不得再次分派。"""
+    tasks = _create_tasks()
+
+    with pytest.raises(ValueError, match="不允许分派"):
+        resolve_subagent_task(tasks, build_task_id(RUN_ID, "recommendation"))
+
+    _replace_task(tasks, "inventory", status="failed", error="扫描失败")
+    with pytest.raises(ValueError, match="不允许再次分派"):
+        resolve_subagent_task(tasks, build_task_id(RUN_ID, "inventory"))
+
+
+def test_resolve_subagent_task_rejects_role_tampering() -> None:
+    """Task assigned_role 被篡改时不得根据输入辨识字段绕过固定职责。"""
+    tasks = _create_tasks()
+    _replace_task(tasks, "inventory", assigned_role="version")
+
+    with pytest.raises(ValueError, match="固定职责不一致"):
+        resolve_subagent_task(tasks, build_task_id(RUN_ID, "inventory"))
 
 
 def test_todos_are_a_deterministic_pure_projection_of_tasks() -> None:

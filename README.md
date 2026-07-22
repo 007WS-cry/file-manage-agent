@@ -1,8 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.2` 在统一 LLM 基础设施上
-实现三个固定 Subagent 和最小 Team Protocol：输入只允许短预览、结构化摘要与受控
-引用，输出只允许 Pydantic 摘要与引用，失败也会返回结构化 error 消息。当前具备：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.3` 已把三个固定 Subagent
+接入 Team Orchestration：编排图初始化固定团队、选择唯一角色、校验协议消息、登记
+受控引用，并在子图失败或返回越权引用时执行协调者确定性回退。当前具备：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
@@ -29,9 +29,10 @@
 - 按 `task_id` 稳定合并且不重置已有字段的 LangGraph Task reducer；
 - 六阶段固定 Task DAG、确定性 ID、拓扑排序、环检测和固定逻辑角色映射；
 - 仅以 Task 为事实来源、不会读取旧 Todo 状态的用户进度纯投影；
-- 独立完成 Task 创建、校验、角色分配、状态更新和 Todo 投影的编排子图；
-- 消费后清空且不会泄漏回顶层状态的私有 `task_update`；
-- 不包含 LLM、Subagent 或工具节点的确定性 Team Orchestration 执行路径。
+- 同时支持 Task 状态同步和固定 Subagent 分派的 Team Orchestration 子图；
+- 固定团队初始化、动态成员拒绝、实际角色选择和串行分派运行状态；
+- 消费后清空且不会泄漏回顶层状态的 `task_update` 与 `dispatch_request`；
+- Subagent result/error 消息校验、摘要与引用合并、Task 产物登记和协调者回退；
 - 顶层规划节点和六个同步适配节点，按业务实际结果推进 Task 和 Todo；
 - 无需审核时正常跳过 Human Review，interrupt 期间保持 running，恢复后完成；
 - 业务失败只标记源 Task failed，下游以带原因的 skipped 阻断且报告仍可收口；
@@ -50,9 +51,9 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
-`0.4.2` 已在三个独立 Subagent 图中注册统一 LLM Client 节点；既有四个业务图和
-顶层图尚未调用这些子图，因此默认文件治理结果仍与 `0.4.0` 一致。CLI 只展示用户
-所需的最小进度，不输出 LLM 配置、Team Message、Prompt 或调用审计。
+`0.4.3` 已允许 Team Orchestration 调用三个固定 Subagent；既有四个业务图和顶层图
+尚未构造 `dispatch_request`，因此默认文件治理路径仍与 `0.4.0` 一致。CLI 只展示
+用户所需的最小进度，不输出 LLM 配置、Team Message、Prompt 或调用审计。
 
 ## 安全边界
 
@@ -85,6 +86,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
   Subagent 不会主动打开 `artifact_refs` 指向的文件。
 - Team Message 的发送方和接收方必须属于固定 Team，result/error 必须返回唯一
   coordinator，模型输出引用必须属于当前输入白名单。
+- Team Orchestration 拒绝动态成员、角色篡改、协调者 Task 分派和失败 Task 重放；
+  分派请求、模型输出和 Team Message 三层引用必须保持一致。
 
 ## 目录
 
@@ -117,6 +120,7 @@ file-manage-agent/
 ├── docs/release-0.4.0-task-orchestration.md # 0.4.0 正式发布说明
 ├── docs/version-0.4.1-llm-foundation.md # 0.4.1 LLM 基础设施说明
 ├── docs/version-0.4.2-fixed-subagents.md # 0.4.2 固定 Subagent 与 Team Protocol
+├── docs/version-0.4.3-team-dispatch.md # 0.4.3 固定团队分派与协调者回退
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -292,6 +296,22 @@ START
 三个 Subagent 当前可以独立调用，但尚未接入既有 Inventory、Version Analysis 和
 Evidence 业务图，避免本批改变 `0.4.0` 的确定性治理结论。详细协议、分支语义和
 测试矩阵见 [0.4.2 固定 Subagent 与 Team Protocol](docs/version-0.4.2-fixed-subagents.md)。
+
+## 0.4.3 升级 Team Orchestration
+
+第三批把第二批的三个独立 Subagent 接入 Team Orchestration，但暂不修改顶层业务图：
+
+- 编排图幂等初始化并严格校验 coordinator、Content、Version、Evidence 四个成员；
+- 同一次调用只能执行 `task_update` 状态同步或 `dispatch_request` 分派；
+- 分派前同时校验真实 Task、`assigned_role`、最小输入协议和产物引用；
+- 条件路由只允许选择 Content、Version、Evidence 三个固定角色；
+- Subagent 返回后再次校验 sender、receiver、消息类型、摘要和引用白名单；
+- 合法引用按稳定顺序登记到对应 `TaskItem.output_refs`；
+- 模型失败、error 消息或越权引用会转为协调者确定性回退结果；
+- `dispatch_request` 和 `dispatch_result` 不写回顶层状态，不实现 Skills 或 Worktree。
+
+现有顶层图尚未创建分派请求，三个业务阶段的接入属于下一批。完整分支、状态边界和
+测试矩阵见 [0.4.3 固定团队分派](docs/version-0.4.3-team-dispatch.md)。
 
 ## 图结构
 
@@ -562,7 +582,7 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.4.2 默认值仍为关闭；这里显式写出便于说明生命周期与 LLM 配置。
+    # 0.4.3 默认值仍为关闭；这里显式写出便于说明生命周期与 LLM 配置。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
     llm_config={
@@ -638,10 +658,13 @@ python -m compileall -q app tests
 - 固定 Task DAG 的确定性创建、幂等补齐、角色映射和已有状态保护；
 - 重复 ID、重复依赖、未知依赖、自依赖和循环依赖拒绝；
 - Todo 对 Task 状态的确定性纯投影、正常跳过和失败阻断语义。
-- Team Orchestration 五节点结构、无效 DAG 条件截断和固定角色分配；
+- Team Orchestration 的状态同步/分派双路径、无效 DAG 截断和固定团队初始化；
 - Task 更新的依赖检查、终态幂等、产物引用合并和错误收口；
-- 私有 task_update 消费、转换器白名单和顶层包装字段隔离；
+- 私有 task_update/dispatch_request 消费、转换器白名单和顶层包装字段隔离；
 - 重复调用子图时 Task、Todo 和时间字段不重复、不重置。
+- Content、Version、Evidence 唯一角色选择及 assignment/result/error 消息往返；
+- 模型失败与伪造引用的协调者回退、fallback 审计和 Task 引用登记；
+- 动态团队成员、角色篡改、协调者 Task 分派和 Worktree 节点缺失检查；
 - 顶层四业务 Task 的顺序推进、无需人工审核时的正常跳过和报告完成；
 - interrupt 期间 Human Review running、恢复后的审核与报告 Task 完成；
 - 业务失败源 Task、下游阻断跳过、失败报告收口和 Todo blocked 语义；
@@ -661,13 +684,13 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.4.2 -t file-manage-agent:0.4.2 .
+docker build --build-arg APP_VERSION=0.4.3 -t file-manage-agent:0.4.3 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.4.2
+docker run --rm file-manage-agent:0.4.3
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -680,7 +703,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.4.2 \
+  file-manage-agent:0.4.3 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -692,7 +715,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.4.2 \
+  file-manage-agent:0.4.3 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -701,7 +724,7 @@ docker run --rm \
 
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
-- 三个固定 Subagent 与既有业务图、Team Orchestration 顶层执行路径的整合；
+- Inventory、Version Analysis、Evidence 三个业务阶段向 Team Orchestration 提交分派请求；
 - LLM 版本差异摘要；当前版本分析仍始终使用确定性摘要；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 持久化工具调用审计；当前只记录最小 HookEvent；

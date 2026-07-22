@@ -4,12 +4,13 @@ from copy import deepcopy
 from typing import cast
 
 from app.graphs.team_orchestration import build_team_orchestration_graph
+from app.llm.config import create_llm_config_state
 from app.services.task_system import build_task_id, create_task_dag
 from app.state.converters import (
     file_governance_to_team_orchestration_state,
     team_orchestration_state_to_file_governance_update,
 )
-from app.state.factories import create_initial_state
+from app.state.factories import create_initial_state, create_team_state
 from app.state.models import (
     FileGovernanceState,
     TaskItem,
@@ -50,9 +51,15 @@ def _create_subgraph_state(
             "started_at": STARTED_AT,
             "finished_at": None,
         },
+        llm=create_llm_config_state(),
+        team=create_team_state(),
         task_update=dict(task_update) if task_update is not None else None,
+        dispatch_request=None,
+        dispatch_result=None,
         tasks=[dict(task) for task in tasks or []],
         todos=[],
+        team_messages=[],
+        llm_calls=[],
         errors=[],
     )
 
@@ -111,8 +118,8 @@ def _task_by_type(tasks: list[TaskItem], task_type: str) -> TaskItem:
     raise AssertionError(f"没有找到 Task：{task_type}")
 
 
-def test_graph_contains_only_deterministic_orchestration_nodes() -> None:
-    """独立子图只能包含本批五个确定性节点，不能注册 LLM 或 Subagent。"""
+def test_graph_contains_task_sync_and_fixed_subagent_dispatch_nodes() -> None:
+    """独立子图应同时包含原 Task 同步和三个固定 Subagent 分派节点。"""
     graph = build_team_orchestration_graph().get_graph()
     node_names = set(graph.nodes)
 
@@ -120,12 +127,23 @@ def test_graph_contains_only_deterministic_orchestration_nodes() -> None:
         "create_task_dag",
         "validate_task_dag",
         "assign_tasks_to_roles",
+        "initialize_fixed_agent_team",
+        "validate_orchestration_action",
         "update_task_status",
         "update_todos_from_tasks",
+        "validate_subagent_payload",
+        "create_assignment_message",
+        "invoke_content_subagent_graph",
+        "invoke_version_subagent_graph",
+        "invoke_evidence_subagent_graph",
+        "validate_team_message",
+        "fallback_to_coordinator",
+        "build_fallback_result_message",
+        "merge_subagent_artifacts",
+        "append_task_output_refs",
     }
     assert expected_nodes.issubset(node_names)
-    assert not any("llm" in name.lower() for name in node_names)
-    assert not any("subagent" in name.lower() for name in node_names)
+    assert not any("worktree" in name.lower() for name in node_names)
 
 
 def test_subgraph_creates_valid_dag_assigns_roles_and_projects_todos() -> None:
@@ -271,7 +289,14 @@ def test_converters_do_not_leak_task_update_or_unrelated_top_errors() -> None:
     result = build_team_orchestration_graph().invoke(subgraph_state)
     top_update = team_orchestration_state_to_file_governance_update(result)
 
-    assert set(top_update) == {"tasks", "todos", "errors"}
+    assert set(top_update) == {
+        "team",
+        "tasks",
+        "todos",
+        "team_messages",
+        "llm_calls",
+        "errors",
+    }
     assert "task_update" not in top_update
     assert _task_by_type(top_update["tasks"], "inventory")["status"] == "running"
 
@@ -292,7 +317,14 @@ def test_top_level_wrapper_returns_only_public_orchestration_fields() -> None:
         task_update=task_update,
     )
 
-    assert set(update) == {"tasks", "todos", "errors"}
+    assert set(update) == {
+        "team",
+        "tasks",
+        "todos",
+        "team_messages",
+        "llm_calls",
+        "errors",
+    }
     assert len(update["tasks"]) == 6
     assert len(update["todos"]) == 4
     assert "task_update" not in update
