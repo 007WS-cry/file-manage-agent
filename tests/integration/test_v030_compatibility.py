@@ -46,9 +46,9 @@ from app.nodes.subgraphs_nodes import (
 from app.state.factories import create_initial_state
 from app.state.models import FileGovernanceState
 
-"""本文件重建 0.3.0 顶层路径，验证接入 Task 跟踪后业务事实和报告保持兼容。"""
+"""本文件重建 0.3.0 顶层路径，验证 0.5.0 Agent 解释层不改变业务事实和报告。"""
 
-# 0.3.0 与 0.3.3 必须逐项保持一致的业务结果字段。
+# 0.3.0 与 0.5.0 必须逐项保持一致的业务结果字段。
 BUSINESS_RESULT_FIELDS = (
     "files",
     "documents",
@@ -209,7 +209,7 @@ def create_compatibility_state(tmp_path: Path) -> FileGovernanceState:
 def test_task_tracking_preserves_v030_business_and_report_results(
     tmp_path: Path,
 ) -> None:
-    """0.3.3 新增 Task 进度不得改变 0.3.0 治理结论、审核状态或报告正文。"""
+    """0.5.0 Task 和 Agent 扩展不得改变 0.3.0 治理结论、审核状态或报告正文。"""
     initial_state = create_compatibility_state(tmp_path)
     reference_result = build_v030_reference_graph().invoke(deepcopy(initial_state))
     current_result = build_file_governance_graph().invoke(
@@ -218,6 +218,13 @@ def test_task_tracking_preserves_v030_business_and_report_results(
     )
 
     assert current_result["run"]["status"] == reference_result["run"]["status"]
+    assert current_result["llm"]["enabled"] is False
+    assert current_result["llm"]["provider"] == "mock"
+    assert {call["agent_id"] for call in current_result["llm_calls"]} == {
+        "content-subagent",
+        "evidence-subagent",
+    }
+    assert all(diff["summary_source"] == "deterministic" for diff in current_result["diffs"])
     for field_name in BUSINESS_RESULT_FIELDS:
         assert current_result[field_name] == reference_result[field_name]
     assert current_result["human_review"] == reference_result["human_review"]

@@ -6,11 +6,14 @@ from langgraph.types import Send
 
 from app.services.task_system import TASK_DAG_TEMPLATE, build_task_id, validate_task_dag
 from app.state.models import (
+    ContentSubagentGraphState,
     EvidenceGraphState,
+    EvidenceSubagentGraphState,
     FileGovernanceState,
     InventoryGraphState,
     TeamOrchestrationGraphState,
     VersionAnalysisGraphState,
+    VersionSubagentGraphState,
 )
 
 """本模块实现顶层治理图以及 Inventory、Version Analysis、Evidence 子图路由。"""
@@ -253,6 +256,42 @@ def comparison_succeeded(
     )
 
 
+def has_valid_version_subagent_summary(
+    state: VersionAnalysisGraphState,
+) -> Literal["apply", "deterministic", "comparison_failure"]:
+    """在成功模型摘要、确定性回退和比较失败之间选择后续路径。
+
+    只有结构化输出存在，且对应 Version Subagent 审计状态为 ``success``、没有
+    使用协调者回退时才允许替换摘要。模型超时、缺少密钥、非法输出和协议回退
+    均保留确定性摘要，不改变版本方向、相似度、关键修改或置信度。
+
+    Args:
+        state: 已完成可选 Version Subagent 编排调用的版本分析状态。
+
+    Returns:
+        比较本身失败时返回 ``comparison_failure``；成功模型输出返回 ``apply``；
+        其余可降级情况返回 ``deterministic``。
+    """
+    if state.get("current_diff") is None or state.get("current_comparison_error"):
+        return "comparison_failure"
+    output = state.get("current_version_subagent_output")
+    request = state.get("current_version_subagent_input")
+    if output is None or request is None:
+        return "deterministic"
+    matching_calls = [
+        call
+        for call in state.get("llm_calls", [])
+        if call.get("task_id") == request["task_id"]
+        and call.get("agent_id") == "version-subagent"
+    ]
+    if not matching_calls:
+        return "deterministic"
+    latest_call = matching_calls[-1]
+    if latest_call.get("status") != "success" or latest_call.get("fallback_used"):
+        return "deterministic"
+    return "apply"
+
+
 def has_pdf_match_jobs(
     state: EvidenceGraphState,
 ) -> Literal["pdf_match", "done"]:
@@ -314,3 +353,201 @@ def route_task_dag_validation(
         for error in state.get("errors", [])
     )
     return "invalid" if has_blocking_error else "valid"
+
+
+def route_team_initialization_result(
+    state: TeamOrchestrationGraphState,
+) -> Literal["valid", "invalid"]:
+    """根据固定团队初始化结果决定是否继续实际角色分配。
+
+    Args:
+        state: 已执行固定团队初始化节点的 Team Orchestration 状态。
+
+    Returns:
+        团队合法时返回 ``valid``；初始化产生致命错误时返回 ``invalid``。
+    """
+    has_error = any(
+        error.get("node_name") == "initialize_fixed_agent_team"
+        and error.get("fatal") is True
+        for error in state.get("errors", [])
+    )
+    return "invalid" if has_error else "valid"
+
+
+def route_orchestration_action(
+    state: TeamOrchestrationGraphState,
+) -> Literal["status_sync", "dispatch", "invalid"]:
+    """在 Task 状态同步、固定 Subagent 分派和非法命令之间选择路径。
+
+    Args:
+        state: 已完成团队初始化、角色分配和命令互斥校验的编排状态。
+
+    Returns:
+        无分派请求时返回 ``status_sync``，有请求时返回 ``dispatch``，
+        当前编排准备阶段存在致命错误时返回 ``invalid``。
+    """
+    blocking_nodes = {"assign_tasks_to_roles", "validate_orchestration_action"}
+    if any(
+        error.get("node_name") in blocking_nodes and error.get("fatal") is True
+        for error in state.get("errors", [])
+    ):
+        return "invalid"
+    return "dispatch" if state.get("dispatch_request") is not None else "status_sync"
+
+
+def route_subagent_payload_validation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["assign", "fallback"]:
+    """根据最小输入、真实 Task 和固定角色校验结果选择分派或协调者回退。
+
+    Args:
+        state: 已执行 Subagent 分派载荷校验节点的编排状态。
+
+    Returns:
+        当前载荷合法时返回 ``assign``，存在校验错误时返回 ``fallback``。
+    """
+    has_error = any(
+        error.get("node_name") == "validate_subagent_payload"
+        for error in state.get("errors", [])
+    )
+    return "fallback" if has_error else "assign"
+
+
+def select_subagent(
+    state: TeamOrchestrationGraphState,
+) -> Literal["content", "version", "evidence", "fallback"]:
+    """根据已验证 dispatch_request 的辨识字段选择唯一固定 Subagent。
+
+    Args:
+        state: 已创建 assignment Team Message 的编排状态。
+
+    Returns:
+        返回 ``content``、``version`` 或 ``evidence``；请求或 assignment
+        不完整时返回 ``fallback``。
+    """
+    if any(
+        error.get("node_name") == "create_assignment_message"
+        for error in state.get("errors", [])
+    ):
+        return "fallback"
+    request = state.get("dispatch_request")
+    if not isinstance(request, dict):
+        return "fallback"
+    if "document_id" in request:
+        return "content"
+    if "comparison_id" in request:
+        return "version"
+    if "group_id" in request:
+        return "evidence"
+    return "fallback"
+
+
+def route_team_message_validation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["merge", "fallback"]:
+    """根据 Subagent 返回消息与结构化结果的一致性选择合并或协调者回退。
+
+    Args:
+        state: 已执行 Team Message 校验节点的编排状态。
+
+    Returns:
+        当前响应合法且具有结构化结果时返回 ``merge``，否则返回 ``fallback``。
+    """
+    has_error = any(
+        error.get("node_name") == "validate_team_message"
+        for error in state.get("errors", [])
+    )
+    if has_error or state.get("dispatch_result") is None:
+        return "fallback"
+    return "merge"
+
+
+def route_subagent_input_validation(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["valid", "invalid"]:
+    """根据三个固定 Subagent 的输入协议校验结果选择 Prompt 或错误消息。
+
+    Args:
+        state: 已执行角色专属输入校验节点的 Subagent 子图状态。
+
+    Returns:
+        当前输入校验节点产生错误时返回 ``invalid``，否则返回 ``valid``。
+    """
+    input_nodes = {
+        "validate_content_subagent_input",
+        "validate_version_subagent_input",
+        "validate_evidence_subagent_input",
+    }
+    has_input_error = any(
+        error.get("node_name") in input_nodes for error in state.get("errors", [])
+    )
+    return "invalid" if has_input_error else "valid"
+
+
+def route_subagent_prompt_validation(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["invoke", "error"]:
+    """根据最小 Prompt 和固定 before-model 安全检查结果决定是否调用模型。
+
+    Args:
+        state: 已生成 Prompt 并执行固定 before-model 安全检查的子图状态。
+
+    Returns:
+        Prompt 构造或安全检查失败时返回 ``error``，否则返回 ``invoke``。
+    """
+    prompt_nodes = {
+        "build_content_subagent_prompt",
+        "build_version_subagent_prompt",
+        "build_evidence_subagent_prompt",
+        "execute_before_model_hooks",
+    }
+    has_prompt_error = any(
+        error.get("node_name") in prompt_nodes for error in state.get("errors", [])
+    )
+    return "error" if has_prompt_error else "invoke"
+
+
+def route_subagent_llm_result(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["validate", "fallback", "error"]:
+    """根据结构化模型结果和回退开关选择输出校验、确定性回退或错误消息。
+
+    Args:
+        state: 已调用统一 LLM Client 并执行 after-model 安全检查的子图状态。
+
+    Returns:
+        有输出时返回 ``validate``；无输出且允许回退时返回 ``fallback``；
+        其他情况返回 ``error``。
+    """
+    if state.get("output") is not None:
+        return "validate"
+    if state.get("llm", {}).get("fallback_enabled") is True:
+        return "fallback"
+    return "error"
+
+
+def route_subagent_output_validation(
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState,
+) -> Literal["persist", "fallback", "error"]:
+    """根据输出 Schema 和引用白名单校验结果选择固化、回退或错误消息。
+
+    Args:
+        state: 已执行角色专属输出校验节点的 Subagent 子图状态。
+
+    Returns:
+        输出合法时返回 ``persist``；输出被拒绝且允许回退时返回 ``fallback``；
+        其他情况返回 ``error``。
+    """
+    if state.get("output") is not None:
+        return "persist"
+    if state.get("llm", {}).get("fallback_enabled") is True:
+        return "fallback"
+    return "error"

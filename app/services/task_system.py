@@ -40,7 +40,7 @@ class TodoDefinition(TypedDict):
     # Todo 的固定展示顺序。
 
 
-# 固定 Task 类型到逻辑角色的映射；0.3.x 只记录职责，不调用真实 Subagent。
+# 固定 Task 类型到实际负责角色的映射；前三类 Task 可由固定 Subagent 执行。
 TASK_ROLE_BY_TYPE: dict[str, str] = {
     "inventory": "content",
     "version_analysis": "version",
@@ -49,6 +49,9 @@ TASK_ROLE_BY_TYPE: dict[str, str] = {
     "human_review": "coordinator",
     "report": "coordinator",
 }
+
+# 允许通过 Team Orchestration 分派给固定 Subagent 的 Task 类型。
+SUBAGENT_TASK_TYPES = frozenset({"inventory", "version_analysis", "evidence"})
 
 # 文件治理运行使用的固定 Task DAG 模板，元组顺序同时作为稳定展示顺序。
 TASK_DAG_TEMPLATE: tuple[TaskDefinition, ...] = (
@@ -329,8 +332,8 @@ def create_task_dag(
 def assign_tasks_to_roles(tasks: Sequence[TaskItem]) -> list[TaskItem]:
     """按照固定职责映射设置 Task 的 assigned_role。
 
-    本函数只修正角色字段，不修改 Task 状态、依赖、输入输出、错误或时间，当前版本
-    也不会实例化或调用任何 Subagent。
+    本函数只修正角色字段，不修改 Task 状态、依赖、输入输出、错误或时间。前三类
+    Task 的角色会用于 Team Orchestration 选择实际固定 Subagent。
 
     Args:
         tasks: 已创建并等待分配逻辑角色的合法 Task DAG。
@@ -352,6 +355,47 @@ def assign_tasks_to_roles(tasks: Sequence[TaskItem]) -> list[TaskItem]:
         updated_task["assigned_role"] = role
         assigned.append(cast(TaskItem, updated_task))
     return assigned
+
+
+def resolve_subagent_task(
+    tasks: Sequence[TaskItem],
+    task_id: str,
+) -> TaskItem:
+    """解析并校验一次 Subagent 分派所对应的真实 Task。
+
+    Args:
+        tasks: 当前运行的完整合法 Task DAG。
+        task_id: Subagent 最小输入信封中声明的 Task ID。
+
+    Returns:
+        与输入 ID 对应、角色正确且允许分派的 Task 独立副本。
+
+    Raises:
+        ValueError: Task ID 为空、未知、不可分派、角色不一致或已经失败终结时抛出。
+    """
+    validate_task_dag(tasks)
+    normalized_task_id = task_id.strip() if isinstance(task_id, str) else ""
+    if not normalized_task_id:
+        raise ValueError("Subagent 分派必须提供非空 task_id")
+
+    task = next(
+        (item for item in tasks if item.get("task_id") == normalized_task_id),
+        None,
+    )
+    if task is None:
+        raise ValueError(f"Subagent 分派引用了未知 Task：{normalized_task_id}")
+
+    task_type = str(task.get("task_type", ""))
+    if task_type not in SUBAGENT_TASK_TYPES:
+        raise ValueError(f"Task {normalized_task_id} 不允许分派给 Subagent")
+    expected_role = TASK_ROLE_BY_TYPE[task_type]
+    if task.get("assigned_role") != expected_role:
+        raise ValueError(
+            f"Task {normalized_task_id} 的 assigned_role 与固定职责不一致"
+        )
+    if task.get("status") in {"failed", "skipped"}:
+        raise ValueError(f"终态 Task {normalized_task_id} 不允许再次分派")
+    return cast(TaskItem, dict(task))
 
 
 def _derive_todo_status(

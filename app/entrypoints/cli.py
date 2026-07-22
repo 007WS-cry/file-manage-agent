@@ -232,6 +232,29 @@ def resolve_lifecycle_payload(
     return prompt_config, hook_config
 
 
+def resolve_llm_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """解析请求信封中的可选 LLM 配置对象。
+
+    该函数只复制配置，不读取环境变量或创建 Provider。``api_key`` 等未知字段会在
+    状态工厂中被拒绝；允许配置的 ``api_key_env`` 只能保存环境变量名称。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+
+    Returns:
+        独立的 LLM 配置字典；缺省或显式 null 时返回 None。
+
+    Raises:
+        ValueError: ``llm`` 不是对象或 null 时抛出。
+    """
+    raw_llm = payload.get("llm")
+    if raw_llm is None:
+        return None
+    if not isinstance(raw_llm, dict):
+        raise ValueError("llm 必须是对象或 null")
+    return dict(raw_llm)
+
+
 def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
     """把 LangGraph Interrupt 对象转换为可输出的 JSON 值。
 
@@ -333,6 +356,7 @@ def run_command(arguments: argparse.Namespace) -> int:
         payload,
         base_directory=request_path.parent,
     )
+    llm_config = resolve_llm_payload(payload)
     backend = arguments.checkpoint_backend or checkpoint.get("backend", "sqlite")
     if backend not in {"memory", "sqlite"}:
         raise ValueError("checkpoint.backend 只能是 memory 或 sqlite")
@@ -345,6 +369,7 @@ def run_command(arguments: argparse.Namespace) -> int:
         workspace,
         prompt_config=prompt_config,
         hook_config=hook_config,
+        llm_config=llm_config,
     )
     with open_checkpointer(
         backend,

@@ -369,6 +369,9 @@ def compare_document_pair(
         content_similarity=round(content_similarity, 4),
         key_changes=key_changes,
         summary=summary,
+        summary_source="deterministic",
+        summary_message_id=None,
+        summary_artifact_ref=None,
         ordering_signals=signals,
         confidence=round(min(1.0, confidence), 4),
     )

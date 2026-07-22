@@ -10,13 +10,18 @@ from app.hooks.runner import (
 from app.hooks.runner import (
     execute_before_run_hooks as run_before_run_hooks,
 )
+from app.llm.config import create_llm_config_state
 from app.llm.prompt_loader import (
     load_system_prompt as read_system_prompt,
 )
 from app.llm.prompt_loader import (
     record_prompt_load_error,
 )
-from app.state.factories import create_hook_config_state, create_prompt_state
+from app.state.factories import (
+    create_hook_config_state,
+    create_prompt_state,
+    create_team_state,
+)
 from app.state.models import FileGovernanceState
 from app.utils.lifecycle import update_run_stage, with_lifecycle_defaults
 from app.utils.runtime import create_error_record, paths_overlap, utc_now_iso
@@ -31,7 +36,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
         state: 调用方提交的顶层状态；推荐由 ``create_initial_state`` 创建。
 
     Returns:
-        进入 ``running`` 状态的运行信息及缺省 Task、证据、人工审核和报告字段。
+        进入 ``running`` 状态的运行信息及缺省 LLM、Team、Task、证据和报告字段。
     """
     previous_run = state.get("run", {})
     run_id = previous_run.get("run_id") or uuid4().hex
@@ -62,9 +67,13 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "deliveries": state.get("deliveries", []),
         "prompt": state.get("prompt", create_prompt_state()),
         "hooks": state.get("hooks", create_hook_config_state()),
+        "llm": state.get("llm", create_llm_config_state()),
+        "team": state.get("team", create_team_state()),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),
+        "team_messages": state.get("team_messages", []),
+        "llm_calls": state.get("llm_calls", []),
     }
 
 

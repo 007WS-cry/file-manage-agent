@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from app.state.models import FileGovernanceState
+from app.utils.runtime import create_error_record
 from app.utils.task_tracking import (
     apply_task_status,
+    build_content_dispatch_requests,
+    build_evidence_dispatch_requests,
+    dispatch_stage_subagent_requests,
     has_orchestration_failure,
     public_task_update,
     settle_unfinished_tasks_before_report,
     sync_business_task_status,
 )
 
-"""本模块只定义顶层文件治理阶段与 Task 状态同步的 LangGraph 节点。"""
+"""本模块只定义顶层 Task 状态同步及 Content、Evidence 阶段分派的图节点。"""
 
 
 def plan_run_tasks(state: FileGovernanceState) -> dict:
@@ -39,6 +43,47 @@ def sync_inventory_task_status(state: FileGovernanceState) -> dict:
         "inventory",
         next_task_type="version_analysis",
     )
+
+
+def dispatch_content_subagent_task(state: FileGovernanceState) -> dict:
+    """在 Inventory 完成后为每个标准化文档分派 Content Subagent。
+
+    分派只传递短内容预览、结构摘要、关键字段和标准化产物引用。单个模型、
+    Pydantic 或协议失败由 Team Orchestration 生成协调者回退结果，不会阻断
+    后续确定性 Version Analysis；只有编排基础契约的致命错误才由主图路由失败。
+
+    Args:
+        state: 已完成 Inventory Task 同步且已启动 Version Analysis Task 的顶层状态。
+
+    Returns:
+        固定团队、Task、Todo、Team Message、LLM 审计及新增错误的顶层更新。
+    """
+    try:
+        requests = build_content_dispatch_requests(state)
+        working_state, errors = dispatch_stage_subagent_requests(state, requests)
+        return {
+            "team": working_state["team"],
+            "tasks": list(working_state.get("tasks", [])),
+            "todos": list(working_state.get("todos", [])),
+            "team_messages": list(working_state.get("team_messages", [])),
+            "llm_calls": list(working_state.get("llm_calls", [])),
+            "errors": errors,
+        }
+    except Exception as error:
+        return {
+            "errors": [
+                create_error_record(
+                    stage="content_subagent",
+                    node_name="dispatch_content_subagent_task",
+                    category="protocol",
+                    message=(
+                        f"{type(error).__name__}: Content 阶段分派未完成，"
+                        "已保留 Inventory 确定性结果。"
+                    ),
+                    fatal=False,
+                )
+            ]
+        }
 
 
 def sync_version_task_status(state: FileGovernanceState) -> dict:
@@ -71,6 +116,47 @@ def sync_evidence_task_status(state: FileGovernanceState) -> dict:
         "evidence",
         next_task_type="recommendation",
     )
+
+
+def dispatch_evidence_subagent_task(state: FileGovernanceState) -> dict:
+    """在 Evidence 完成后按版本组分派 Evidence Subagent 解释任务。
+
+    输入只包含 PDF 来源匹配摘要、发送证据摘要和受控引用，不读取完整 PDF、
+    邮件或业务正文。Subagent 结果只提供解释文本，不能修改确定性证据匹配或
+    Recommendation 使用的评分事实。
+
+    Args:
+        state: 已完成 Evidence Task 同步且已启动 Recommendation Task 的顶层状态。
+
+    Returns:
+        固定团队、Task、Todo、Team Message、LLM 审计及新增错误的顶层更新。
+    """
+    try:
+        requests = build_evidence_dispatch_requests(state)
+        working_state, errors = dispatch_stage_subagent_requests(state, requests)
+        return {
+            "team": working_state["team"],
+            "tasks": list(working_state.get("tasks", [])),
+            "todos": list(working_state.get("todos", [])),
+            "team_messages": list(working_state.get("team_messages", [])),
+            "llm_calls": list(working_state.get("llm_calls", [])),
+            "errors": errors,
+        }
+    except Exception as error:
+        return {
+            "errors": [
+                create_error_record(
+                    stage="evidence_subagent",
+                    node_name="dispatch_evidence_subagent_task",
+                    category="protocol",
+                    message=(
+                        f"{type(error).__name__}: Evidence 阶段分派未完成，"
+                        "已保留确定性证据匹配结果。"
+                    ),
+                    fatal=False,
+                )
+            ]
+        }
 
 
 def sync_recommendation_task_status(state: FileGovernanceState) -> dict:

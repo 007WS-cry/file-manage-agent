@@ -7,7 +7,7 @@ from pathlib import Path
 from app.state.models import FileGovernanceState, ReportState
 from app.utils.runtime import paths_overlap, utc_now_iso
 
-"""本模块负责 Markdown 报告值处理、隔离目录持久化和统一报告状态构造。"""
+"""本模块负责版本摘要 Markdown、值转义、隔离持久化和统一报告状态构造。"""
 
 
 def escape_markdown_cell(value: object) -> str:
@@ -20,6 +20,59 @@ def escape_markdown_cell(value: object) -> str:
         不会破坏表格列或额外生成换行的文本。
     """
     return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def build_version_summary_lines(
+    state: FileGovernanceState,
+    group_id: str,
+) -> list[str]:
+    """生成一个版本组的确定性或 Version Subagent 摘要报告行。
+
+    Args:
+        state: 包含文件索引和已完成差异记录的顶层治理状态。
+        group_id: 等待展示关键修改摘要的版本组 ID。
+
+    Returns:
+        可直接追加到 Markdown 报告的章节行；没有文件对差异时返回明确说明。
+    """
+    file_names = {
+        file_record["id"]: file_record["file_name"]
+        for file_record in state.get("files", [])
+    }
+    diffs = sorted(
+        (
+            diff
+            for diff in state.get("diffs", [])
+            if diff.get("group_id") == group_id
+        ),
+        key=lambda item: item["id"],
+    )
+    lines = ["", "### 关键修改摘要", ""]
+    if not diffs:
+        lines.append("- 当前版本组没有需要展示的文件对差异。")
+        return lines
+
+    for diff in diffs:
+        left_name = file_names.get(diff["file_a_id"], diff["file_a_id"])
+        right_name = file_names.get(diff["file_b_id"], diff["file_b_id"])
+        source = (
+            "Version Subagent"
+            if diff.get("summary_source") == "version_subagent"
+            else "确定性规则"
+        )
+        lines.append(
+            "- `"
+            f"{escape_markdown_cell(left_name)}` ↔ `"
+            f"{escape_markdown_cell(right_name)}`（{source}）："
+            f"{escape_markdown_cell(diff['summary'])}"
+        )
+        message_id = diff.get("summary_message_id")
+        if message_id:
+            lines.append(f"  - Team Message：`{escape_markdown_cell(message_id)}`")
+        artifact_ref = diff.get("summary_artifact_ref")
+        if artifact_ref:
+            lines.append(f"  - 解释引用：`{escape_markdown_cell(artifact_ref)}`")
+    return lines
 
 
 def persist_report(state: FileGovernanceState, markdown: str) -> str:

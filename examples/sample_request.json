@@ -47,8 +47,18 @@
       "cleanup_run_resources_hook": "ignore"
     }
   },
+  "llm": {
+    "enabled": false,
+    "provider": "mock",
+    "model": "mock-structured-v1",
+    "api_key_env": null,
+    "temperature": 0.0,
+    "max_output_tokens": 800,
+    "timeout_seconds": 30.0,
+    "fallback_enabled": true
+  },
   "checkpoint": {
     "backend": "sqlite",
-    "database_path": "../.artifacts/checkpoints/file-governance.sqlite3"
+    "database_path": "../.artifacts/checkpoints/file-governance-0.5.sqlite3"
   }
 }

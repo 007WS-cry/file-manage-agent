@@ -1,18 +1,33 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal, cast
 
+from app.agents.protocol import (
+    MAX_ARTIFACT_REFS,
+    MAX_CONTENT_PREVIEW_CHARACTERS,
+    MAX_EVIDENCE_SUMMARY_CHARACTERS,
+    MAX_STRUCTURED_STRING_CHARACTERS,
+    MAX_TEXT_LIST_TOTAL_CHARACTERS,
+)
 from app.graphs.team_orchestration import team_orchestration_graph
 from app.services.task_system import build_task_id
 from app.state.converters import (
     file_governance_to_team_orchestration_state,
     team_orchestration_state_to_file_governance_update,
+    team_orchestration_state_to_version_analysis_update,
+    version_analysis_to_team_orchestration_state,
 )
 from app.state.models import (
+    ContentSubagentInput,
     ErrorRecord,
+    EvidenceSubagentInput,
     FileGovernanceState,
     TaskItem,
     TaskStatusUpdate,
+    TeamState,
+    VersionAnalysisGraphState,
+    VersionSubagentInput,
 )
 from app.utils.runtime import utc_now_iso
 
@@ -47,22 +62,267 @@ def run_team_orchestration_subgraph(
     state: FileGovernanceState,
     *,
     task_update: TaskStatusUpdate | None = None,
+    dispatch_request: (
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | None
+    ) = None,
 ) -> dict:
-    """显式转换状态、同步执行 Team Orchestration 子图并过滤私有命令。
+    """显式转换状态并执行一次 Task 同步或固定 Subagent 分派。
 
     Args:
         state: 顶层文件治理状态。
         task_update: 本次调用需要消费的可选 Task 状态更新命令。
+        dispatch_request: 本次调用需要消费的可选固定 Subagent 最小输入。
 
     Returns:
-        仅包含 Task、Todo 和新编排错误的顶层状态更新，不包含 task_update。
+        不包含状态命令和分派私有字段的顶层白名单更新。
     """
     subgraph_input = file_governance_to_team_orchestration_state(
         state,
         task_update=task_update,
+        dispatch_request=dispatch_request,
     )
     subgraph_result = team_orchestration_graph.invoke(subgraph_input)
     return team_orchestration_state_to_file_governance_update(subgraph_result)
+
+
+def run_version_subagent_orchestration(
+    state: VersionAnalysisGraphState,
+    dispatch_request: VersionSubagentInput,
+) -> dict:
+    """通过 Team Orchestration 执行一次 Version Subagent 分派。
+
+    Args:
+        state: 包含当前确定性比较、真实 Task DAG 和固定团队的版本分析状态。
+        dispatch_request: 不含完整正文的 Version Subagent 最小输入。
+
+    Returns:
+        可合并回 Version Analysis 子图且不暴露编排私有命令的字段更新。
+    """
+    subgraph_input = version_analysis_to_team_orchestration_state(
+        state,
+        dispatch_request,
+    )
+    subgraph_result = team_orchestration_graph.invoke(subgraph_input)
+    return team_orchestration_state_to_version_analysis_update(subgraph_result)
+
+
+def build_bounded_protocol_text_list(
+    values: Sequence[object],
+    *,
+    max_items: int = 50,
+) -> list[str]:
+    """把确定性差异文本收敛为 Team Protocol 可接受的去重列表。
+
+    Args:
+        values: 等待发送给固定 Subagent 的确定性文本值。
+        max_items: 允许保留的最大条目数，默认与 Version 输入协议一致。
+
+    Returns:
+        单项和总字符数均受限、顺序稳定、没有空值或重复值的文本列表。
+
+    Raises:
+        TypeError: ``max_items`` 不是整数或错误使用布尔值时抛出。
+        ValueError: ``max_items`` 小于一时抛出。
+    """
+    if isinstance(max_items, bool) or not isinstance(max_items, int):
+        raise TypeError("max_items 必须是整数")
+    if max_items < 1:
+        raise ValueError("max_items 必须大于零")
+    bounded: list[str] = []
+    total_characters = 0
+    for value in values:
+        if len(bounded) >= max_items:
+            break
+        text = str(value).strip()[:MAX_STRUCTURED_STRING_CHARACTERS]
+        if not text or text in bounded:
+            continue
+        remaining = MAX_TEXT_LIST_TOTAL_CHARACTERS - total_characters
+        if remaining <= 0:
+            break
+        text = text[:remaining]
+        if not text:
+            break
+        bounded.append(text)
+        total_characters += len(text)
+    return bounded
+
+
+def build_content_dispatch_requests(
+    state: FileGovernanceState,
+) -> list[ContentSubagentInput]:
+    """为每个标准化文档构造一个 Content Subagent 最小输入。
+
+    Args:
+        state: 已完成 Inventory 且具有真实 Inventory Task 的顶层治理状态。
+
+    Returns:
+        按文档 ID 排序、只含短预览、结构摘要、关键字段和受控引用的请求列表。
+    """
+    task_id = build_task_id(state["run"]["run_id"], "inventory")
+    requests: list[ContentSubagentInput] = []
+    for document in sorted(state.get("documents", []), key=lambda item: item["id"]):
+        preview = str(document.get("content_preview", "")).strip()
+        if not preview:
+            preview = "当前文档没有可用的短内容预览。"
+        requests.append(
+            ContentSubagentInput(
+                task_id=task_id,
+                document_id=document["id"],
+                content_preview=preview[:MAX_CONTENT_PREVIEW_CHARACTERS],
+                structure_summary=dict(document.get("structure_summary", {})),
+                key_fields=dict(document.get("key_fields", {})),
+                artifact_refs=[document["content_ref"]],
+            )
+        )
+    return requests
+
+
+def _bounded_evidence_summary(parts: list[str], *, empty_message: str) -> str:
+    """把证据条目收敛为符合 Team Protocol 上限的非空摘要。
+
+    Args:
+        parts: 已从确定性证据记录生成的简短条目。
+        empty_message: 没有对应证据时使用的明确说明。
+
+    Returns:
+        使用中文分号连接且不超过 Evidence 输入字符上限的摘要。
+    """
+    summary = "；".join(part.strip() for part in parts if part.strip()) or empty_message
+    return summary[:MAX_EVIDENCE_SUMMARY_CHARACTERS]
+
+
+def build_evidence_dispatch_requests(
+    state: FileGovernanceState,
+) -> list[EvidenceSubagentInput]:
+    """为每个版本组构造只含确定性证据摘要和受控引用的 Evidence 输入。
+
+    Args:
+        state: 已完成 PDF 来源和本地发送记录匹配的顶层治理状态。
+
+    Returns:
+        按版本组 ID 排序且不包含 PDF、邮件或业务文件正文的请求列表。
+    """
+    task_id = build_task_id(state["run"]["run_id"], "evidence")
+    file_names = {
+        file_record["id"]: file_record["file_name"]
+        for file_record in state.get("files", [])
+    }
+    requests: list[EvidenceSubagentInput] = []
+    for group in sorted(state.get("version_groups", []), key=lambda item: item["id"]):
+        pdf_records = [
+            item
+            for item in state.get("pdf_exports", [])
+            if item.get("group_id") == group["id"]
+        ][: MAX_ARTIFACT_REFS // 2]
+        delivery_records = [
+            item
+            for item in state.get("deliveries", [])
+            if item.get("group_id") == group["id"]
+        ][: MAX_ARTIFACT_REFS - len(pdf_records)]
+
+        pdf_parts = []
+        artifact_refs = []
+        for item in pdf_records:
+            pdf_name = file_names.get(item["pdf_file_id"], item["pdf_file_id"])
+            source_id = item.get("source_file_id")
+            source_name = file_names.get(source_id, source_id or "未可靠匹配")
+            signals = "、".join(item.get("matched_signals", [])) or "无匹配信号"
+            pdf_parts.append(
+                f"{pdf_name} -> {source_name}，匹配分 {item['match_score']:.2f}，"
+                f"置信度 {item['confidence']:.2f}，信号：{signals}"
+            )
+            artifact_refs.append(f"state://pdf_exports/{item['id']}")
+
+        delivery_parts = []
+        for item in delivery_records:
+            file_id = item.get("file_id")
+            delivered_name = file_names.get(file_id, file_id or "未匹配文件")
+            delivery_parts.append(
+                f"{delivered_name}，匹配方式 {item['match_method']}，"
+                f"客户确认 {'是' if item['customer_confirmed'] else '否'}，"
+                f"置信度 {item['confidence']:.2f}"
+            )
+            if item["evidence_ref"] not in artifact_refs:
+                artifact_refs.append(item["evidence_ref"])
+
+        requests.append(
+            EvidenceSubagentInput(
+                task_id=task_id,
+                group_id=group["id"],
+                pdf_evidence_summary=_bounded_evidence_summary(
+                    pdf_parts,
+                    empty_message="当前版本组没有 PDF 来源匹配记录。",
+                ),
+                delivery_evidence_summary=_bounded_evidence_summary(
+                    delivery_parts,
+                    empty_message="当前版本组没有已匹配的发送或客户确认记录。",
+                ),
+                artifact_refs=artifact_refs[:MAX_ARTIFACT_REFS],
+            )
+        )
+    return requests
+
+
+def apply_team_dispatch_update(
+    state: FileGovernanceState,
+    update: dict,
+) -> FileGovernanceState:
+    """把一次顶层阶段分派的公开结果应用到内部工作状态。
+
+    Args:
+        state: 当前阶段分派前的顶层治理工作状态。
+        update: Team Orchestration 返回的公开字段白名单。
+
+    Returns:
+        团队、Task、Todo、消息和模型审计已更新的独立工作状态。
+    """
+    team = cast(TeamState, update.get("team", state["team"]))
+    return cast(
+        FileGovernanceState,
+        {
+            **state,
+            "team": team,
+            "tasks": list(update.get("tasks", state.get("tasks", []))),
+            "todos": list(update.get("todos", state.get("todos", []))),
+            "team_messages": list(
+                update.get("team_messages", state.get("team_messages", []))
+            ),
+            "llm_calls": list(update.get("llm_calls", state.get("llm_calls", []))),
+        },
+    )
+
+
+def dispatch_stage_subagent_requests(
+    state: FileGovernanceState,
+    requests: Sequence[
+        ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput
+    ],
+) -> tuple[FileGovernanceState, list[ErrorRecord]]:
+    """通过 Team Orchestration 串行执行一个业务阶段的全部最小分派请求。
+
+    Args:
+        state: 当前业务阶段完成后的顶层治理状态。
+        requests: 已按稳定顺序构造的 Content、Version 或 Evidence 请求序列。
+
+    Returns:
+        已合并团队公开状态的工作状态，以及本批分派新增的结构化错误。
+    """
+    working_state = state
+    errors: list[ErrorRecord] = []
+    for request in requests:
+        update = run_team_orchestration_subgraph(
+            working_state,
+            dispatch_request=request,
+        )
+        working_state = apply_team_dispatch_update(working_state, update)
+        dispatch_errors = cast(list[ErrorRecord], update.get("errors", []))
+        errors.extend(dispatch_errors)
+        if has_orchestration_failure(dispatch_errors):
+            break
+    return working_state, errors
 
 
 def _task_by_type(

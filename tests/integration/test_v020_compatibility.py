@@ -35,9 +35,9 @@ from app.nodes.subgraphs_nodes import (
 from app.state.factories import create_initial_state
 from app.state.models import FileGovernanceState
 
-"""本文件以 0.2.0 顶层业务路径为参照，验证关闭 Prompt 和 Hooks 后的结果兼容性。"""
+"""本文件以 0.2.0 顶层路径为参照，验证 0.5.0 关闭扩展能力后的业务结果兼容性。"""
 
-# 0.2.0 与 0.3.0 需要逐项保持一致的业务结果字段。
+# 0.2.0 与 0.5.0 需要逐项保持一致的业务结果字段。
 BUSINESS_RESULT_FIELDS = (
     "files",
     "documents",
@@ -173,7 +173,7 @@ def create_compatibility_state(tmp_path: Path) -> FileGovernanceState:
 
 
 def test_disabled_prompt_and_hooks_match_v020_business_results(tmp_path: Path) -> None:
-    """0.3.0 完全关闭生命周期扩展时必须保持 0.2.0 的业务结果。"""
+    """0.5.0 关闭 Prompt、Hooks 和真实 LLM 时必须保持 0.2.0 的业务结果。"""
     initial_state = create_compatibility_state(tmp_path)
     reference_result = build_v020_reference_graph().invoke(deepcopy(initial_state))
     current_result = build_file_governance_graph().invoke(
@@ -184,8 +184,17 @@ def test_disabled_prompt_and_hooks_match_v020_business_results(tmp_path: Path) -
     assert current_result["prompt"]["status"] == "disabled"
     assert current_result["hooks"]["enabled"] is False
     assert current_result["hook_events"] == []
+    assert current_result["llm"]["enabled"] is False
+    assert current_result["llm"]["provider"] == "mock"
+    assert current_result["llm"]["api_key_env"] is None
+    assert {call["agent_id"] for call in current_result["llm_calls"]} == {
+        "content-subagent",
+        "evidence-subagent",
+    }
+    assert all(call["provider"] == "mock" for call in current_result["llm_calls"])
     assert "prompt" not in current_result["request"]
     assert "hooks" not in current_result["request"]
+    assert "llm" not in current_result["request"]
     assert current_result["run"]["status"] == reference_result["run"]["status"]
     for field_name in BUSINESS_RESULT_FIELDS:
         assert current_result[field_name] == reference_result[field_name]

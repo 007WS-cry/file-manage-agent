@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal, TypedDict
 
-from app.state.reducers import merge_by_id, merge_by_task_id
+from langgraph.channels import UntrackedValue
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_id
 
 """本模块定义文件版本治理的顶层状态、子图状态和业务记录结构。"""
 
@@ -239,7 +242,16 @@ class DiffRecord(TypedDict):
     # 金额、日期、条款和表格值等关键修改。
 
     summary: str
-    # 确定性规则或 LLM 生成的差异摘要。
+    # 当前生效的关键修改摘要。
+
+    summary_source: Literal["deterministic", "version_subagent"]
+    # 摘要来自确定性规则还是成功返回的 Version Subagent。
+
+    summary_message_id: str | None
+    # 产生当前摘要的 Team Message ID；确定性摘要时为 None。
+
+    summary_artifact_ref: str | None
+    # 详细版本解释的首个受控产物引用；未生成独立产物时为 None。
 
     ordering_signals: list[str]
     # 支撑版本先后关系的证据。
@@ -380,11 +392,12 @@ class ErrorRecord(TypedDict):
         "evidence",
         "llm",
         "validation",
+        "protocol",
         "prompt",
         "hook",
         "unknown",
     ]
-    # 错误类别；prompt 和 hook 分别表示提示词加载与生命周期 Hook 错误。
+    # 错误类别；protocol 表示 Team Message 或分派契约错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -720,7 +733,7 @@ class TaskItem(TypedDict):
         "version",
         "evidence",
     ]
-    # 预分配的逻辑角色；0.3.1 中仍由主 Agent 实际执行。
+    # 当前 Task 的固定负责角色；0.4.4 由 Team Orchestration 实际选择并调用。
 
     input_refs: list[str]
     # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
@@ -762,6 +775,383 @@ class TaskStatusUpdate(TypedDict):
     # 本次状态变更发生时间，使用带时区的 ISO 8601 格式。
 
 
+class LLMConfigState(TypedDict):
+    """统一 LLM Client 在一次治理运行中的配置状态。"""
+
+    enabled: bool
+    # 是否允许调用真实模型；关闭时固定使用 Mock 或确定性回退。
+
+    provider: Literal["openai", "mock"]
+    # 当前模型 Provider；支持 OpenAI Provider 和 Mock Provider。
+
+    model: str
+    # Provider 使用的模型名称，由配置提供，不在业务节点中硬编码。
+
+    api_key_env: str | None
+    # 保存 API Key 的环境变量名称；Mock Provider 使用 None，绝不保存密钥实际值。
+
+    temperature: float
+    # 模型生成温度；版本治理摘要建议使用较低温度。
+
+    max_output_tokens: int
+    # 单次模型结构化输出允许使用的最大 Token 数。
+
+    timeout_seconds: float
+    # 单次模型调用超时时间，单位为秒。
+
+    fallback_enabled: bool
+    # 模型失败后是否允许使用协调 Agent 或确定性逻辑继续。
+
+
+class LLMCallRecord(TypedDict):
+    """一次真实、Mock 或回退模型调用的审计记录。"""
+
+    id: str
+    # LLM 调用唯一 ID。
+
+    task_id: str
+    # 本次调用所属的 Task ID。
+
+    agent_id: str
+    # 发起模型调用的固定 Agent ID。
+
+    message_id: str
+    # 触发本次调用的 Team Message ID。
+
+    provider: str
+    # 实际使用的模型 Provider 名称。
+
+    model: str
+    # 实际调用的模型名称。
+
+    status: Literal["success", "failed", "timeout", "fallback"]
+    # 模型调用的最终状态。
+
+    started_at: str
+    # 模型调用开始时间，使用带时区的 ISO 8601 格式。
+
+    finished_at: str
+    # 模型调用结束时间，使用带时区的 ISO 8601 格式。
+
+    duration_ms: int
+    # 模型调用总耗时，单位为毫秒。
+
+    input_tokens: int | None
+    # Provider 返回的输入 Token 数；无法获取时为 None。
+
+    output_tokens: int | None
+    # Provider 返回的输出 Token 数；无法获取时为 None。
+
+    total_tokens: int | None
+    # Provider 返回的总 Token 数；无法获取时为 None。
+
+    error_type: str | None
+    # 失败或超时时的异常类型。
+
+    error_message: str | None
+    # 已脱敏的简短错误信息，不得包含 API Key 或完整正文。
+
+    fallback_used: bool
+    # 本次调用是否最终使用了确定性回退。
+
+
+class AgentMemberState(TypedDict):
+    """协调 Agent 或固定 Subagent 的运行状态。"""
+
+    id: str
+    # Agent 的稳定唯一 ID。
+
+    role: Literal["coordinator", "content", "version", "evidence"]
+    # Agent 的固定职责，不支持运行时动态招聘。
+
+    status: Literal["idle", "working", "waiting", "failed"]
+    # Agent 当前运行状态。
+
+    current_task_id: str | None
+    # Agent 当前处理的 Task ID；空闲时为 None。
+
+    tool_names: list[str]
+    # Agent 当前允许使用的工具名称。
+
+    skill_ids: list[str]
+    # 为后续 Skills 预留的引用；0.4.4 中必须保持为空列表。
+
+
+class TeamState(TypedDict):
+    """固定 Agent Team 的成员和协议配置。"""
+
+    coordinator_id: str
+    # 唯一协调 Agent ID。
+
+    members: list[AgentMemberState]
+    # 协调者、Content、Version 和 Evidence 四个固定成员。
+
+    protocol_version: str
+    # Team Protocol 的结构版本，例如 team-protocol-v1。
+
+    max_parallel_agents: int
+    # 同时执行的 Subagent 上限，防止文件数量导致无限并发。
+
+
+class TeamMessage(TypedDict):
+    """固定 Agent 之间传递的最小结构化协议消息。"""
+
+    message_id: str
+    # 团队消息唯一 ID。
+
+    task_id: str
+    # 消息所属的真实 Task ID。
+
+    sender: str
+    # 发送方 Agent ID。
+
+    receiver: str
+    # 接收方 Agent ID。
+
+    message_type: Literal[
+        "assignment",
+        "progress",
+        "result",
+        "question",
+        "error",
+    ]
+    # 消息用途。
+
+    status: Literal["created", "sent", "validated", "rejected"]
+    # 消息当前协议状态。
+
+    summary: str
+    # 简短消息内容，不得包含完整文档正文。
+
+    artifact_refs: list[str]
+    # 详细输入或输出所在的受控产物引用。
+
+    error: str | None
+    # 失败或协议拒绝原因；正常消息为 None。
+
+    created_at: str
+    # 消息创建时间，使用带时区的 ISO 8601 格式。
+
+
+class ContentSubagentInput(TypedDict):
+    """Content Subagent 的最小输入状态。"""
+
+    task_id: str
+    # 当前 Inventory Task ID。
+
+    document_id: str
+    # 等待分析的标准化文档记录 ID。
+
+    content_preview: str
+    # 有长度上限的内容预览，不允许传入完整文档正文。
+
+    structure_summary: dict[str, Any]
+    # 工作表、段落、表格或页数等结构摘要。
+
+    key_fields: dict[str, Any]
+    # 已由确定性程序提取的金额、日期和客户等关键字段。
+
+    artifact_refs: list[str]
+    # 完整标准化内容所在的产物引用，Subagent 不直接接收正文。
+
+
+class VersionSubagentInput(TypedDict):
+    """Version Subagent 的最小输入状态。"""
+
+    task_id: str
+    # 当前 Version Analysis Task ID。
+
+    comparison_id: str
+    # 当前文件对比较记录 ID。
+
+    file_labels: list[str]
+    # 两个候选版本的安全显示名称。
+
+    structural_similarity: float
+    # 当前确定性结构相似度。
+
+    content_similarity: float
+    # 当前确定性内容相似度。
+
+    key_changes: list[str]
+    # 确定性比较已发现的关键字段变化。
+
+    ordering_signals: list[str]
+    # 支撑版本先后关系的确定性证据。
+
+    artifact_refs: list[str]
+    # 当前比较使用的标准化产物引用。
+
+
+class EvidenceSubagentInput(TypedDict):
+    """Evidence Subagent 的最小输入状态。"""
+
+    task_id: str
+    # 当前 Evidence Task ID。
+
+    group_id: str
+    # 当前证据所属的版本组 ID。
+
+    pdf_evidence_summary: str
+    # PDF 来源匹配的简短结构化摘要。
+
+    delivery_evidence_summary: str
+    # 本地发送记录匹配的简短结构化摘要。
+
+    artifact_refs: list[str]
+    # PDF 匹配和发送证据的产物引用。
+
+
+class ContentSubagentOutput(BaseModel):
+    """Content Subagent 允许返回的结构化结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回摘要和产物引用之外的字段。
+
+    summary: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
+    ]
+    # 内容、结构和关键字段的简短中文摘要。
+
+    artifact_refs: list[str] = Field(default_factory=list, max_length=50)
+    # 详细结果的产物引用，必须经过引用白名单校验。
+
+
+class VersionSubagentOutput(BaseModel):
+    """Version Subagent 允许返回的结构化结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回摘要和产物引用之外的字段。
+
+    summary: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
+    ]
+    # 当前版本差异和先后关系的简短中文解释。
+
+    artifact_refs: list[str] = Field(default_factory=list, max_length=50)
+    # 详细版本解释的产物引用。
+
+
+class EvidenceSubagentOutput(BaseModel):
+    """Evidence Subagent 允许返回的结构化结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回摘要和产物引用之外的字段。
+
+    summary: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
+    ]
+    # PDF 来源和客户发送证据的简短中文说明。
+
+    artifact_refs: list[str] = Field(default_factory=list, max_length=50)
+    # 详细证据分析的产物引用。
+
+
+class ContentSubagentGraphState(TypedDict):
+    """Content Subagent 内部子图状态。"""
+
+    input: ContentSubagentInput
+    # 已经过 Team Protocol 校验的最小输入。
+
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
+    llm: LLMConfigState
+    # 当前运行使用的统一 LLM 配置。
+
+    system_prompt: str
+    # 固定职责和只读边界组成的系统提示词，不包含业务正文。
+
+    user_prompt: str
+    # 只由内容预览、结构摘要、关键字段和受控引用组成的用户提示词。
+
+    output: ContentSubagentOutput | None
+    # Pydantic 校验后的结果；调用前为 None。
+
+    fallback_used: bool
+    # 是否使用了确定性内容摘要回退。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
+
+    llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
+    # 本子图产生的模型调用审计记录。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 模型调用、输出校验或产物保存错误。
+
+
+class VersionSubagentGraphState(TypedDict):
+    """Version Subagent 内部子图状态。"""
+
+    input: VersionSubagentInput
+    # 已经过 Team Protocol 校验的版本差异输入。
+
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
+    llm: LLMConfigState
+    # 当前运行使用的统一 LLM 配置。
+
+    system_prompt: str
+    # 固定版本解释职责和只读边界组成的系统提示词。
+
+    user_prompt: str
+    # 只由差异、相似度、排序信号和受控引用组成的用户提示词。
+
+    output: VersionSubagentOutput | None
+    # Pydantic 校验后的版本解释结果。
+
+    fallback_used: bool
+    # 是否使用了现有确定性关键修改摘要。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
+
+    llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
+    # 本子图产生的模型调用审计记录。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 模型调用、输出校验或产物保存错误。
+
+
+class EvidenceSubagentGraphState(TypedDict):
+    """Evidence Subagent 内部子图状态。"""
+
+    input: EvidenceSubagentInput
+    # 已经过 Team Protocol 校验的证据摘要输入。
+
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
+    llm: LLMConfigState
+    # 当前运行使用的统一 LLM 配置。
+
+    system_prompt: str
+    # 固定证据解释职责和只读边界组成的系统提示词。
+
+    user_prompt: str
+    # 只由 PDF、发送证据摘要和受控引用组成的用户提示词。
+
+    output: EvidenceSubagentOutput | None
+    # Pydantic 校验后的证据解释结果。
+
+    fallback_used: bool
+    # 是否使用了确定性证据说明回退。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
+
+    llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
+    # 本子图产生的模型调用审计记录。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 模型调用、输出校验或产物保存错误。
+
+
 class FileGovernanceState(TypedDict):
     """一次完整文件版本治理任务使用的顶层状态。
 
@@ -785,6 +1175,12 @@ class FileGovernanceState(TypedDict):
     hooks: HookConfigState
     # 本次运行的生命周期 Hooks 配置。
 
+    llm: LLMConfigState
+    # 本次运行的模型 Provider、生成参数、超时和回退配置。
+
+    team: TeamState
+    # 协调 Agent 和三个固定 Subagent 的团队状态。
+
     hook_events: Annotated[
         list[HookEvent],
         merge_by_id,
@@ -802,6 +1198,18 @@ class FileGovernanceState(TypedDict):
         merge_by_task_id,
     ]
     # 当前治理运行的真实 Task DAG 和执行状态。
+
+    team_messages: Annotated[
+        list[TeamMessage],
+        merge_by_message_id,
+    ]
+    # 按 message_id 合并的 Team Protocol 结构化消息。
+
+    llm_calls: Annotated[
+        list[LLMCallRecord],
+        merge_by_id,
+    ]
+    # 不包含正文和密钥的模型调用耗时、Token 与错误审计记录。
 
     human_review: HumanReviewState
     # interrupt 暂停和恢复所需的人工确认数据。
@@ -844,13 +1252,35 @@ class FileGovernanceState(TypedDict):
 
 
 class TeamOrchestrationGraphState(TypedDict):
-    """团队编排子图使用的 Task 规划、状态推进和 Todo 投影状态。"""
+    """团队编排子图使用的 Task、Todo、固定 Team 和分派协议状态。"""
 
     run: RunState
     # 当前顶层治理运行信息，用于生成稳定 Task ID。
 
+    llm: LLMConfigState
+    # 固定 Subagent 共用的模型配置。
+
+    team: TeamState
+    # 固定团队成员、并发上限和协议版本。
+
     task_update: TaskStatusUpdate | None
     # 顶层流程传入的单次状态更新；首次创建 DAG 时可以为 None。
+
+    dispatch_request: (
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | None
+    )
+    # 可选 Subagent 分派请求；状态同步调用或请求消费完成后为 None。
+
+    dispatch_result: (
+        ContentSubagentOutput
+        | VersionSubagentOutput
+        | EvidenceSubagentOutput
+        | None
+    )
+    # 当前 Subagent 调用产生的 Pydantic 结构化结果。
 
     tasks: Annotated[
         list[TaskItem],
@@ -863,6 +1293,18 @@ class TeamOrchestrationGraphState(TypedDict):
         merge_by_id,
     ]
     # 由最新 Task 列表重新生成的用户可见 Todo。
+
+    team_messages: Annotated[
+        list[TeamMessage],
+        merge_by_message_id,
+    ]
+    # 当前编排调用读取或产生的 Team Protocol 消息。
+
+    llm_calls: Annotated[
+        list[LLMCallRecord],
+        merge_by_id,
+    ]
+    # 当前编排调用读取或产生的模型审计记录。
 
     errors: Annotated[
         list[ErrorRecord],
@@ -889,8 +1331,8 @@ class InventoryGraphState(TypedDict):
     current_file_id: str | None
     # 当前正在解析的文件 ID。
 
-    current_raw_content: RawExtractedContent | None
-    # 当前解析器产生的临时原始内容。
+    current_raw_content: Annotated[RawExtractedContent | None, UntrackedValue]
+    # 当前解析器产生的临时原始内容；UntrackedValue 确保正文不会写入 checkpoint。
 
     current_document: DocumentRecord | None
     # 当前完成标准化、等待正式写入结果列表的文档记录。
@@ -911,8 +1353,23 @@ class InventoryGraphState(TypedDict):
 class VersionAnalysisGraphState(TypedDict):
     """版本分组、比较、建链和当前推荐子图使用的状态。"""
 
+    run: RunState
+    # 当前顶层治理运行信息，用于构造真实 Version Analysis Task ID。
+
     request: RequestState
     # 分组相似度和自动选择置信度等参数。
+
+    llm: LLMConfigState
+    # Version Subagent 后续使用的统一模型配置。
+
+    team: TeamState
+    # 用于定位固定 Version Subagent 和协调 Agent 的团队状态。
+
+    tasks: Annotated[list[TaskItem], merge_by_task_id]
+    # Team Orchestration 校验 Version Subagent 分派所需的真实 Task DAG。
+
+    todos: Annotated[list[TodoItem], merge_by_id]
+    # 由 Task 单向生成并随内部编排调用同步的用户进度投影。
 
     files: Annotated[list[FileRecord], merge_by_id]
     # 参与版本分析的文件记录。
@@ -935,6 +1392,12 @@ class VersionAnalysisGraphState(TypedDict):
     current_diff: DiffRecord | None
     # 当前比较任务尚未正式写入结果列表的差异草稿。
 
+    current_version_subagent_input: VersionSubagentInput | None
+    # 根据当前确定性差异构造、且不包含完整正文的 Version 最小输入。
+
+    current_version_subagent_output: VersionSubagentOutput | None
+    # Team Orchestration 返回的可选 Version Pydantic 结构化结果。
+
     current_comparison_error: str | None
     # 当前文件对比较产生的错误。
 
@@ -955,6 +1418,12 @@ class VersionAnalysisGraphState(TypedDict):
 
     human_review: HumanReviewState
     # 第一至第三批期间仍由版本分析子图返回的人工确认状态。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # Version Subagent 后续产生的 assignment、result 或 error 消息。
+
+    llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
+    # Version Subagent 后续产生的模型调用审计记录。
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
     # 分组、比较、版本关系建图和当前推荐阶段产生的错误。

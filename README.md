@@ -1,13 +1,14 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.4.0` 已完成确定性 Team
-Orchestration 的四批交付：固定 Task DAG、独立编排子图、顶层业务与人工审核同步，
-以及不泄漏正文和大型产物的 CLI 进度摘要。当前具备以下能力：
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.5.0` 已完成固定 Agent Team
+正式发布：Inventory 后分派 Content、Version Analysis 内部调用 Version、Evidence 后
+分派 Evidence，并通过兼容性、回退和 checkpoint 泄漏测试保护确定性治理结论。当前具备：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
 - 可解释主版本评分和低置信度人工确认；
-- Inventory、Version Analysis、Evidence、Recommendation 四个子图和顶层治理图；
+- Inventory、Version Analysis、Evidence、Recommendation 四个业务子图和顶层治理图；
+- Content、Version、Evidence 三个可独立调用的固定 Subagent 子图；
 - 标准化内容及中间 JSON 产物的隔离、原子持久化；
 - 进程内或 SQLite LangGraph checkpoint；
 - 可跨进程恢复 `interrupt()` 的最小 CLI；
@@ -28,23 +29,37 @@ Orchestration 的四批交付：固定 Task DAG、独立编排子图、顶层业
 - 按 `task_id` 稳定合并且不重置已有字段的 LangGraph Task reducer；
 - 六阶段固定 Task DAG、确定性 ID、拓扑排序、环检测和固定逻辑角色映射；
 - 仅以 Task 为事实来源、不会读取旧 Todo 状态的用户进度纯投影；
-- 独立完成 Task 创建、校验、角色分配、状态更新和 Todo 投影的编排子图；
-- 消费后清空且不会泄漏回顶层状态的私有 `task_update`；
-- 不包含 LLM、Subagent 或工具节点的确定性 Team Orchestration 执行路径。
+- 同时支持 Task 状态同步和固定 Subagent 分派的 Team Orchestration 子图；
+- 固定团队初始化、动态成员拒绝、实际角色选择和串行分派运行状态；
+- 消费后清空且不会泄漏回顶层状态的 `task_update` 与 `dispatch_request`；
+- Subagent result/error 消息校验、摘要与引用合并、Task 产物登记和协调者回退；
 - 顶层规划节点和六个同步适配节点，按业务实际结果推进 Task 和 Todo；
 - 无需审核时正常跳过 Human Review，interrupt 期间保持 running，恢复后完成；
 - 业务失败只标记源 Task failed，下游以带原因的 skipped 阻断且报告仍可收口；
 - 成功、无数据和业务失败报告统一完成 Report Task，计划前失败安全绕过 Task 同步。
 - `run`、`resume` 统一输出 Todo 投影和五种 Task 状态数量；
 - CLI 通过字段白名单隔离文档正文、完整报告、Task 引用和大型治理产物。
+- 默认不访问网络的统一 LLM 配置，以及只从环境变量读取密钥的 OpenAI Provider；
+- 可注入、可模拟超时和非法输出的 Mock Provider；
+- Content、Version、Evidence 三类独立 Pydantic 输出及产物引用白名单校验；
+- 不记录 Prompt、响应正文和 API Key 的 LLM 调用耗时、Token 和错误审计协议。
+- 固定 Subagent 注册表、最小输入信封、assignment/result/error Team Message；
+- 模型失败、超时或引用越权时的确定性摘要回退和 fallback 审计。
+- Content、Evidence 阶段后分派，以及 Version 文件对摘要的内部 Team Orchestration 调用；
+- 只允许成功 Version Subagent 替换解释摘要的 `DiffRecord` 来源和消息审计字段；
+- 包含关键修改摘要、来源和可选受控引用的治理报告。
+- 0.2.0、0.3.0、0.4.0 三条参照路径兼容测试和 0.5.0 发布验收矩阵；
+- 不持久化 API Key、私有模型 Prompt 或完整解析正文的 SQLite checkpoint 边界。
 
 四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
-`0.4.0` 的执行进度完全由固定 Task DAG 驱动，不调用 LLM 或 Subagent；CLI 只展示
-用户所需的最小进度，不直接序列化顶层状态。
+`0.5.0` 由顶层图和 Version Analysis 子图构造最小 `dispatch_request`。模型只解释
+既有内容、差异和证据摘要，不改变分组、版本方向、相似度、置信度、证据匹配或推荐
+结论。CLI 仍只展示用户所需的最小进度，不输出 LLM 配置、Team Message、Prompt
+或调用审计。旧状态缺少 LLM、Team、消息或审计字段时会补齐安全默认值。
 
 ## 安全边界
 
@@ -55,6 +70,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 - PDF 解析器不执行 OCR，也不猜测加密密码。
 - 文件大小、ZIP 声明解压大小、Excel 单元格、PDF 页数和提取字符数均有上限。
 - 完整正文通过 `content_ref` 指向 `normalized/*.json`，不直接进入图状态。
+- Inventory 解析期间的 `current_raw_content` 使用 LangGraph 非跟踪通道，不进入子图
+  checkpoint；中断恢复只依赖已持久化的安全业务状态。
 - 产物 ID 不允许包含路径分隔符，JSON 使用同目录临时文件和原子替换写入。
 - 分叉、链不完整、候选近似并列或低置信度结果必须人工确认。
 - `interrupt()` 载荷只包含文件 ID、文件名、评分和理由，不包含完整正文。
@@ -64,11 +81,23 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 - Prompt 只读取显式配置的本地 `.md`/`.txt` 文件，拒绝符号链接、非 UTF-8、
   超限内容和相对路径越界，并记录实际内容 SHA-256。
 - Hook 只能从静态白名单解析，不能通过请求动态导入模块或执行表达式；状态更新
-  仅允许完整替换 `run` 或 `report`。
+  仅允许完整替换 `run` 或 `report`，并显式禁止修改 Team、Task、消息和 LLM 审计。
 - Task 只保存状态键、产物引用和简短错误，不保存完整文档正文；Todo 只能由 Task
   单向生成，不能作为第二套可写执行状态。
 - CLI 只输出 Todo 白名单和 Task 状态计数，不输出 `documents`、完整 Task、报告
   Markdown、Prompt、HookEvent 或 checkpoint 内容。
+- LLM 配置只能保存 API Key 的环境变量名称；实际密钥不得进入请求 JSON、YAML、
+  LangGraph 状态、checkpoint、日志、Team Message 或模型调用审计。
+- 临时中转站兼容层从本地环境读取可选 `OPENAI_BASE_URL`；只实现传统兼容接口的
+  中转站可设置 `OPENAI_API_MODE=chat_completions`，以上值均不写入治理状态。
+- 关闭 `llm.enabled` 时统一 Client 强制使用 Mock Provider，即使其他字段预配置了
+  真实 Provider 也不会读取密钥或发起网络调用。
+- Subagent 输入拒绝未知正文型字段、超长预览、超长结构化字符串和非受控引用；
+  Subagent 不会主动打开 `artifact_refs` 指向的文件。
+- Team Message 的发送方和接收方必须属于固定 Team，result/error 必须返回唯一
+  coordinator，模型输出引用必须属于当前输入白名单。
+- Team Orchestration 拒绝动态成员、角色篡改、协调者 Task 分派和失败 Task 重放；
+  分派请求、模型输出和 Team Message 三层引用必须保持一致。
 
 ## 目录
 
@@ -78,17 +107,22 @@ file-manage-agent/
 │   └── prompts/               # 受版本控制的 System Prompt 资源
 ├── app/
 │   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
-│   ├── llm/                   # System Prompt 受限加载和后续模型扩展入口
+│   ├── llm/                   # Prompt、统一 Client、Provider 和结构化输出校验
+│   │   └── providers/         # Provider 抽象、Mock 与 OpenAI 实现
+│   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
 │   ├── services/              # 标准化、版本图、推荐、报告和确定性 Task System
 │   ├── storage/               # 标准化/中间产物与 checkpoint
 │   ├── utils/                 # 生命周期、Task 编排、时间、错误和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
-│   ├── graphs/                # 四业务子图、团队编排子图与顶层治理图
+│   ├── graphs/                # 四业务图、团队图、三个 Subagent 图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── configs/default.yaml       # 默认治理、生命周期、存储和 checkpoint 参数
-├── examples/sample_request.json
+├── .env                       # 本地密钥文件，必须被 Git 和 Docker 构建上下文忽略
+├── .env.example               # 只声明密钥环境变量名称的安全示例
+├── examples/sample_request.json # 默认关闭真实模型的安全请求
+├── examples/sample_llm_request.json # 仅引用环境变量名称的真实 Provider 请求
 ├── examples/sample_delivery_log.json
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
@@ -96,6 +130,11 @@ file-manage-agent/
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
 ├── docs/version-0.3.3-task-progress.md # 0.3.3 顶层 Task 进度与人工审核
 ├── docs/release-0.4.0-task-orchestration.md # 0.4.0 正式发布说明
+├── docs/version-0.4.1-llm-foundation.md # 0.4.1 LLM 基础设施说明
+├── docs/version-0.4.2-fixed-subagents.md # 0.4.2 固定 Subagent 与 Team Protocol
+├── docs/version-0.4.3-team-dispatch.md # 0.4.3 固定团队分派与协调者回退
+├── docs/version-0.4.4-business-stage-integration.md # 0.4.4 三业务阶段接入
+├── docs/release-0.5.0-agent-team.md # 0.5.0 固定 Agent Team 正式发布说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -237,6 +276,92 @@ START
 完整输出协议、安全边界、升级说明和测试映射见
 [0.4.0 Task Orchestration 正式发布说明](docs/release-0.4.0-task-orchestration.md)。
 
+## 0.4.1 统一 LLM 基础设施和状态契约
+
+本版本是从 `0.4.0` 向固定 Agent Team 演进的第一批，不修改既有业务图执行顺序：
+
+- 新增统一 `LLMClient`，按配置选择 Mock 或 OpenAI Provider；
+- 真实 Provider 只接受 `api_key_env`，调用时才读取环境变量，不保存实际密钥；
+- 默认 `llm.enabled=false` 且使用 Mock，升级后不会自动产生外部请求或费用；
+- 三个固定 Subagent 的输入、Pydantic 输出和内部图状态全部定义在
+  `app/state/models.py`；
+- `TeamMessage`、`TeamState`、`LLMConfigState`、`LLMCallRecord` 进入顶层状态协议；
+- 调用成功记录 Provider、模型、耗时和 Token；失败与超时只记录脱敏错误摘要；
+- Pydantic 输出禁止额外字段，产物引用还必须通过调用方白名单校验；
+- 旧 checkpoint 在初始化时补齐安全关闭的 LLM、固定 Team、空消息和空审计列表。
+
+本批不会调用三个 Subagent，也不会修改版本差异摘要。业务图接入将在后续批次完成。
+完整配置和安全边界见
+[0.4.1 LLM 基础设施](docs/version-0.4.1-llm-foundation.md)。
+
+## 0.4.2 三个固定 Subagent 和 Team Protocol
+
+第二批在第一批状态与 LLM Client 契约上完成三个独立子图：
+
+- Content Subagent 只接收短内容预览、结构摘要、关键字段和产物引用；
+- Version Subagent 只接收文件安全标签、相似度、关键修改和排序信号；
+- Evidence Subagent 只接收 PDF 来源摘要、发送证据摘要和产物引用；
+- 固定注册表只允许 `content`、`version`、`evidence` 三个角色，不支持动态招聘；
+- 每个子图先创建合法 assignment 消息，结束时创建 result 或 error 消息；
+- Pydantic 输出只包含 `summary` 和 `artifact_refs`，引用必须属于输入白名单；
+- 模型失败、超时或输出越权时，按配置进入角色专属确定性回退；
+- 流程分支由 `graphs/routers.py` 中被 `add_conditional_edges()` 明确调用的路由实现。
+
+三个 Subagent 当前可以独立调用，但尚未接入既有 Inventory、Version Analysis 和
+Evidence 业务图，避免本批改变 `0.4.0` 的确定性治理结论。详细协议、分支语义和
+测试矩阵见 [0.4.2 固定 Subagent 与 Team Protocol](docs/version-0.4.2-fixed-subagents.md)。
+
+## 0.4.3 升级 Team Orchestration
+
+第三批把第二批的三个独立 Subagent 接入 Team Orchestration，但暂不修改顶层业务图：
+
+- 编排图幂等初始化并严格校验 coordinator、Content、Version、Evidence 四个成员；
+- 同一次调用只能执行 `task_update` 状态同步或 `dispatch_request` 分派；
+- 分派前同时校验真实 Task、`assigned_role`、最小输入协议和产物引用；
+- 条件路由只允许选择 Content、Version、Evidence 三个固定角色；
+- Subagent 返回后再次校验 sender、receiver、消息类型、摘要和引用白名单；
+- 合法引用按稳定顺序登记到对应 `TaskItem.output_refs`；
+- 模型失败、error 消息或越权引用会转为协调者确定性回退结果；
+- `dispatch_request` 和 `dispatch_result` 不写回顶层状态，不实现 Skills 或 Worktree。
+
+现有顶层图尚未创建分派请求，三个业务阶段的接入属于下一批。完整分支、状态边界和
+测试矩阵见 [0.4.3 固定团队分派](docs/version-0.4.3-team-dispatch.md)。
+
+## 0.4.4 接入三个业务阶段
+
+第四批把固定 Team 正式接入文件治理运行，同时维持确定性事实的唯一权威来源：
+
+- `sync_inventory_task_status` 后按文档串行分派 Content Subagent；
+- Version Analysis 为每个成功比较构造不含正文的输入，并通过 Team Orchestration
+  调用 Version Subagent；
+- 只有审计状态为 `success` 且未使用 fallback 的 Version 输出可以替换 `summary`；
+- 超时、缺少 API Key、Pydantic 非法或协议失败时保留确定性摘要；
+- `sync_evidence_task_status` 后按版本组分派 Evidence Subagent，再进入 Recommendation；
+- Content 和 Evidence 输出只增加解释消息与受控引用，不改变文档事实或证据评分；
+- 生命周期 Hook 显式禁止修改固定 Team、Task、Todo、Team Message 和 LLM 审计；
+- 最终报告展示关键修改摘要、摘要来源、Team Message ID 和可选解释引用。
+
+流程、状态边界和回退验收见
+[0.4.4 三业务阶段接入](docs/version-0.4.4-business-stage-integration.md)。
+
+## 0.5.0 兼容性、发布和文档
+
+第五批将前四批能力收口为首个固定 Agent Team 正式版本：
+
+- Python 包、项目元数据、Docker 默认镜像版本统一为 `0.5.0`；
+- 新增 0.4.0 确定性参照图，证明关闭真实 LLM 时版本关系、证据和推荐结论不变；
+- 旧状态缺少 `llm`、`team`、`team_messages`、`llm_calls` 时自动补齐安全默认值；
+- SQLite checkpoint 测试同时检查恢复状态和数据库原始字节，禁止 API Key 实际值、
+  私有模型 Prompt 及完整正文尾部落盘；
+- Inventory 原始解析结果改用非跟踪状态通道，只把标准化产物引用写入持久化状态；
+- 默认示例继续关闭真实模型；真实 Provider 使用被忽略的本地 `.env` 提供
+  `OPENAI_API_KEY`，远程仓库只提交 `.env.example`；
+- 真实 Provider、Mock、超时、缺失密钥、非法 Pydantic 输出、越权引用和三个角色回退
+  均映射到自动化测试或显式手工 smoke 步骤。
+
+发布范围、升级方式和完整验收矩阵见
+[0.5.0 固定 Agent Team 正式发布说明](docs/release-0.5.0-agent-team.md)。
+
 ## 图结构
 
 顶层图：
@@ -248,8 +373,10 @@ initialize_run
   -> load_system_prompt
   -> plan_run_tasks
   -> run_inventory_subgraph -> sync_inventory_task_status
+  -> dispatch_content_subagent_task
   -> run_version_analysis_subgraph -> sync_version_task_status
   -> run_evidence_subgraph -> sync_evidence_task_status
+  -> dispatch_evidence_subagent_task
   -> run_recommendation_subgraph -> sync_recommendation_task_status
   -> [prepare_human_review -> interrupt -> apply_human_selection
       -> sync_human_review_task_status]
@@ -346,7 +473,9 @@ python -m pip wheel . --no-deps --no-build-isolation
 
 ## 准备请求
 
-`examples/sample_request.json` 是完整请求信封。相对路径以 JSON 文件所在目录
+`examples/sample_request.json` 是默认关闭真实模型的完整请求信封；
+`examples/sample_llm_request.json` 则启用 OpenAI Provider 和三个阶段的模型摘要。
+相对路径以 JSON 文件所在目录
 为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
 `delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
 示例中的 `prompt` 和 `hooks` 是可选的请求信封对象，目前显式关闭。CLI 会单独解析
@@ -399,12 +528,59 @@ python -m pip wheel . --no-deps --no-build-isolation
       "cleanup_run_resources_hook": "ignore"
     }
   },
+  "llm": {
+    "enabled": false,
+    "provider": "mock",
+    "model": "mock-structured-v1",
+    "api_key_env": null,
+    "temperature": 0.0,
+    "max_output_tokens": 800,
+    "timeout_seconds": 30.0,
+    "fallback_enabled": true
+  },
   "checkpoint": {
     "backend": "sqlite",
-    "database_path": "../.artifacts/checkpoints/file-governance.sqlite3"
+    "database_path": "../.artifacts/checkpoints/file-governance-0.5.sqlite3"
   }
 }
 ```
+
+真实 Provider 请求不得在 JSON 中写入 API Key。本地开发先从可提交模板创建被忽略的
+`.env`，再只在本地填写真实值：
+
+```powershell
+if (-not (Test-Path -LiteralPath ".env" -PathType Leaf)) {
+    Copy-Item -LiteralPath ".env.example" -Destination ".env" -ErrorAction Stop
+}
+# 使用本地编辑器把 .env 中的 OPENAI_API_KEY= 填写为真实值。
+```
+
+`.env` 已被 `.gitignore` 和 `.dockerignore` 排除，远程仓库只保留 `.env.example`。
+应用本身不会自动加载 dotenv 文件；Docker 运行真实 Provider 时必须显式传入
+`--env-file .env`。不要使用 `docker build --secret` 之外的方式把 `.env` 复制进镜像。
+
+使用官方 OpenAI API 时只填写：
+
+```dotenv
+OPENAI_API_KEY=你的官方API密钥
+```
+
+使用第三方 OpenAI 兼容中转站时，在本地 `.env` 额外填写：
+
+```dotenv
+OPENAI_API_KEY=中转站提供的API密钥
+OPENAI_BASE_URL=https://你的中转站地址/v1
+OPENAI_API_MODE=chat_completions
+```
+
+`chat_completions` 会跳过 `/responses`，直接使用 `/chat/completions` 的 Pydantic
+结构化输出兼容路径。中转站必须支持 OpenAI SDK 的 Chat Completions 请求格式和
+`response_format` JSON Schema；如果中转站完整支持 Responses API，也可以把模式改为
+`responses`。模型名称必须替换为中转站实际支持的名称。
+
+模型名称由 `sample_llm_request.json` 配置，可按部署环境支持的结构化输出模型调整。
+自动化测试使用注入的 SDK 兼容 Client 验证真实 Provider 适配，不会在 CI 中产生外部费用；
+真实模型 smoke 应使用下方 Docker 命令完成。
 
 创建输入目录并放入待治理文件：
 
@@ -506,9 +682,14 @@ state = create_initial_state(
         "artifact_root": "/data/artifacts/content",
         "report_root": "/data/artifacts/reports",
     },
-    # 0.4.0 默认值仍为关闭；这里显式写出便于说明生命周期配置。
+    # 0.5.0 默认值仍为关闭；阶段分派会使用离线 Mock Provider。
     prompt_config={"enabled": False},
     hook_config={"enabled": False},
+    llm_config={
+        "enabled": False,
+        "provider": "mock",
+        "model": "mock-structured-v1",
+    },
 )
 
 config = {"configurable": {"thread_id": "governance-run-001"}}
@@ -538,6 +719,7 @@ with open_checkpointer(
 - 文档分组及自动选择阈值；
 - PDF 来源匹配阈值、本地发送日志读取上限和歧义分差；
 - 默认关闭的 Prompt、Hooks、执行顺序和失败策略；
+- 默认关闭真实模型的 Provider、模型名、温度、Token 上限、超时和回退配置；
 - `.artifacts/content/normalized` 和 `intermediate` 产物布局；
 - Markdown 报告目录；
 - SQLite checkpoint 后端及数据库路径。
@@ -576,10 +758,13 @@ python -m compileall -q app tests
 - 固定 Task DAG 的确定性创建、幂等补齐、角色映射和已有状态保护；
 - 重复 ID、重复依赖、未知依赖、自依赖和循环依赖拒绝；
 - Todo 对 Task 状态的确定性纯投影、正常跳过和失败阻断语义。
-- Team Orchestration 五节点结构、无效 DAG 条件截断和固定角色分配；
+- Team Orchestration 的状态同步/分派双路径、无效 DAG 截断和固定团队初始化；
 - Task 更新的依赖检查、终态幂等、产物引用合并和错误收口；
-- 私有 task_update 消费、转换器白名单和顶层包装字段隔离；
+- 私有 task_update/dispatch_request 消费、转换器白名单和顶层包装字段隔离；
 - 重复调用子图时 Task、Todo 和时间字段不重复、不重置。
+- Content、Version、Evidence 唯一角色选择及 assignment/result/error 消息往返；
+- 模型失败与伪造引用的协调者回退、fallback 审计和 Task 引用登记；
+- 动态团队成员、角色篡改、协调者 Task 分派和 Worktree 节点缺失检查；
 - 顶层四业务 Task 的顺序推进、无需人工审核时的正常跳过和报告完成；
 - interrupt 期间 Human Review running、恢复后的审核与报告 Task 完成；
 - 业务失败源 Task、下游阻断跳过、失败报告收口和 Todo blocked 语义；
@@ -587,6 +772,18 @@ python -m compileall -q app tests
 - CLI 最终、人工暂停和恢复输出中的 Todo 顺序与五状态 Task 计数；
 - CLI 字段白名单对文档正文、完整报告和 Task 产物引用的隔离；
 - nodes 目录函数与所有 LangGraph `add_node()` 注册关系的一致性；
+- LLM 配置未知字段、直接密钥、非法范围和环境变量名称拒绝；
+- Mock 结构化调用、Token 记录、确定性超时和非法 Pydantic 输出失败审计；
+- OpenAI Provider 的结构化参数传递、Token 提取和缺失环境变量拒绝；
+- 三个 Subagent 输出的额外字段拒绝和产物引用白名单；
+- Content、Evidence 阶段后分派以及 Version Analysis 内部摘要升级；
+- Version Subagent 成功来源登记与模型不可用时的确定性事实一致性；
+- OpenAI 真实 Provider 适配成功、Mock 成功、确定性超时、缺失 API Key 和非法
+  Pydantic 输出；
+- Subagent 越权产物引用拒绝，以及 Content、Version、Evidence 分别失败后的安全回退；
+- 关闭真实 LLM 时与 0.4.0 确定性参照图的治理结论一致性；
+- SQLite checkpoint 恢复状态和原始数据库字节均不包含 API Key 实际值、私有 Prompt
+  或长正文尾部；
 - 正常完成、无需审核、人工暂停恢复、无数据、业务失败、非致命警告和 checkpoint
   重放七条 0.4.0 发布验收路径。
 
@@ -595,26 +792,28 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.4.0 -t file-manage-agent:0.4.0 .
+docker build --build-arg APP_VERSION=0.5.0 -t file-manage-agent:0.5.0 .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.4.0
+docker run --rm file-manage-agent:0.5.0
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
 请求中的 `delivery_log_path` 应指向 `/data/evidence/delivery_log.json`；不使用
-本地证据时应设为 `null`：
+本地证据时应设为 `null`。当请求启用官方或第三方 OpenAI 兼容 Provider 时，必须通过
+`--env-file` 显式加载项目根目录下被忽略的本地 `.env`：
 
 ```bash
 docker run --rm \
+  --env-file /local/file-manage-agent/.env \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.4.0 \
+  file-manage-agent:0.5.0 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -626,7 +825,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.4.0 \
+  file-manage-agent:0.5.0 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -635,8 +834,7 @@ docker run --rm \
 
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
-- LLM 差异摘要客户端；当前始终使用确定性摘要；
-- before_model、after_model 与真实 LLM 调用的节点接入；
+- 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 持久化工具调用审计；当前只记录最小 HookEvent；
-- 邮件 MCP 证据、长期 Memory、Skills、Subagent 和 Worktree；
+- 邮件 MCP 证据、长期 Memory、Skills 和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

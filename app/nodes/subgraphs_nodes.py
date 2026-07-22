@@ -36,11 +36,15 @@ def run_inventory_subgraph(state: FileGovernanceState) -> dict:
 def run_version_analysis_subgraph(state: FileGovernanceState) -> dict:
     """显式转换状态、同步执行版本分析子图并过滤返回字段。
 
+    Version Analysis 内部通过 Team Orchestration 调用 Version Subagent；包装节点
+    会把固定团队、真实 Task、Todo、Team Message 和 LLM 审计随版本事实一并
+    写回，同时继续隔离比较队列、当前差异及单次分派输入输出。
+
     Args:
         state: 已完成文件扫描和内容提取的顶层治理状态。
 
     Returns:
-        仅包含版本组、差异、关系边、分叉、版本链和错误的顶层状态更新。
+        包含版本事实、团队协议审计、Task 进度和错误的顶层状态更新。
     """
     subgraph_input = file_governance_to_version_analysis_state(state)
     subgraph_result = version_analysis_graph.invoke(subgraph_input)
@@ -50,8 +54,9 @@ def run_version_analysis_subgraph(state: FileGovernanceState) -> dict:
 def run_evidence_subgraph(state: FileGovernanceState) -> dict:
     """显式转换状态、同步执行 Evidence 子图并过滤返回字段。
 
-    第四批已把该包装节点注册到顶层 File Governance 图。任务、PDF 候选和原始
-    发送日志仍由状态转换白名单隔离，不会泄漏回顶层状态。
+    该节点只执行确定性 PDF 来源和发送记录匹配；固定 Evidence Subagent 的解释
+    分派由顶层 ``dispatch_evidence_subagent_task`` 在证据状态同步后单独执行。
+    PDF 候选和原始发送日志仍由状态转换白名单隔离，不会泄漏回顶层状态。
 
     Args:
         state: 已具有文件、标准化文档和版本组的顶层治理状态。
