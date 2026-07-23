@@ -247,6 +247,7 @@ class MemoryItemRepository(BaseRepository[MemoryItemModel]):
         self,
         namespace: str,
         *,
+        scope: str | None = None,
         kind: str | None = None,
         limit: int = 100,
     ) -> list[MemoryItemModel]:
@@ -254,6 +255,7 @@ class MemoryItemRepository(BaseRepository[MemoryItemModel]):
 
         Args:
             namespace: 隔离不同业务空间的非空 Memory 命名空间。
+            scope: 可选短期或长期 Memory 范围过滤条件。
             kind: 可选 Memory 类型过滤条件。
             limit: 允许返回的最大记录数。
 
@@ -267,6 +269,11 @@ class MemoryItemRepository(BaseRepository[MemoryItemModel]):
         statement = select(MemoryItemModel).where(
             MemoryItemModel.namespace == normalized_namespace
         )
+        if scope is not None:
+            statement = statement.where(
+                MemoryItemModel.scope
+                == _normalize_required_identifier(scope, field_name="scope")
+            )
         if kind is not None:
             statement = statement.where(
                 MemoryItemModel.kind

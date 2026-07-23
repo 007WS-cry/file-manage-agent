@@ -144,8 +144,21 @@ checkpoints:
   # checkpoint 数据库必须位于只读输入目录之外。
   database_path: .artifacts/checkpoints/file-governance.sqlite3
 
+memory:
+  # 0.5.4 默认关闭；显式启用后才会召回和持久化跨运行治理事实。
+  enabled: false
+
+  # null 时由输入根目录计算不可逆哈希；显式种子同样只保存哈希结果。
+  namespace: null
+
+  # 长期 Memory 使用独立应用数据库，严禁与 checkpoint 共用 SQLite 文件。
+  database_path: .artifacts/database/file-governance-app.sqlite3
+
+  # 每次新运行最多读取的最近长期 Memory 条目数量。
+  recall_limit: 50
+
 application_database:
-  # 0.5.1 只建立 SQLAlchemy、Repository 和迁移骨架，暂不接入顶层治理图。
+  # 0.5.4 已由长期 Memory 节点使用；其他四张应用表仍保留为后续批次骨架。
   backend: sqlite
 
   # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。

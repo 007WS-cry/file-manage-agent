@@ -249,7 +249,7 @@ def test_recommendation_wrapper_filters_private_state_and_remains_independent(
 
     update = run_recommendation_subgraph(top_state)
 
-    assert set(update) == {"decisions", "human_review", "errors"}
+    assert set(update) == {"memory", "decisions", "human_review", "errors"}
     assert update["decisions"][0]["recommended_file_id"] == "source"
     assert "candidate_sets" not in update
     assert "run_recommendation_subgraph" in file_governance_graph.get_graph().nodes

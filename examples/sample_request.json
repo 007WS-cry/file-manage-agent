@@ -60,6 +60,12 @@
     "timeout_seconds": 30.0,
     "fallback_enabled": true
   },
+  "memory": {
+    "enabled": false,
+    "namespace": null,
+    "database_path": "../.artifacts/database/file-governance-app.sqlite3",
+    "recall_limit": 50
+  },
   "checkpoint": {
     "backend": "sqlite",
     "database_path": "../.artifacts/checkpoints/file-governance-0.5.sqlite3"

@@ -255,6 +255,43 @@ def resolve_llm_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     return dict(raw_llm)
 
 
+def resolve_memory_payload(
+    payload: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> dict[str, Any] | None:
+    """解析请求信封中的可选 Memory 配置并规范化数据库路径。
+
+    本函数只复制开关、命名空间种子和路径配置，不创建数据库目录或数据表。
+    数据库父目录由启用后的 Engine 自动创建，表结构仍必须通过 Alembic 管理。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+        base_directory: 请求 JSON 所在目录，用于解析相对数据库路径。
+
+    Returns:
+        独立的 Memory 配置字典；缺省或显式 null 时返回 None。
+
+    Raises:
+        ValueError: ``memory`` 或数据库路径字段类型不合法时抛出。
+    """
+    raw_memory = payload.get("memory")
+    if raw_memory is None:
+        return None
+    if not isinstance(raw_memory, dict):
+        raise ValueError("memory 必须是对象或 null")
+    memory_config = dict(raw_memory)
+    raw_database_path = memory_config.get("database_path")
+    if raw_database_path is not None:
+        if not isinstance(raw_database_path, str) or not raw_database_path.strip():
+            raise ValueError("memory.database_path 必须是非空路径字符串")
+        candidate = Path(raw_database_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_directory / candidate
+        memory_config["database_path"] = str(candidate.resolve())
+    return memory_config
+
+
 def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
     """把 LangGraph Interrupt 对象转换为可输出的 JSON 值。
 
@@ -357,6 +394,10 @@ def run_command(arguments: argparse.Namespace) -> int:
         base_directory=request_path.parent,
     )
     llm_config = resolve_llm_payload(payload)
+    memory_config = resolve_memory_payload(
+        payload,
+        base_directory=request_path.parent,
+    )
     backend = arguments.checkpoint_backend or checkpoint.get("backend", "sqlite")
     if backend not in {"memory", "sqlite"}:
         raise ValueError("checkpoint.backend 只能是 memory 或 sqlite")
@@ -370,6 +411,8 @@ def run_command(arguments: argparse.Namespace) -> int:
         prompt_config=prompt_config,
         hook_config=hook_config,
         llm_config=llm_config,
+        memory_config=memory_config,
+        checkpoint_path=database_path if backend == "sqlite" else None,
     )
     with open_checkpointer(
         backend,

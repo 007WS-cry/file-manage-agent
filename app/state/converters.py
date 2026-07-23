@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.services.memory_policy import copy_memory_state
 from app.skills.loader import create_pending_skill_registry
 from app.skills.registry import copy_skill_registry
 from app.state.models import (
@@ -326,10 +327,12 @@ def file_governance_to_evidence_state(
         所有 Evidence 私有执行字段均已初始化的子图状态。
     """
     return EvidenceGraphState(
+        run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),
         documents=list(state.get("documents", [])),
         version_groups=list(state.get("version_groups", [])),
+        memory=copy_memory_state(state.get("memory")),
         pdf_candidate_ids=[],
         pdf_match_jobs=[],
         delivery_log_entries=[],
@@ -354,6 +357,7 @@ def evidence_state_to_file_governance_update(
         可由顶层 reducer 安全合并的证据字段白名单更新。
     """
     return {
+        "memory": copy_memory_state(state.get("memory")),
         "pdf_exports": list(state.get("pdf_exports", [])),
         "deliveries": list(state.get("deliveries", [])),
         "errors": list(state.get("errors", [])),
@@ -375,6 +379,7 @@ def file_governance_to_recommendation_state(
         候选集合和推荐结果均已清空的 Recommendation 子图状态。
     """
     return RecommendationGraphState(
+        run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),
         version_groups=list(state.get("version_groups", [])),
@@ -384,6 +389,7 @@ def file_governance_to_recommendation_state(
         version_chains=list(state.get("version_chains", [])),
         pdf_exports=list(state.get("pdf_exports", [])),
         deliveries=list(state.get("deliveries", [])),
+        memory=copy_memory_state(state.get("memory")),
         candidate_sets=[],
         decisions=[],
         human_review={
@@ -410,6 +416,7 @@ def recommendation_state_to_file_governance_update(
         可由顶层 reducer 安全合并的推荐字段白名单更新。
     """
     return {
+        "memory": copy_memory_state(state.get("memory")),
         "decisions": list(state.get("decisions", [])),
         "human_review": dict(state["human_review"]),
         "errors": list(state.get("errors", [])),

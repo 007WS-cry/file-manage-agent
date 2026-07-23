@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.3 Task、Skill、模型路由、LLM、数据库审计和 Team Protocol 快照可能包含运行 ID 与产物引用
+# 0.5.4 Task、Skill、Memory、模型路由、LLM、数据库审计和 Team Protocol 快照可能包含运行 ID 与产物引用
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -103,6 +103,9 @@ skill_registry*.json
 skill_selection*.json
 skill_binding*.json
 skill_context*.json
+memory_snapshot*.json
+memory_recall*.json
+memory_export*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

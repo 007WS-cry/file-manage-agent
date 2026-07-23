@@ -106,14 +106,15 @@ def write_delivery_log(
 
 
 def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> None:
-    """0.5.3 顶层图必须先载入 Skill 元数据，再规划和执行固定 Task。"""
+    """0.5.4 顶层图必须在 Skill 后召回 Memory，再规划和执行固定 Task。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert ("initialize_run", "execute_before_run_hooks") in edges
     assert ("validate_request", "load_system_prompt") in edges
     assert ("load_system_prompt", "load_skill_registry") in edges
-    assert ("load_skill_registry", "plan_run_tasks") in edges
+    assert ("load_skill_registry", "recall_long_term_memory") in edges
+    assert ("recall_long_term_memory", "plan_run_tasks") in edges
     assert ("plan_run_tasks", "run_inventory_subgraph") in edges
     assert ("run_inventory_subgraph", "sync_inventory_task_status") in edges
     assert (
@@ -145,6 +146,8 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
         "run_recommendation_subgraph",
         "sync_recommendation_task_status",
     ) in edges
+    assert ("sync_report_task_status", "persist_long_term_memory") in edges
+    assert ("persist_long_term_memory", "execute_after_run_hooks") in edges
     assert ("apply_human_selection", "sync_human_review_task_status") in edges
     assert (
         "sync_human_review_task_status",
@@ -157,8 +160,7 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     assert ("generate_no_data_report", "sync_report_task_status") in edges
     assert ("generate_governance_report", "sync_report_task_status") in edges
     assert ("generate_failure_report", "sync_report_task_status") in edges
-    assert ("generate_failure_report", "execute_after_run_hooks") in edges
-    assert ("sync_report_task_status", "execute_after_run_hooks") in edges
+    assert ("generate_failure_report", "persist_long_term_memory") in edges
     assert ("execute_after_run_hooks", "finalize_run") in edges
     assert (
         "execute_after_run_hooks",
