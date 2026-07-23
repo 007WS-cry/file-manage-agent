@@ -321,7 +321,7 @@ def test_evidence_wrapper_filters_private_subgraph_state(tmp_path: Path) -> None
 
     update = run_evidence_subgraph(top_state)
 
-    assert set(update) == {"pdf_exports", "deliveries", "errors"}
+    assert set(update) == {"memory", "pdf_exports", "deliveries", "errors"}
     assert update["pdf_exports"][0]["source_file_id"] == "source"
     assert update["deliveries"][0]["file_id"] == "source"
 

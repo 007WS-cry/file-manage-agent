@@ -24,6 +24,7 @@ from app.nodes.lifecycle import (
     load_system_prompt,
     validate_request,
 )
+from app.nodes.memory import persist_long_term_memory, recall_long_term_memory
 from app.nodes.report import (
     generate_failure_report,
     generate_governance_report,
@@ -79,6 +80,7 @@ def build_file_governance_graph(
     builder.add_node("validate_request", validate_request)
     builder.add_node("load_system_prompt", load_system_prompt)
     builder.add_node("load_skill_registry", load_skill_registry)
+    builder.add_node("recall_long_term_memory", recall_long_term_memory)
     builder.add_node("plan_run_tasks", plan_run_tasks)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
     builder.add_node("sync_inventory_task_status", sync_inventory_task_status)
@@ -98,6 +100,7 @@ def build_file_governance_graph(
     builder.add_node("generate_no_data_report", generate_no_data_report)
     builder.add_node("generate_governance_report", generate_governance_report)
     builder.add_node("sync_report_task_status", sync_report_task_status)
+    builder.add_node("persist_long_term_memory", persist_long_term_memory)
     builder.add_node("execute_after_run_hooks", execute_after_run_hooks)
     builder.add_node("generate_lifecycle_failure_report", generate_lifecycle_failure_report)
     builder.add_node("finalize_run", finalize_run)
@@ -129,10 +132,11 @@ def build_file_governance_graph(
         "load_skill_registry",
         route_skill_registry_result,
         {
-            "ready": "plan_run_tasks",
+            "ready": "recall_long_term_memory",
             "failure": "generate_failure_report",
         },
     )
+    builder.add_edge("recall_long_term_memory", "plan_run_tasks")
     builder.add_conditional_edges(
         "plan_run_tasks",
         route_team_orchestration_result,
@@ -208,12 +212,13 @@ def build_file_governance_graph(
         route_failure_report_task_sync,
         {
             "sync": "sync_report_task_status",
-            "skip": "execute_after_run_hooks",
+            "skip": "persist_long_term_memory",
         },
     )
     builder.add_edge("generate_no_data_report", "sync_report_task_status")
     builder.add_edge("generate_governance_report", "sync_report_task_status")
-    builder.add_edge("sync_report_task_status", "execute_after_run_hooks")
+    builder.add_edge("sync_report_task_status", "persist_long_term_memory")
+    builder.add_edge("persist_long_term_memory", "execute_after_run_hooks")
     builder.add_conditional_edges(
         "execute_after_run_hooks",
         route_after_run_hooks_result,

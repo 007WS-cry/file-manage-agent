@@ -6,6 +6,7 @@ from app.storage.database import (
     open_application_session,
     validate_application_database_path,
 )
+from app.storage.memory_repository import MemoryRepository
 from app.storage.orm_models import (
     Base,
     ContextSummaryModel,
@@ -39,6 +40,7 @@ __all__ = [
     "HumanReviewRepository",
     "MemoryItemModel",
     "MemoryItemRepository",
+    "MemoryRepository",
     "RepositoryBundle",
     "ToolCallAuditModel",
     "ToolCallAuditRepository",

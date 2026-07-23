@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.5.3"
-description = "基于 LangGraph、LangChain 多模型路由、Task 级 Skills 和确定性回退的只读文件版本治理 Agent"
+version = "0.5.4"
+description = "基于 LangGraph、LangChain 多模型路由、Task 级 Skills、安全长期 Memory 和确定性回退的只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

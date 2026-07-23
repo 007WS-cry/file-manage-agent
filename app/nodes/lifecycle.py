@@ -17,6 +17,7 @@ from app.llm.prompt_loader import (
 from app.llm.prompt_loader import (
     record_prompt_load_error,
 )
+from app.services.memory_policy import copy_memory_state
 from app.state.factories import (
     create_hook_config_state,
     create_prompt_state,
@@ -70,6 +71,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "hooks": state.get("hooks", create_hook_config_state()),
         "llm": create_llm_config_state(state.get("llm")),
         "team": state.get("team", create_team_state()),
+        "memory": copy_memory_state(state.get("memory")),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),

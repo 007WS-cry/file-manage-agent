@@ -1,20 +1,30 @@
 from __future__ import annotations
 
+import os
 import sysconfig
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
 
 from app.llm.config import create_llm_config_state
+from app.services.memory_policy import (
+    derive_configured_memory_namespace,
+    derive_memory_namespace,
+)
 from app.skills.loader import create_pending_skill_registry
 from app.state.models import (
     AgentMemberState,
     FileGovernanceState,
     HookConfigState,
+    MemoryState,
     PromptState,
     RequestState,
     TeamState,
     WorkspaceState,
+)
+from app.storage.database import (
+    DEFAULT_APPLICATION_DATABASE_PATH,
+    validate_application_database_path,
 )
 
 """本模块负责定位默认受控 Prompt，并创建可提交给顶层 LangGraph 的初始状态。"""
@@ -49,6 +59,12 @@ DEFAULT_TEAM_PROTOCOL_VERSION = "team-protocol-v1"
 
 # 0.4.4 固定团队允许的最大 Subagent 并发数；当前编排图仍按单请求串行调用。
 DEFAULT_MAX_PARALLEL_AGENTS = 3
+
+# 每次新运行默认最多召回的长期 Memory 条目数量。
+DEFAULT_MEMORY_RECALL_LIMIT = 50
+
+# 可覆盖长期 Memory 默认应用数据库位置的环境变量名称，与 Alembic 保持一致。
+APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
 
 
 def _normalize_string_list(value: object, *, field_name: str) -> list[str]:
@@ -296,6 +312,99 @@ def create_team_state() -> TeamState:
     )
 
 
+def create_memory_state(
+    request: RequestState,
+    memory_config: Mapping[str, object] | None = None,
+    *,
+    checkpoint_path: str | Path | None = None,
+) -> MemoryState:
+    """根据可选配置创建默认关闭、按工作空间隔离的 Memory 状态。
+
+    显式启用时，命名空间只保存目录或调用方种子的哈希，数据库路径必须位于
+    只读输入目录之外。此工厂不创建目录、数据库文件或数据表。
+
+    Args:
+        request: 包含输入根目录的治理请求。
+        memory_config: 可选 Memory 开关、命名空间种子、数据库路径和召回上限。
+        checkpoint_path: 可选 SQLite Checkpointer 路径，用于数据库文件隔离校验。
+
+    Returns:
+        缓冲区为空且状态为 ``pending`` 或 ``disabled`` 的 Memory 状态。
+
+    Raises:
+        TypeError: 配置字段类型不符合协议时抛出。
+        ValueError: 配置包含未知字段、非法上限或不安全数据库路径时抛出。
+    """
+    config = dict(memory_config or {})
+    _reject_unknown_fields(
+        config,
+        allowed_fields={"enabled", "namespace", "database_path", "recall_limit"},
+        config_name="memory_config",
+    )
+
+    enabled = config.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise TypeError("memory_config.enabled 必须是布尔值")
+
+    raw_namespace = config.get("namespace")
+    if raw_namespace is not None and not isinstance(raw_namespace, str):
+        raise TypeError("memory_config.namespace 必须是字符串或 null")
+    if isinstance(raw_namespace, str) and not raw_namespace.strip():
+        raise ValueError("memory_config.namespace 不得为空")
+    namespace = (
+        derive_configured_memory_namespace(raw_namespace)
+        if isinstance(raw_namespace, str)
+        else derive_memory_namespace(request["root_directory"])
+    )
+    if not enabled:
+        namespace = ""
+
+    raw_database_path = config.get(
+        "database_path",
+        os.environ.get(
+            APPLICATION_DATABASE_PATH_ENV,
+            str(DEFAULT_APPLICATION_DATABASE_PATH),
+        ),
+    )
+    if not isinstance(raw_database_path, (str, Path)):
+        raise TypeError("memory_config.database_path 必须是字符串或 Path")
+    database_path = (
+        str(
+            validate_application_database_path(
+                raw_database_path,
+                input_root=request["root_directory"],
+                checkpoint_path=checkpoint_path,
+            )
+        )
+        if enabled
+        else None
+    )
+
+    recall_limit = config.get("recall_limit", DEFAULT_MEMORY_RECALL_LIMIT)
+    if isinstance(recall_limit, bool) or not isinstance(recall_limit, int):
+        raise TypeError("memory_config.recall_limit 必须是整数")
+    if recall_limit < 1 or recall_limit > 1000:
+        raise ValueError("memory_config.recall_limit 必须位于 1 到 1000 之间")
+
+    return MemoryState(
+        enabled=enabled,
+        namespace=namespace,
+        database_path=database_path,
+        checkpoint_path=(
+            str(Path(checkpoint_path).expanduser().resolve())
+            if enabled and checkpoint_path is not None
+            else None
+        ),
+        recall_limit=recall_limit,
+        status="pending" if enabled else "disabled",
+        recalled_items=[],
+        short_term_items=[],
+        pending_long_term_items=[],
+        persisted_item_ids=[],
+        last_error=None,
+    )
+
+
 def create_initial_state(
     request: RequestState,
     workspace: WorkspaceState,
@@ -304,6 +413,8 @@ def create_initial_state(
     hook_config: Mapping[str, object] | None = None,
     llm_config: Mapping[str, object] | None = None,
     skill_registry_path: str | Path | None = None,
+    memory_config: Mapping[str, object] | None = None,
+    checkpoint_path: str | Path | None = None,
 ) -> FileGovernanceState:
     """创建可直接传给顶层 LangGraph 的完整初始状态。
 
@@ -315,6 +426,8 @@ def create_initial_state(
         llm_config: 可选单模型或多 Profile LLM 配置；省略时关闭真实模型并使用
             安全 Mock Profile，旧版单模型配置会自动转换为默认 Profile。
         skill_registry_path: 可选受控 Skill 注册表路径；省略时使用项目默认资源。
+        memory_config: 可选短期与长期 Memory 配置；省略时不访问应用数据库。
+        checkpoint_path: 可选 SQLite Checkpointer 路径，用于与应用数据库隔离。
 
     Returns:
         所有 reducer 列表、模型 Profile 路由、生命周期配置、证据和人工审核字段
@@ -338,6 +451,11 @@ def create_initial_state(
         llm=create_llm_config_state(llm_config),
         team=create_team_state(),
         skill_registry=create_pending_skill_registry(skill_registry_path),
+        memory=create_memory_state(
+            normalized_request,
+            memory_config,
+            checkpoint_path=checkpoint_path,
+        ),
         hook_events=[],
         todos=[],
         tasks=[],

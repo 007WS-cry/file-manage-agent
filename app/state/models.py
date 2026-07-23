@@ -373,6 +373,85 @@ class HumanReviewState(TypedDict):
     # 用户在人工确认阶段提供的补充说明。
 
 
+class MemoryItemState(TypedDict):
+    """一个经过脱敏和长度限制、可在图状态或应用数据库中传递的 Memory 条目。"""
+
+    id: str
+    # Memory 条目唯一 ID；由安全结构化字段计算，不包含业务正文。
+
+    namespace: str
+    # 隔离不同工作空间的哈希命名空间，不保存原始目录路径。
+
+    scope: Literal["short_term", "long_term"]
+    # Memory 生命周期；短期仅随当前图状态存在，长期允许写入应用数据库。
+
+    kind: Literal[
+        "stage_summary",
+        "confirmed_version_choice",
+        "reliable_evidence_relation",
+        "governance_preference",
+    ]
+    # Memory 类型，只允许数据库约束定义的四类治理事实。
+
+    summary: str
+    # 由固定模板生成的有界摘要，禁止写入文档正文、密钥或完整模型 Prompt。
+
+    structured_data: dict[str, Any]
+    # 经过字段白名单校验的 ID、评分和证据类型等结构化数据。
+
+    artifact_refs: list[str]
+    # 支撑结论的受控产物引用；不得保存原始正文或外部凭据。
+
+    source_run_id: str
+    # 产生该条目的治理运行 ID。
+
+    confirmed_by_human: bool
+    # 条目是否直接来自用户明确确认。
+
+    confidence: float
+    # 条目置信度，范围为 0.0 到 1.0。
+
+    created_at: str
+    # 条目创建时间，使用带时区的 ISO 8601 格式。
+
+
+class MemoryState(TypedDict):
+    """治理图共享的短期与长期 Memory 配置、召回结果和待持久化缓冲区。"""
+
+    enabled: bool
+    # 是否启用长期 Memory 数据库访问；默认关闭以保持旧版运行兼容。
+
+    namespace: str
+    # 当前工作空间的隔离命名空间，默认由输入根目录哈希生成。
+
+    database_path: str | None
+    # 独立应用数据库文件路径；关闭 Memory 时为 None。
+
+    checkpoint_path: str | None
+    # 可选 SQLite checkpoint 文件路径，用于强制校验两类数据库不共用文件。
+
+    recall_limit: int
+    # 每次新运行最多召回的长期 Memory 条目数量。
+
+    status: Literal["disabled", "pending", "ready", "failed"]
+    # 长期 Memory 的当前加载或持久化状态。
+
+    recalled_items: list[MemoryItemState]
+    # 本次运行从应用数据库召回的长期治理事实。
+
+    short_term_items: list[MemoryItemState]
+    # 仅随当前 LangGraph 状态和 Checkpointer 存在的阶段摘要。
+
+    pending_long_term_items: list[MemoryItemState]
+    # 已通过安全策略、等待写入应用数据库的长期治理事实。
+
+    persisted_item_ids: list[str]
+    # 本次运行已经成功写入应用数据库的 Memory 条目 ID。
+
+    last_error: str | None
+    # 最近一次 Memory 操作的脱敏错误摘要；没有错误时为 None。
+
+
 class ErrorRecord(TypedDict):
     """节点执行过程中产生的结构化错误。"""
 
@@ -395,9 +474,10 @@ class ErrorRecord(TypedDict):
         "protocol",
         "prompt",
         "hook",
+        "memory",
         "unknown",
     ]
-    # 错误类别；protocol 表示 Team Message 或分派契约错误。
+    # 错误类别；protocol 表示团队契约错误，memory 表示安全召回或持久化错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -1352,6 +1432,9 @@ class FileGovernanceState(TypedDict):
     skill_registry: SkillRegistryState
     # 顶层加载的 Skill 元数据及当前按 Task 绑定状态。
 
+    memory: MemoryState
+    # 短期阶段摘要、长期召回结果及待持久化的安全治理事实。
+
     hook_events: Annotated[
         list[HookEvent],
         merge_by_id,
@@ -1615,6 +1698,9 @@ class VersionAnalysisGraphState(TypedDict):
 class EvidenceGraphState(TypedDict):
     """PDF 来源与本地发送记录匹配子图使用的状态。"""
 
+    run: RunState
+    # 当前治理运行 ID，供证据 Memory 建立安全来源关联。
+
     request: RequestState
     # PDF 匹配阈值和本地发送日志路径。
 
@@ -1626,6 +1712,9 @@ class EvidenceGraphState(TypedDict):
 
     version_groups: Annotated[list[VersionGroupRecord], merge_by_id]
     # 用于限制 PDF 来源候选范围的版本组。
+
+    memory: MemoryState
+    # Evidence 阶段读取和追加的短期、长期 Memory 缓冲区。
 
     pdf_candidate_ids: list[str]
     # 子图内部收集到的非重复、已解析 PDF 文件 ID。
@@ -1648,6 +1737,9 @@ class EvidenceGraphState(TypedDict):
 
 class RecommendationGraphState(TypedDict):
     """结合版本关系和外部证据推荐各版本组主版本的子图状态。"""
+
+    run: RunState
+    # 当前治理运行 ID，供推荐 Memory 建立安全来源关联。
 
     request: RequestState
     # 自动推荐阈值及 PDF 匹配阈值。
@@ -1675,6 +1767,9 @@ class RecommendationGraphState(TypedDict):
 
     deliveries: Annotated[list[DeliveryRecord], merge_by_id]
     # 客户发送和确认记录。
+
+    memory: MemoryState
+    # 供候选评分读取的历史选择，以及本阶段产生的短期摘要。
 
     candidate_sets: Annotated[list[RecommendationCandidateSet], merge_by_id]
     # 每个版本组内部使用的推荐候选集合。
