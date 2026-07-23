@@ -106,13 +106,14 @@ def write_delivery_log(
 
 
 def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> None:
-    """0.4.4 顶层图必须在 Content、Evidence 阶段后接入固定 Subagent 分派。"""
+    """0.5.3 顶层图必须先载入 Skill 元数据，再规划和执行固定 Task。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
     assert ("initialize_run", "execute_before_run_hooks") in edges
     assert ("validate_request", "load_system_prompt") in edges
-    assert ("load_system_prompt", "plan_run_tasks") in edges
+    assert ("load_system_prompt", "load_skill_registry") in edges
+    assert ("load_skill_registry", "plan_run_tasks") in edges
     assert ("plan_run_tasks", "run_inventory_subgraph") in edges
     assert ("run_inventory_subgraph", "sync_inventory_task_status") in edges
     assert (

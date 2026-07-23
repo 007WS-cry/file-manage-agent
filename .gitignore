@@ -54,12 +54,18 @@ resources/prompts/*.private.md
 # 0.3.x 受控 Prompt 必须随源码、wheel 和容器共同交付。
 !resources/prompts/file_governance_system_v1.md
 
+# 本地或私有 Skill 可能包含临时业务规则，不提交到仓库
+resources/skills/**/*.local.md
+resources/skills/**/*.private.md
+resources/skills/registry.local.yaml
+resources/skills/registry.private.yaml
+
 # Prompt 调试快照和本地生命周期 Hook 审计可能包含运行信息，不提交到仓库
 prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.2 Task、模型路由、LLM、数据库审计和 Team Protocol 快照可能包含运行 ID 与产物引用
+# 0.5.3 Task、Skill、模型路由、LLM、数据库审计和 Team Protocol 快照可能包含运行 ID 与产物引用
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -93,6 +99,10 @@ relay_config*.json
 application_database*.json
 repository_snapshot*.json
 migration_snapshot*.json
+skill_registry*.json
+skill_selection*.json
+skill_binding*.json
+skill_context*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

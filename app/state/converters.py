@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from app.skills.loader import create_pending_skill_registry
+from app.skills.registry import copy_skill_registry
 from app.state.models import (
     ContentSubagentInput,
     EvidenceGraphState,
@@ -59,10 +61,14 @@ def file_governance_to_team_orchestration_state(
     Returns:
         已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
     """
+    registry = state.get("skill_registry", create_pending_skill_registry())
     return TeamOrchestrationGraphState(
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
+        skill_registry=copy_skill_registry(registry),
+        skill_selection=None,
+        skill_context=[],
         task_update=dict(task_update) if task_update is not None else None,
         dispatch_request=(
             dict(dispatch_request) if dispatch_request is not None else None
@@ -95,6 +101,7 @@ def team_orchestration_state_to_file_governance_update(
     """
     return {
         "team": _copy_team_state(state["team"]),
+        "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "team_messages": [
@@ -176,6 +183,9 @@ def file_governance_to_version_analysis_state(
         request=dict(state["request"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
+        skill_registry=copy_skill_registry(
+            state.get("skill_registry", create_pending_skill_registry())
+        ),
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
         files=list(state.get("files", [])),
@@ -223,6 +233,7 @@ def version_analysis_state_to_file_governance_update(
     """
     return {
         "team": _copy_team_state(state["team"]),
+        "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "version_groups": list(state.get("version_groups", [])),
@@ -255,6 +266,9 @@ def version_analysis_to_team_orchestration_state(
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
+        skill_registry=copy_skill_registry(state["skill_registry"]),
+        skill_selection=None,
+        skill_context=[],
         task_update=None,
         dispatch_request=dict(dispatch_request),
         dispatch_result=None,
@@ -283,6 +297,7 @@ def team_orchestration_state_to_version_analysis_update(
     output = raw_output if isinstance(raw_output, VersionSubagentOutput) else None
     return {
         "team": _copy_team_state(state["team"]),
+        "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "current_version_subagent_output": (

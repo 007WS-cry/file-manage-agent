@@ -775,6 +775,91 @@ class TaskStatusUpdate(TypedDict):
     # 本次状态变更发生时间，使用带时区的 ISO 8601 格式。
 
 
+class SkillRecord(TypedDict):
+    """一个受控 Skill 的元数据、按需加载内容和当前绑定状态。"""
+
+    skill_id: str
+    # Skill 的稳定唯一 ID，必须与 resources/skills 下的注册表一致。
+
+    name: str
+    # 面向日志和文档展示的中文名称。
+
+    description: str
+    # 用于选择和审计的简短能力说明，不包含完整 Skill 指令。
+
+    source_path: str
+    # SKILL.md 的受控绝对路径，只能位于注册表所在目录内。
+
+    task_types: list[str]
+    # 允许选择该 Skill 的固定 Task 类型。
+
+    roles: list[str]
+    # 允许绑定该 Skill 的固定 Agent 角色。
+
+    status: Literal["available", "loaded", "bound"]
+    # Skill 当前可用、已读取但未绑定或已绑定到一个 Task 的运行状态。
+
+    bound_task_id: str | None
+    # 当前绑定的真实 Task ID；未绑定时为 None。
+
+    content: str
+    # 按需读取的 SKILL.md 正文；恢复 available 时必须清空。
+
+    content_sha256: str | None
+    # 已加载正文的 SHA-256；未加载或释放后为 None。
+
+
+class SkillRegistryState(TypedDict):
+    """一次治理运行使用的受控 Skill 注册表状态。"""
+
+    version: str
+    # Skill 注册表协议版本，例如 skill-registry-v1。
+
+    source_path: str
+    # registry.yaml 的绝对路径。
+
+    status: Literal["pending", "ready", "failed"]
+    # 注册表等待加载、可供选择或加载失败的状态。
+
+    skills: list[SkillRecord]
+    # 当前已登记的 Skill；只有本次 Task 所需项允许暂存正文。
+
+
+class TaskSkillSelectionState(TypedDict):
+    """Team Orchestration 为一次 Subagent 分派生成的 Skill 选择结果。"""
+
+    task_id: str
+    # 当前分派对应的真实 Task ID。
+
+    task_type: str
+    # 当前 Task 的固定类型。
+
+    role: str
+    # 当前 Task 的固定负责角色。
+
+    skill_ids: list[str]
+    # 依据注册表和固定 Agent 定义选择出的最小 Skill ID 列表。
+
+
+class SkillInstructionState(TypedDict):
+    """传给单个 Subagent 的已验证 Skill 指令快照。"""
+
+    skill_id: str
+    # Skill 的稳定唯一 ID。
+
+    name: str
+    # Skill 的中文名称。
+
+    description: str
+    # Skill 的简短能力说明。
+
+    content: str
+    # 已验证且仅属于当前 Task 的 SKILL.md 正文。
+
+    content_sha256: str
+    # 当前指令正文的 SHA-256，用于审计和 checkpoint 一致性检查。
+
+
 class ModelProfileState(TypedDict):
     """一个可独立路由和审计的 LangChain 模型 Profile。"""
 
@@ -1127,6 +1212,9 @@ class ContentSubagentGraphState(TypedDict):
     llm: LLMConfigState
     # 当前运行使用的统一多模型 LLM 配置。
 
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Inventory Task 已绑定 Skill 的指令快照。
+
     selected_model_profile_id: str
     # ``resolve_model_profile`` 节点为 Content 任务解析出的 Profile ID。
 
@@ -1164,6 +1252,9 @@ class VersionSubagentGraphState(TypedDict):
     llm: LLMConfigState
     # 当前运行使用的统一多模型 LLM 配置。
 
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Version Analysis Task 已绑定 Skill 的指令快照。
+
     selected_model_profile_id: str
     # ``resolve_model_profile`` 节点为 Version 任务解析出的 Profile ID。
 
@@ -1200,6 +1291,9 @@ class EvidenceSubagentGraphState(TypedDict):
 
     llm: LLMConfigState
     # 当前运行使用的统一多模型 LLM 配置。
+
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Evidence Task 已绑定 Skill 的指令快照。
 
     selected_model_profile_id: str
     # ``resolve_model_profile`` 节点为 Evidence 任务解析出的 Profile ID。
@@ -1254,6 +1348,9 @@ class FileGovernanceState(TypedDict):
 
     team: TeamState
     # 协调 Agent 和三个固定 Subagent 的团队状态。
+
+    skill_registry: SkillRegistryState
+    # 顶层加载的 Skill 元数据及当前按 Task 绑定状态。
 
     hook_events: Annotated[
         list[HookEvent],
@@ -1336,6 +1433,15 @@ class TeamOrchestrationGraphState(TypedDict):
 
     team: TeamState
     # 固定团队成员、并发上限和协议版本。
+
+    skill_registry: SkillRegistryState
+    # 可按当前分派 Task 选择、加载、绑定并释放的 Skill 注册表。
+
+    skill_selection: TaskSkillSelectionState | None
+    # 本次分派生成的最小 Skill 选择；状态同步调用时为 None。
+
+    skill_context: list[SkillInstructionState]
+    # 已加载且绑定到当前分派 Task 的 Skill 指令快照。
 
     task_update: TaskStatusUpdate | None
     # 顶层流程传入的单次状态更新；首次创建 DAG 时可以为 None。
@@ -1438,6 +1544,9 @@ class VersionAnalysisGraphState(TypedDict):
 
     team: TeamState
     # 用于定位固定 Version Subagent 和协调 Agent 的团队状态。
+
+    skill_registry: SkillRegistryState
+    # Version 分派按比较 Task 临时绑定并在返回后释放的 Skill 注册表。
 
     tasks: Annotated[list[TaskItem], merge_by_task_id]
     # Team Orchestration 校验 Version Subagent 分派所需的真实 Task DAG。

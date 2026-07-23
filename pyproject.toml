@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.5.2"
-description = "基于 LangGraph、LangChain 多模型路由、应用数据库骨架和确定性回退的只读文件版本治理 Agent"
+version = "0.5.3"
+description = "基于 LangGraph、LangChain 多模型路由、Task 级 Skills 和确定性回退的只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -58,6 +58,11 @@ include = ["app*"]
 
 [tool.setuptools.data-files]
 "resources/prompts" = ["resources/prompts/file_governance_system_v1.md"]
+"resources/skills" = ["resources/skills/registry.yaml"]
+"resources/skills/file-content-analysis" = ["resources/skills/file-content-analysis/SKILL.md"]
+"resources/skills/version-relation" = ["resources/skills/version-relation/SKILL.md"]
+"resources/skills/evidence-confidence" = ["resources/skills/evidence-confidence/SKILL.md"]
+"resources/skills/governance-report" = ["resources/skills/governance-report/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from app.llm.config import create_llm_config_state
+from app.skills.loader import create_pending_skill_registry
 from app.state.models import (
     AgentMemberState,
     FileGovernanceState,
@@ -302,6 +303,7 @@ def create_initial_state(
     prompt_config: Mapping[str, object] | None = None,
     hook_config: Mapping[str, object] | None = None,
     llm_config: Mapping[str, object] | None = None,
+    skill_registry_path: str | Path | None = None,
 ) -> FileGovernanceState:
     """创建可直接传给顶层 LangGraph 的完整初始状态。
 
@@ -312,6 +314,7 @@ def create_initial_state(
         hook_config: 可选生命周期 Hook 配置；省略时保持完全关闭。
         llm_config: 可选单模型或多 Profile LLM 配置；省略时关闭真实模型并使用
             安全 Mock Profile，旧版单模型配置会自动转换为默认 Profile。
+        skill_registry_path: 可选受控 Skill 注册表路径；省略时使用项目默认资源。
 
     Returns:
         所有 reducer 列表、模型 Profile 路由、生命周期配置、证据和人工审核字段
@@ -334,6 +337,7 @@ def create_initial_state(
         hooks=create_hook_config_state(hook_config),
         llm=create_llm_config_state(llm_config),
         team=create_team_state(),
+        skill_registry=create_pending_skill_registry(skill_registry_path),
         hook_events=[],
         todos=[],
         tasks=[],
