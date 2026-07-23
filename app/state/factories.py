@@ -7,6 +7,10 @@ from pathlib import Path
 from typing import Literal, cast
 
 from app.llm.config import create_llm_config_state
+from app.services.context_compaction import (
+    DEFAULT_CONTEXT_COMPACT_TRIGGER_TOKENS,
+    DEFAULT_RETAINED_PREVIEW_CHARACTERS,
+)
 from app.services.memory_policy import (
     derive_configured_memory_namespace,
     derive_memory_namespace,
@@ -14,6 +18,7 @@ from app.services.memory_policy import (
 from app.skills.loader import create_pending_skill_registry
 from app.state.models import (
     AgentMemberState,
+    ContextCompactState,
     FileGovernanceState,
     HookConfigState,
     MemoryState,
@@ -405,6 +410,123 @@ def create_memory_state(
     )
 
 
+def create_context_compact_state(
+    request: RequestState,
+    context_compact_config: Mapping[str, object] | None = None,
+    *,
+    checkpoint_path: str | Path | None = None,
+) -> ContextCompactState:
+    """根据可选配置创建默认关闭的 Context Compact 状态。
+
+    Args:
+        request: 包含只读输入根目录的治理请求。
+        context_compact_config: 可选压缩开关、阈值、预览保留量和数据库配置。
+        checkpoint_path: 可选 SQLite Checkpointer 路径，用于数据库隔离校验。
+
+    Returns:
+        尚未估算上下文且摘要列表为空的 Context Compact 状态。
+
+    Raises:
+        TypeError: 配置字段类型不符合协议时抛出。
+        ValueError: 配置包含未知字段、数值越界或数据库路径不安全时抛出。
+    """
+    config = dict(context_compact_config or {})
+    _reject_unknown_fields(
+        config,
+        allowed_fields={
+            "enabled",
+            "trigger_token_threshold",
+            "retained_preview_characters",
+            "persist_summaries",
+            "database_path",
+        },
+        config_name="context_compact_config",
+    )
+    enabled = config.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise TypeError("context_compact_config.enabled 必须是布尔值")
+    persist_summaries = config.get("persist_summaries", True)
+    if not isinstance(persist_summaries, bool):
+        raise TypeError(
+            "context_compact_config.persist_summaries 必须是布尔值"
+        )
+
+    trigger_token_threshold = config.get(
+        "trigger_token_threshold",
+        DEFAULT_CONTEXT_COMPACT_TRIGGER_TOKENS,
+    )
+    if (
+        isinstance(trigger_token_threshold, bool)
+        or not isinstance(trigger_token_threshold, int)
+    ):
+        raise TypeError(
+            "context_compact_config.trigger_token_threshold 必须是整数"
+        )
+    if trigger_token_threshold < 1 or trigger_token_threshold > 10_000_000:
+        raise ValueError(
+            "context_compact_config.trigger_token_threshold "
+            "必须位于 1 到 10000000 之间"
+        )
+
+    retained_preview_characters = config.get(
+        "retained_preview_characters",
+        DEFAULT_RETAINED_PREVIEW_CHARACTERS,
+    )
+    if (
+        isinstance(retained_preview_characters, bool)
+        or not isinstance(retained_preview_characters, int)
+    ):
+        raise TypeError(
+            "context_compact_config.retained_preview_characters 必须是整数"
+        )
+    if retained_preview_characters < 0 or retained_preview_characters > 1000:
+        raise ValueError(
+            "context_compact_config.retained_preview_characters "
+            "必须位于 0 到 1000 之间"
+        )
+
+    raw_database_path = config.get(
+        "database_path",
+        os.environ.get(
+            APPLICATION_DATABASE_PATH_ENV,
+            str(DEFAULT_APPLICATION_DATABASE_PATH),
+        ),
+    )
+    if not isinstance(raw_database_path, (str, Path)):
+        raise TypeError(
+            "context_compact_config.database_path 必须是字符串或 Path"
+        )
+    use_database = enabled and persist_summaries
+    database_path = (
+        str(
+            validate_application_database_path(
+                raw_database_path,
+                input_root=request["root_directory"],
+                checkpoint_path=checkpoint_path,
+            )
+        )
+        if use_database
+        else None
+    )
+    return ContextCompactState(
+        enabled=enabled,
+        trigger_token_threshold=trigger_token_threshold,
+        retained_preview_characters=retained_preview_characters,
+        persist_summaries=persist_summaries if enabled else False,
+        database_path=database_path,
+        checkpoint_path=(
+            str(Path(checkpoint_path).expanduser().resolve())
+            if use_database and checkpoint_path is not None
+            else None
+        ),
+        status="pending" if enabled else "disabled",
+        current_stage=None,
+        estimated_tokens=0,
+        summaries=[],
+        last_error=None,
+    )
+
+
 def create_initial_state(
     request: RequestState,
     workspace: WorkspaceState,
@@ -414,6 +536,7 @@ def create_initial_state(
     llm_config: Mapping[str, object] | None = None,
     skill_registry_path: str | Path | None = None,
     memory_config: Mapping[str, object] | None = None,
+    context_compact_config: Mapping[str, object] | None = None,
     checkpoint_path: str | Path | None = None,
 ) -> FileGovernanceState:
     """创建可直接传给顶层 LangGraph 的完整初始状态。
@@ -427,6 +550,7 @@ def create_initial_state(
             安全 Mock Profile，旧版单模型配置会自动转换为默认 Profile。
         skill_registry_path: 可选受控 Skill 注册表路径；省略时使用项目默认资源。
         memory_config: 可选短期与长期 Memory 配置；省略时不访问应用数据库。
+        context_compact_config: 可选 Context Compact 阈值、预览与持久化配置。
         checkpoint_path: 可选 SQLite Checkpointer 路径，用于与应用数据库隔离。
 
     Returns:
@@ -454,6 +578,11 @@ def create_initial_state(
         memory=create_memory_state(
             normalized_request,
             memory_config,
+            checkpoint_path=checkpoint_path,
+        ),
+        context_compact=create_context_compact_state(
+            normalized_request,
+            context_compact_config,
             checkpoint_path=checkpoint_path,
         ),
         hook_events=[],

@@ -164,6 +164,47 @@ class GovernanceRunRepository(BaseRepository[GovernanceRunModel]):
     model_type = GovernanceRunModel
     # 当前 Repository 固定管理治理运行 ORM 模型。
 
+    def get_or_create_minimal(
+        self,
+        run_id: str,
+        *,
+        thread_id: str,
+        current_stage: str,
+        request_summary: dict[str, object] | None = None,
+    ) -> GovernanceRunModel:
+        """读取治理运行，或创建不含业务正文的最小运行摘要。
+
+        Args:
+            run_id: 当前治理运行 ID。
+            thread_id: 用于应用数据库审计隔离的线程标识。
+            current_stage: 当前持久化节点所在阶段。
+            request_summary: 可选固定布尔值、计数或哈希摘要。
+
+        Returns:
+            已存在或本次新增并完成 flush 的治理运行 ORM 记录。
+        """
+        existing = self.get(run_id)
+        if existing is not None:
+            return existing
+        return self.add(
+            GovernanceRunModel(
+                run_id=_normalize_required_identifier(
+                    run_id,
+                    field_name="run_id",
+                ),
+                thread_id=_normalize_required_identifier(
+                    thread_id,
+                    field_name="thread_id",
+                ),
+                status="running",
+                current_stage=_normalize_required_identifier(
+                    current_stage,
+                    field_name="current_stage",
+                ),
+                request_summary=dict(request_summary or {}),
+            )
+        )
+
     def list_by_thread(
         self,
         thread_id: str,
@@ -291,6 +332,38 @@ class ContextSummaryRepository(BaseRepository[ContextSummaryModel]):
 
     model_type = ContextSummaryModel
     # 当前 Repository 固定管理上下文摘要 ORM 模型。
+
+    def find_by_run_and_index(
+        self,
+        run_id: str,
+        compaction_index: int,
+    ) -> ContextSummaryModel | None:
+        """按运行和压缩序号读取唯一 Context Summary。
+
+        Args:
+            run_id: 当前治理运行 ID。
+            compaction_index: 当前运行内从一开始递增的压缩序号。
+
+        Returns:
+            找到时返回 ORM 记录，否则返回 None。
+
+        Raises:
+            TypeError: 压缩序号不是整数时抛出。
+            ValueError: 压缩序号不大于零时抛出。
+        """
+        if isinstance(compaction_index, bool) or not isinstance(
+            compaction_index,
+            int,
+        ):
+            raise TypeError("compaction_index 必须是整数")
+        if compaction_index < 1:
+            raise ValueError("compaction_index 必须大于零")
+        statement = select(ContextSummaryModel).where(
+            ContextSummaryModel.run_id
+            == _normalize_required_identifier(run_id, field_name="run_id"),
+            ContextSummaryModel.compaction_index == compaction_index,
+        )
+        return self._session.scalars(statement).one_or_none()
 
     def list_by_run(
         self,

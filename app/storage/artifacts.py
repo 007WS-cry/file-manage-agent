@@ -176,6 +176,51 @@ def save_intermediate_artifact(
     )
 
 
+def save_context_compaction_artifact(
+    artifact_root: str | Path,
+    run_id: str,
+    compaction_index: int,
+    payload: dict[str, Any],
+    *,
+    input_root: str | Path | None = None,
+) -> str:
+    """保存 Context Compact 从图状态移出的文档上下文。
+
+    函数只接受正压缩序号，并复用受控中间产物的目录隔离、文件名校验和原子
+    写入规则。Prompt 正文不得由调用方放入 ``payload``。
+
+    Args:
+        artifact_root: 可写产物根目录。
+        run_id: 当前治理运行 ID。
+        compaction_index: 当前运行内从一开始递增的压缩序号。
+        payload: 只包含被移出文档预览、结构和关键字段的 JSON 对象。
+        input_root: 可选只读业务输入根目录，用于强制路径隔离。
+
+    Returns:
+        位于 ``intermediate`` 子目录中的 Context Compact 产物绝对路径。
+
+    Raises:
+        TypeError: ``compaction_index`` 不是整数时抛出。
+        ValueError: 压缩序号不大于零或载荷疑似包含 Prompt 正文时抛出。
+    """
+    if isinstance(compaction_index, bool) or not isinstance(
+        compaction_index,
+        int,
+    ):
+        raise TypeError("compaction_index 必须是整数")
+    if compaction_index < 1:
+        raise ValueError("compaction_index 必须大于零")
+    if "prompt_content" in payload:
+        raise ValueError("Context Compact 产物不得保存 Prompt 正文")
+    return save_intermediate_artifact(
+        artifact_root,
+        run_id,
+        f"context-compact-{compaction_index}",
+        payload,
+        input_root=input_root,
+    )
+
+
 def load_json_artifact(
     artifact_path: str | Path,
     *,

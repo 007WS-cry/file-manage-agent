@@ -106,7 +106,7 @@ def write_delivery_log(
 
 
 def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> None:
-    """0.5.4 顶层图必须在 Skill 后召回 Memory，再规划和执行固定 Task。"""
+    """0.5.5 顶层图必须在业务安全点调用 Context Compact 子图。"""
     graph = build_file_governance_graph().get_graph()
     edges = {(edge.source, edge.target) for edge in graph.edges}
 
@@ -119,6 +119,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     assert ("run_inventory_subgraph", "sync_inventory_task_status") in edges
     assert (
         "sync_inventory_task_status",
+        "run_context_compact_after_inventory",
+    ) in edges
+    assert (
+        "run_context_compact_after_inventory",
         "dispatch_content_subagent_task",
     ) in edges
     assert (
@@ -140,6 +144,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     ) in edges
     assert (
         "dispatch_evidence_subagent_task",
+        "run_context_compact_after_evidence",
+    ) in edges
+    assert (
+        "run_context_compact_after_evidence",
         "run_recommendation_subgraph",
     ) in edges
     assert (

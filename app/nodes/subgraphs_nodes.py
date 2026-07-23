@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from app.graphs.context_compact import context_compact_graph
 from app.graphs.evidence import evidence_graph
 from app.graphs.inventory import inventory_graph
 from app.graphs.recommendation import recommendation_graph
 from app.graphs.version_analysis import version_analysis_graph
 from app.state.converters import (
+    context_compact_state_to_file_governance_update,
     evidence_state_to_file_governance_update,
+    file_governance_to_context_compact_state,
     file_governance_to_evidence_state,
     file_governance_to_inventory_state,
     file_governance_to_recommendation_state,
@@ -16,7 +19,51 @@ from app.state.converters import (
 )
 from app.state.models import FileGovernanceState
 
-"""本模块只定义四个业务子图的显式状态转换和同步调用包装节点。"""
+"""本模块只定义四个业务子图及 Context Compact 子图的显式同步包装节点。"""
+
+
+def run_context_compact_after_inventory(
+    state: FileGovernanceState,
+) -> dict:
+    """在 Inventory 完成后调用 Context Compact 子图。
+
+    该阶段只允许释放已加载且后续节点不再读取的 Prompt 正文，不压缩文档字段，
+    因此不会改变 Content、Version Analysis 或 Evidence 的输入事实。
+
+    Args:
+        state: 已完成 Inventory Task 状态同步的顶层治理状态。
+
+    Returns:
+        只包含 Prompt、文档、压缩索引和错误的白名单更新。
+    """
+    subgraph_input = file_governance_to_context_compact_state(
+        state,
+        stage="after_inventory",
+    )
+    subgraph_result = context_compact_graph.invoke(subgraph_input)
+    return context_compact_state_to_file_governance_update(subgraph_result)
+
+
+def run_context_compact_after_evidence(
+    state: FileGovernanceState,
+) -> dict:
+    """在 Evidence 解释分派完成后调用 Context Compact 子图。
+
+    Version Analysis 与 Evidence 已完成后，文档详细预览不再参与 Recommendation；
+    子图可将其移到受控产物，同时保留 content_ref 和全部治理事实。
+
+    Args:
+        state: 已完成 Evidence Task 和固定 Evidence Subagent 分派的顶层状态。
+
+    Returns:
+        只包含 Prompt、文档、压缩索引和错误的白名单更新。
+    """
+    subgraph_input = file_governance_to_context_compact_state(
+        state,
+        stage="after_evidence",
+    )
+    subgraph_result = context_compact_graph.invoke(subgraph_input)
+    return context_compact_state_to_file_governance_update(subgraph_result)
 
 
 def run_inventory_subgraph(state: FileGovernanceState) -> dict:

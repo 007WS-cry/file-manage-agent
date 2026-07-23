@@ -157,8 +157,24 @@ memory:
   # 每次新运行最多读取的最近长期 Memory 条目数量。
   recall_limit: 50
 
+context_compact:
+  # 0.5.5 默认关闭；显式启用后在 Inventory 和 Evidence 安全点估算上下文。
+  enabled: false
+
+  # 估算上下文超过该 Token 数且存在可回收字段时才执行压缩。
+  trigger_token_threshold: 12000
+
+  # Evidence 完成后不在图状态保留正文预览，完整内容继续由 content_ref 重建。
+  retained_preview_characters: 0
+
+  # 有界摘要默认写入应用数据库；文档详情只写入 intermediate 产物。
+  persist_summaries: true
+
+  # 与长期 Memory 共用应用数据库，但仍严禁与 checkpoint 共用 SQLite 文件。
+  database_path: .artifacts/database/file-governance-app.sqlite3
+
 application_database:
-  # 0.5.4 已由长期 Memory 节点使用；其他四张应用表仍保留为后续批次骨架。
+  # 0.5.5 已由长期 Memory 与 Context Summary 使用；其他表保留为后续批次骨架。
   backend: sqlite
 
   # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。

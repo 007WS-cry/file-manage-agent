@@ -1,11 +1,11 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.5.4` 在 Task 级 Skills
-基础上接入安全短期与长期 Memory：阶段摘要只保留在当前图状态，高置信度证据关系
-和人工确认选择经固定模板、字段白名单与凭据检查后写入独立应用数据库，并可在新
-运行中按工作空间哈希命名空间召回。Content、Version、Evidence 仍可分别路由
-Claude、Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中转站，
-同时继续通过确定性回退、checkpoint/数据库原始字节泄漏和迁移测试保护治理结论。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.5.5` 在安全 Memory
+基础上接入 Context Compact：以确定性 Token 估算在 Inventory、Evidence 两个
+安全点决定是否压缩，把后续不再参与决策的文档详情移到受控产物，同时保留
+`content_ref`、内容哈希及全部版本、证据、推荐和人工审核事实。Content、Version、
+Evidence 仍可分别路由 Claude、Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流
+Provider 和第三方中转站。
 当前具备：
 
 - 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
@@ -18,6 +18,9 @@ Claude、Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第
 - 独立 SQLAlchemy 应用数据库、五张基础表和 Repository 数据访问边界；
 - 当前运行短期阶段摘要、跨运行长期 Memory 召回和幂等持久化；
 - 固定模板、结构化字段白名单、哈希命名空间及数据库原始字节泄漏保护；
+- 独立 Context Compact 子图、确定性 Token 估算和两个阶段压缩安全点；
+- 未跟踪临时压缩载荷、可重建中间产物和有界 Context Summary；
+- 压缩开关对版本边、分叉、推荐和人工选择的严格不变性测试；
 - 可升级、回退和重放的 Alembic SQLite 迁移；
 - 可跨进程恢复 `interrupt()` 的最小 CLI；
 - 成功、部分成功、无数据和失败 Markdown 报告；
@@ -77,7 +80,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 `resolve_model_profile` 节点；`0.5.3` 在 Prompt 加载与 Task 规划之间加入 Skill
 元数据节点，并在 Team Orchestration 分派边界内完成按需加载和释放；`0.5.4`
 在 Skill 元数据后召回长期 Memory，在 Evidence 与 Recommendation 子图捕获安全
-摘要，并在报告收口后、after_run Hook 前幂等持久化。
+摘要，并在报告收口后、after_run Hook 前幂等持久化；`0.5.5` 在 Inventory
+同步后及 Evidence 解释分派后调用 Context Compact，不改变任何治理决策字段。
 
 ## 安全边界
 
@@ -111,6 +115,8 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 - 长期 Memory 只允许固定模板摘要及版本组、文件、证据记录 ID 和计数白名单；
   文档正文、API Key、完整模型 Prompt、审核自由文本、收件人和原始证据引用不得
   写入应用数据库。
+- Context Compact 的大型临时载荷使用 `UntrackedValue`；应用数据库只保存固定
+  摘要、Token 估算和受控产物引用，不保存文档详情或已释放的 Prompt 正文。
 - LangChain 适配器可从 Profile 指定的 `base_url_env` 读取兼容服务地址，并从
   `options_env` 读取受限 JSON 专有参数；实际值都不会写入治理状态。
 - 项目不会主动开启 LangSmith tracing；生产环境不要设置 `LANGSMITH_TRACING=true`，
@@ -143,11 +149,11 @@ file-manage-agent/
 │   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
-│   ├── services/              # 标准化、版本图、推荐、报告和确定性 Task System
+│   ├── services/              # 标准化、版本图、推荐、Memory 和 Context Compact
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
-│   ├── utils/                 # 生命周期、Task 编排、时间、错误和状态辅助函数
+│   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
-│   ├── graphs/                # 四业务图、团队图、三个 Subagent 图与顶层治理图
+│   ├── graphs/                # 四业务图、Context Compact、团队图与顶层治理图
 │   └── entrypoints/           # 最小 CLI
 ├── alembic/                   # 应用数据库迁移环境和版本脚本
 ├── alembic.ini                # 默认应用数据库迁移配置
@@ -170,6 +176,7 @@ file-manage-agent/
 ├── docs/release-0.5.0-agent-team.md # 0.5.0 固定 Agent Team 正式发布说明
 ├── docs/version-0.5.2-langchain-multi-model.md # 0.5.2 LangChain 多模型适配
 ├── docs/version-0.5.4-memory.md # 0.5.4 短期与长期 Memory 说明
+├── docs/version-0.5.5-context-compact.md # 0.5.5 Context Compact 说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -708,6 +715,51 @@ python -m alembic upgrade head
 `memory.database_path` 时可通过 `FILE_GOVERNANCE_DATABASE_PATH` 覆盖默认位置；
 请求中显式路径的优先级更高。
 
+## 0.5.5 Context Compact
+
+本版本是向 `0.6.0` 演进的第五批。Context Compact 默认关闭，启用后在两个固定
+安全点运行：
+
+1. `after_inventory`：只释放已经完成加载校验、且后续业务节点不再读取的
+   System Prompt 正文；文档记录保持原样。
+2. `after_evidence`：Version Analysis、Evidence 和 Evidence Subagent 已完成，
+   此时可把 Recommendation 不再消费的 `content_preview`、`structure_summary`
+   和 `key_fields` 移到 `intermediate` 产物。
+
+压缩后的文档仍保留 `id`、`file_id`、`content_ref`、`normalized_digest`、
+解析器和警告，完整标准化内容可由 `content_ref` 重建。压缩计划完全不接收
+`version_edges`、`branches`、`decisions` 或 `human_review`，集成测试还会对
+启用和关闭路径逐值比较这些字段。
+
+```text
+sync_inventory_task_status
+  -> run_context_compact_after_inventory
+  -> dispatch_content_subagent_task
+  -> ...
+dispatch_evidence_subagent_task
+  -> run_context_compact_after_evidence
+  -> run_recommendation_subgraph
+```
+
+请求信封示例：
+
+```json
+{
+  "context_compact": {
+    "enabled": true,
+    "trigger_token_threshold": 12000,
+    "retained_preview_characters": 0,
+    "persist_summaries": true,
+    "database_path": "../.artifacts/database/file-governance-app.sqlite3"
+  }
+}
+```
+
+Token 估算不调用模型或外部分词服务：ASCII 文本按每四字符一个 Token 近似，
+中文等非 ASCII 字符按一字符一个 Token 保守估算。压缩详情写入受控中间产物；
+`context_summaries` 表只保存固定模板摘要、压缩后估算、序号和产物引用。启用
+数据库摘要前仍需执行 `python -m alembic upgrade head`。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -744,7 +796,8 @@ python -m pip wheel . --no-deps --no-build-isolation
 相对路径以 JSON 文件所在目录
 为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
 `delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
-示例中的 `prompt`、`hooks` 和 `memory` 是可选的请求信封对象，目前显式关闭。
+示例中的 `prompt`、`hooks`、`memory` 和 `context_compact` 是可选请求信封对象，
+目前均显式关闭。
 CLI 会单独解析这些对象并传给状态工厂，不会把它们合并进业务 `request`。启用 Prompt 时，
 `source_path` 的相对路径同样以请求 JSON 所在目录为基准。
 
@@ -997,10 +1050,11 @@ with open_checkpointer(
 - Markdown 报告目录；
 - SQLite checkpoint 后端及数据库路径；
 - 默认关闭的 Memory、哈希命名空间、召回上限和独立应用数据库路径；
+- 默认关闭的 Context Compact、Token 阈值、预览保留量和摘要持久化配置；
 - 应用数据库父目录自动创建、SQL 日志和文件锁等待配置。
 
-当前 CLI 以请求 JSON 为直接运行配置；YAML 用于记录统一部署默认值。0.5.4 的
-Memory 数据库路径已接入 CLI 和主图；迁移命令继续读取 `alembic.ini` 或
+当前 CLI 以请求 JSON 为直接运行配置；YAML 用于记录统一部署默认值。0.5.5 的
+Memory 与 Context Compact 数据库路径均已接入 CLI 和主图；迁移命令继续读取 `alembic.ini` 或
 `FILE_GOVERNANCE_DATABASE_PATH`，不会在普通治理运行中静默修改表结构。
 
 ## 测试
@@ -1069,6 +1123,9 @@ python -m compileall -q app tests
 - Memory 策略的长正文/凭据拒绝、有界历史偏好和自由文本隔离；
 - 释放并重建数据库连接后的长期 Memory 召回；
 - 应用数据库原始字节不包含文档长正文、API Key 或完整模型 Prompt；
+- Token 估算的中英文确定性、阈值跳过和两个阶段字段压缩边界；
+- Context Compact 条件子图、未跟踪临时载荷、中间产物和数据库有界摘要；
+- 启用与关闭压缩时 `version_edges`、`branches`、`decisions` 和人工选择完全一致；
 - Skill 注册表未知字段、路径越界、重复 ID、职责不匹配和正文摘要校验；
 - Content、Version、Evidence 分派期间只加载当前 Task Skill，并在收口后恢复
   全部 Skill 为 `available`；
@@ -1080,22 +1137,22 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.5.4 -t file-manage-agent:0.5.4 .
+docker build --build-arg APP_VERSION=0.5.5 -t file-manage-agent:0.5.5 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.5.4 \
+  --build-arg APP_VERSION=0.5.5 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.5.4-mainstream .
+  -t file-manage-agent:0.5.5-mainstream .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.5.4
+docker run --rm file-manage-agent:0.5.5
 ```
 
 容器首次使用应用数据库时，可在同一个可写产物卷中执行迁移。镜像内默认通过
@@ -1106,7 +1163,7 @@ docker run --rm file-manage-agent:0.5.4
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --entrypoint python \
-  file-manage-agent:0.5.4 \
+  file-manage-agent:0.5.5 \
   -m alembic upgrade head
 ```
 
@@ -1122,7 +1179,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.5.4 \
+  file-manage-agent:0.5.5 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -1134,7 +1191,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.5.4 \
+  file-manage-agent:0.5.5 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -1144,7 +1201,7 @@ docker run --rm \
 - HTTP API、后台 Worker 和定时任务；
 - PostgreSQL 等生产级 Checkpointer；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
-- 主图持久化工具调用审计；0.5.4 仍只接入 Memory Repository；
+- 主图持久化工具调用审计；0.5.5 已接入 Memory 与 Context Summary；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
-- Context Compact、邮件 MCP 证据和 Worktree；
+- 邮件 MCP 证据和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

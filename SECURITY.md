@@ -29,6 +29,14 @@
 每条记录必须在创建和数据库写入前分别执行安全校验；数据库不可用或校验失败时
 采用 fail-open 治理、fail-closed 持久化，即继续生成报告但拒绝不安全写入。
 
+0.5.5 接入的 Context Compact 只在 Inventory 和 Evidence 已完成后的固定安全点
+运行。压缩计划不得接收或改写 `version_edges`、`branches`、`decisions` 和
+`human_review`；包含文档详情的大型临时载荷必须使用 `UntrackedValue`，不得进入
+checkpoint。文档详情只能原子写入受控 `intermediate` 产物，System Prompt 正文
+不得写入压缩产物；`context_summaries` 表只允许保存固定模板摘要、阶段、序号、
+压缩后的 Token 估算和产物引用。数据库或产物写入失败时应记录非致命错误并继续
+治理流程，不得为了持久化而恢复或复制已经释放的敏感上下文。
+
 标准化内容和中间产物统一由 `app/storage/artifacts.py` 写入独立目录。产物 ID
 不允许包含路径分隔符，写入使用临时文件和原子替换；调用方仍应限制产物目录的
 操作系统权限，并避免将包含业务正文的 JSON 提交到源码仓库。
