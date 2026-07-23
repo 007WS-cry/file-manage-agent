@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.5.0"
-description = "基于 LangGraph、固定 Subagent Team 和确定性回退的只读文件版本治理 Agent"
+version = "0.6.0"
+description = "支持多模型 Task 路由、按需 Skills、安全 Memory、Context Compact 和五表应用数据库审计的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,8 +15,12 @@ dependencies = [
     "PyYAML>=6,<7",
     "pydantic>=2.10,<3",
     "openai>=2.0,<3",
+    "langchain>=1.1,<2",
+    "langchain-openai>=1.0,<2",
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-sqlite>=3.1,<4",
+    "SQLAlchemy>=2.0,<3",
+    "alembic>=1.15,<2",
 ]
 
 [project.scripts]
@@ -27,6 +31,24 @@ dev = [
     "pytest>=8,<10",
     "ruff>=0.12,<1",
 ]
+anthropic = [
+    "langchain-anthropic>=1.0,<2",
+]
+gemini = [
+    "langchain-google-genai>=4.0,<5",
+]
+deepseek = [
+    "langchain-deepseek>=1.0,<2",
+]
+qwen = [
+    "langchain-qwq>=0.3,<1",
+]
+openrouter = [
+    "langchain-openrouter>=0.2,<1",
+]
+litellm = [
+    "langchain-litellm>=0.7,<1",
+]
 
 [tool.setuptools]
 include-package-data = true
@@ -36,6 +58,11 @@ include = ["app*"]
 
 [tool.setuptools.data-files]
 "resources/prompts" = ["resources/prompts/file_governance_system_v1.md"]
+"resources/skills" = ["resources/skills/registry.yaml"]
+"resources/skills/file-content-analysis" = ["resources/skills/file-content-analysis/SKILL.md"]
+"resources/skills/version-relation" = ["resources/skills/version-relation/SKILL.md"]
+"resources/skills/evidence-confidence" = ["resources/skills/evidence-confidence/SKILL.md"]
+"resources/skills/governance-report" = ["resources/skills/governance-report/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -7,15 +7,19 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from app.llm.config import DEFAULT_LLM_MODEL, create_llm_config_state
+from app.llm.config import create_llm_config_state
+from app.llm.model_profiles import (
+    create_disabled_mock_profile,
+    resolve_model_profile,
+)
 from app.llm.providers.base import (
     LLMProvider,
     LLMProviderConfigurationError,
     LLMProviderTimeoutError,
 )
+from app.llm.providers.langchain import LangChainChatModelProvider
 from app.llm.providers.mock import MockLLMProvider
-from app.llm.providers.openai import OpenAILLMProvider
-from app.state.models import LLMCallRecord, LLMConfigState
+from app.state.models import LLMCallRecord, LLMConfigState, ModelProfileState
 from app.utils.runtime import utc_now_iso
 
 """本模块统一选择 LLM Provider、执行结构化调用并生成脱敏审计记录。"""
@@ -110,36 +114,53 @@ class LLMClient:
                 raise TypeError(f"Provider {name} 必须实现 LLMProvider")
             self._providers[name] = provider
 
-    def _resolve_provider(self) -> LLMProvider:
-        """根据启用状态解析实际调用的 Provider。
+    def _resolve_provider(self, profile: ModelProfileState) -> LLMProvider:
+        """根据已解析模型 Profile 返回显式注入或 LangChain Provider。
 
-        关闭 LLM 时强制选择 Mock Provider，确保配置了真实 Provider 也不会产生
-        网络调用；启用时才允许构造 OpenAI Provider 并读取 API Key 环境变量。
+        显式注入按 Profile ID 优先、Provider 名称次优先匹配，便于测试同一
+        Provider 的多个模型路由。全部真实模型 Profile 使用 LangChain 适配器；
+        API Key、Base URL 和专有参数只在调用时从声明的环境变量读取。
+
+        Args:
+            profile: 已根据任务路由和启用状态解析出的实际模型 Profile。
 
         Returns:
             当前调用实际使用的 Provider 实例。
 
         Raises:
-            LLMProviderConfigurationError: Provider 名称或 OpenAI 配置不可用时抛出。
+            LLMProviderConfigurationError: Provider 名称或 Profile 配置不可用时抛出。
         """
-        provider_name = self.config["provider"] if self.config["enabled"] else "mock"
-        injected = self._providers.get(provider_name)
+        provider_name = profile["provider"]
+        injected = self._providers.get(profile["id"]) or self._providers.get(
+            provider_name
+        )
         if injected is not None:
             return injected
+        cache_key = f"profile:{profile['id']}"
+        cached = self._providers.get(cache_key)
+        if cached is not None:
+            return cached
         if provider_name == "mock":
             provider = MockLLMProvider()
-            self._providers[provider_name] = provider
+            self._providers[cache_key] = provider
             return provider
-        if provider_name == "openai":
-            api_key_env = self.config.get("api_key_env")
-            if not api_key_env:
-                raise LLMProviderConfigurationError(
-                    "OpenAI Provider 缺少 API Key 环境变量名称"
-                )
-            provider = OpenAILLMProvider(api_key_env=api_key_env)
-            self._providers[provider_name] = provider
-            return provider
-        raise LLMProviderConfigurationError(f"不支持的 LLM Provider：{provider_name}")
+        try:
+            provider = LangChainChatModelProvider(
+                provider_name=provider_name,
+                api_key_env=profile.get("api_key_env"),
+                base_url_env=profile.get("base_url_env"),
+                options_env=profile.get("options_env"),
+                structured_output_method=profile.get(
+                    "structured_output_method",
+                    "auto",
+                ),
+            )
+        except (TypeError, ValueError) as error:
+            raise LLMProviderConfigurationError(
+                f"模型 Profile {profile['id']} 的 Provider 配置不可用"
+            ) from error
+        self._providers[cache_key] = provider
+        return provider
 
     def generate_structured(
         self,
@@ -150,8 +171,9 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         output_model: type[BaseModel],
+        model_profile_id: str | None = None,
     ) -> LLMInvocationResult:
-        """执行一次结构化模型调用并始终返回可写入状态的审计记录。
+        """按模型 Profile 执行结构化调用并始终返回可写入状态的审计记录。
 
         本函数不把 Prompt 或完整模型响应写入审计记录。Provider 失败、输出校验失败
         和超时会返回 ``output=None``，由后续业务节点根据 ``fallback_enabled`` 决定
@@ -164,13 +186,14 @@ class LLMClient:
             system_prompt: 受版本控制的系统提示词。
             user_prompt: 只包含当前任务必要摘要和产物引用的提示词。
             output_model: 模型响应必须满足的 Pydantic 输出类型。
+            model_profile_id: 可选显式 Profile ID；省略时使用默认 Profile。
 
         Returns:
             可选 Pydantic 输出和包含耗时、Token、状态及脱敏错误的审计记录。
 
         Raises:
             TypeError: 标识、Prompt 或输出类型不合法时抛出。
-            ValueError: 标识或 Prompt 为空时抛出。
+            ValueError: 标识、Prompt 或显式 Profile ID 为空或不存在时抛出。
         """
         normalized_task_id = _normalize_required_text(task_id, field_name="task_id")
         normalized_agent_id = _normalize_required_text(agent_id, field_name="agent_id")
@@ -189,22 +212,32 @@ class LLMClient:
         if not isinstance(output_model, type) or not issubclass(output_model, BaseModel):
             raise TypeError("output_model 必须是 Pydantic BaseModel 子类")
 
+        configured_profile = resolve_model_profile(
+            self.config,
+            profile_id=model_profile_id,
+        )
+        effective_profile = (
+            configured_profile
+            if self.config["enabled"]
+            else create_disabled_mock_profile()
+        )
         call_id = f"llm-{uuid4().hex}"
         started_at = utc_now_iso()
         start_time = perf_counter()
-        provider_name = self.config["provider"] if self.config["enabled"] else "mock"
-        model_name = self.config["model"] if self.config["enabled"] else DEFAULT_LLM_MODEL
+        model_profile_id = effective_profile["id"]
+        provider_name = effective_profile["provider"]
+        model_name = effective_profile["model"]
         try:
-            provider = self._resolve_provider()
+            provider = self._resolve_provider(effective_profile)
             provider_name = provider.name
             response = provider.generate_structured(
                 model=model_name,
                 system_prompt=normalized_system_prompt,
                 user_prompt=normalized_user_prompt,
                 output_model=output_model,
-                temperature=self.config["temperature"],
-                max_output_tokens=self.config["max_output_tokens"],
-                timeout_seconds=self.config["timeout_seconds"],
+                temperature=effective_profile["temperature"],
+                max_output_tokens=effective_profile["max_output_tokens"],
+                timeout_seconds=effective_profile["timeout_seconds"],
             )
             duration_ms = max(0, round((perf_counter() - start_time) * 1000))
             call_record = LLMCallRecord(
@@ -212,6 +245,7 @@ class LLMClient:
                 task_id=normalized_task_id,
                 agent_id=normalized_agent_id,
                 message_id=normalized_message_id,
+                model_profile_id=model_profile_id,
                 provider=provider_name,
                 model=model_name,
                 status="success",
@@ -237,6 +271,7 @@ class LLMClient:
                 task_id=normalized_task_id,
                 agent_id=normalized_agent_id,
                 message_id=normalized_message_id,
+                model_profile_id=model_profile_id,
                 provider=provider_name,
                 model=model_name,
                 status="timeout" if timed_out else "failed",

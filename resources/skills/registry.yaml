@@ -1,0 +1,39 @@
+version: skill-registry-v1
+skills:
+  - id: file-content-analysis
+    name: 文件内容分析
+    description: 从受控内容预览、结构摘要和关键字段中生成可核验的文档内容说明。
+    path: file-content-analysis/SKILL.md
+    task_types:
+      - inventory
+    roles:
+      - content
+
+  - id: version-relation
+    name: 版本关系解释
+    description: 根据确定性差异、相似度和排序信号解释版本先后、派生和分叉关系。
+    path: version-relation/SKILL.md
+    task_types:
+      - version_analysis
+    roles:
+      - version
+
+  - id: evidence-confidence
+    name: 证据置信度解释
+    description: 结合 PDF 来源匹配与发送记录，说明证据强弱、限制和可支持的结论。
+    path: evidence-confidence/SKILL.md
+    task_types:
+      - evidence
+    roles:
+      - evidence
+
+  - id: governance-report
+    name: 治理报告编排
+    description: 将版本事实、推荐、人工选择和错误整理为可审计的文件治理报告。
+    path: governance-report/SKILL.md
+    task_types:
+      - recommendation
+      - human_review
+      - report
+    roles:
+      - coordinator

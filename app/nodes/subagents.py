@@ -33,6 +33,11 @@ from app.agents.version import (
     build_version_subagent_prompts,
 )
 from app.llm.client import LLMClient
+from app.llm.config import create_llm_config_state
+from app.llm.model_profiles import DISABLED_MODEL_PROFILE_ID
+from app.llm.model_profiles import (
+    resolve_model_profile as resolve_configured_model_profile,
+)
 from app.llm.schemas import validate_output_artifact_refs, validate_structured_output
 from app.state.models import (
     ContentSubagentGraphState,
@@ -59,6 +64,52 @@ MAX_SUBAGENT_PROMPT_CHARACTERS = 20_000
 
 # 输入缺少真实 Task ID 时用于表达协议错误的保留 Task ID。
 INVALID_PROTOCOL_TASK_ID = "protocol-invalid-task"
+
+
+def resolve_model_profile(state: SubagentGraphState) -> dict:
+    """按固定 Subagent 任务类型解析本次调用使用的模型 Profile。
+
+    本节点同时把 0.5.1 及更早 checkpoint 中的单模型 LLM 配置规范化为 Profile
+    列表。它只解析环境变量名称和模型参数，不读取 API Key、Base URL 或业务文件。
+
+    Args:
+        state: 已通过 Team Protocol 输入校验的任一固定 Subagent 状态。
+
+    Returns:
+        规范化 LLM 配置与选中的 Profile ID；配置错误时返回非致命校验错误。
+    """
+    input_data = state.get("input", {})
+    if "document_id" in input_data:
+        task_type = "content"
+    elif "comparison_id" in input_data:
+        task_type = "version"
+    else:
+        task_type = "evidence"
+
+    try:
+        normalized_llm = create_llm_config_state(state.get("llm"))
+        profile = resolve_configured_model_profile(
+            normalized_llm,
+            task_type=task_type,
+        )
+        return {
+            "llm": normalized_llm,
+            "selected_model_profile_id": profile["id"],
+        }
+    except (KeyError, TypeError, ValueError) as error:
+        return {
+            "selected_model_profile_id": "",
+            "output": None,
+            "errors": [
+                create_error_record(
+                    stage=f"{task_type}_subagent",
+                    node_name="resolve_model_profile",
+                    category="validation",
+                    message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
+                    fatal=False,
+                )
+            ],
+        }
 
 
 def execute_before_model_hooks(state: SubagentGraphState) -> dict:
@@ -141,6 +192,14 @@ def execute_after_model_hooks(state: SubagentGraphState) -> dict:
             error_message = "LLMCallRecord.agent_id 与固定 Subagent 不一致"
         elif call_record.get("message_id") != assignment.get("message_id"):
             error_message = "LLMCallRecord.message_id 与 assignment 消息不一致"
+        elif state.get("llm", {}).get("enabled") is True and call_record.get(
+            "model_profile_id"
+        ) != state.get("selected_model_profile_id"):
+            error_message = "LLMCallRecord.model_profile_id 与任务路由结果不一致"
+        elif state.get("llm", {}).get("enabled") is False and call_record.get(
+            "model_profile_id"
+        ) != DISABLED_MODEL_PROFILE_ID:
+            error_message = "关闭真实 LLM 时必须审计为 disabled-mock Profile"
 
     if error_message is None:
         return {}
@@ -203,6 +262,23 @@ def build_content_subagent_prompt(state: ContentSubagentGraphState) -> dict:
     """
     try:
         system_prompt, user_prompt = build_content_subagent_prompts(state["input"])
+        skill_blocks: list[str] = []
+        for instruction in state.get("skill_context", []):
+            if instruction.get("skill_id") != "file-content-analysis":
+                raise ValueError("Content Subagent 收到职责外 Skill")
+            content = str(instruction.get("content", ""))
+            digest = str(instruction.get("content_sha256", ""))
+            if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("Content Skill 正文为空或摘要不一致")
+            skill_blocks.append(
+                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
+            )
+        if skill_blocks:
+            system_prompt = (
+                system_prompt
+                + "\n\n## 当前 Task 已绑定 Skills\n"
+                + "\n\n".join(skill_blocks)
+            )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
         return {
@@ -260,6 +336,7 @@ def invoke_content_structured_llm(state: ContentSubagentGraphState) -> dict:
         system_prompt=state["system_prompt"],
         user_prompt=state["user_prompt"],
         output_model=ContentSubagentOutput,
+        model_profile_id=state["selected_model_profile_id"],
     )
     update: dict = {
         "output": cast(ContentSubagentOutput | None, result.output),
@@ -410,6 +487,7 @@ def build_deterministic_content_fallback(state: ContentSubagentGraphState) -> di
             task_id=task_id,
             agent_id=agent_id,
             message_id=assignment["message_id"] if assignment else "missing-assignment",
+            model_profile_id="deterministic-content-fallback",
             provider="deterministic",
             model="deterministic-content-fallback",
             status="fallback",
@@ -475,6 +553,23 @@ def build_version_subagent_prompt(state: VersionSubagentGraphState) -> dict:
     """
     try:
         system_prompt, user_prompt = build_version_subagent_prompts(state["input"])
+        skill_blocks: list[str] = []
+        for instruction in state.get("skill_context", []):
+            if instruction.get("skill_id") != "version-relation":
+                raise ValueError("Version Subagent 收到职责外 Skill")
+            content = str(instruction.get("content", ""))
+            digest = str(instruction.get("content_sha256", ""))
+            if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("Version Skill 正文为空或摘要不一致")
+            skill_blocks.append(
+                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
+            )
+        if skill_blocks:
+            system_prompt = (
+                system_prompt
+                + "\n\n## 当前 Task 已绑定 Skills\n"
+                + "\n\n".join(skill_blocks)
+            )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
         return {
@@ -531,6 +626,7 @@ def invoke_version_structured_llm(state: VersionSubagentGraphState) -> dict:
         system_prompt=state["system_prompt"],
         user_prompt=state["user_prompt"],
         output_model=VersionSubagentOutput,
+        model_profile_id=state["selected_model_profile_id"],
     )
     update: dict = {
         "output": cast(VersionSubagentOutput | None, result.output),
@@ -675,6 +771,7 @@ def build_deterministic_version_fallback(state: VersionSubagentGraphState) -> di
             task_id=task_id,
             agent_id=agent_id,
             message_id=assignment["message_id"] if assignment else "missing-assignment",
+            model_profile_id="deterministic-version-fallback",
             provider="deterministic",
             model="deterministic-version-fallback",
             status="fallback",
@@ -740,6 +837,23 @@ def build_evidence_subagent_prompt(state: EvidenceSubagentGraphState) -> dict:
     """
     try:
         system_prompt, user_prompt = build_evidence_subagent_prompts(state["input"])
+        skill_blocks: list[str] = []
+        for instruction in state.get("skill_context", []):
+            if instruction.get("skill_id") != "evidence-confidence":
+                raise ValueError("Evidence Subagent 收到职责外 Skill")
+            content = str(instruction.get("content", ""))
+            digest = str(instruction.get("content_sha256", ""))
+            if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("Evidence Skill 正文为空或摘要不一致")
+            skill_blocks.append(
+                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
+            )
+        if skill_blocks:
+            system_prompt = (
+                system_prompt
+                + "\n\n## 当前 Task 已绑定 Skills\n"
+                + "\n\n".join(skill_blocks)
+            )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
         return {
@@ -796,6 +910,7 @@ def invoke_evidence_structured_llm(state: EvidenceSubagentGraphState) -> dict:
         system_prompt=state["system_prompt"],
         user_prompt=state["user_prompt"],
         output_model=EvidenceSubagentOutput,
+        model_profile_id=state["selected_model_profile_id"],
     )
     update: dict = {
         "output": cast(EvidenceSubagentOutput | None, result.output),
@@ -940,6 +1055,7 @@ def build_deterministic_evidence_fallback(state: EvidenceSubagentGraphState) -> 
             task_id=task_id,
             agent_id=agent_id,
             message_id=assignment["message_id"] if assignment else "missing-assignment",
+            model_profile_id="deterministic-evidence-fallback",
             provider="deterministic",
             model="deterministic-evidence-fallback",
             status="fallback",

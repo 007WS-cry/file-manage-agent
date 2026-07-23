@@ -1,7 +1,18 @@
 from __future__ import annotations
 
+from typing import Literal
+
+from app.services.context_compaction import (
+    copy_context_compact_state,
+    copy_document_record,
+    copy_prompt_state,
+)
+from app.services.memory_policy import copy_memory_state
+from app.skills.loader import create_pending_skill_registry
+from app.skills.registry import copy_skill_registry
 from app.state.models import (
     ContentSubagentInput,
+    ContextCompactGraphState,
     EvidenceGraphState,
     EvidenceSubagentInput,
     FileGovernanceState,
@@ -35,6 +46,66 @@ def _copy_team_state(team: TeamState) -> TeamState:
     )
 
 
+def file_governance_to_context_compact_state(
+    state: FileGovernanceState,
+    *,
+    stage: Literal["after_inventory", "after_evidence"],
+) -> ContextCompactGraphState:
+    """把顶层治理状态转换为一次隔离的 Context Compact 子图输入。
+
+    Args:
+        state: 已完成 Inventory 或 Evidence 阶段的顶层治理状态。
+        stage: 本次固定压缩阶段。
+
+    Returns:
+        只包含运行、工作空间、Prompt、文档和压缩私有字段的子图状态。
+    """
+    return ContextCompactGraphState(
+        run=dict(state["run"]),
+        workspace=dict(state["workspace"]),
+        prompt=copy_prompt_state(state["prompt"]),
+        documents=[
+            copy_document_record(document)
+            for document in state.get("documents", [])
+        ],
+        context_compact=copy_context_compact_state(
+            state.get("context_compact")
+        ),
+        stage=stage,
+        plan=None,
+        compaction_payload=None,
+        summary_draft=None,
+        errors=[dict(error) for error in state.get("errors", [])],
+    )
+
+
+def context_compact_state_to_file_governance_update(
+    state: ContextCompactGraphState,
+) -> dict:
+    """把 Context Compact 结果过滤为允许写回顶层的字段。
+
+    压缩计划、未跟踪临时载荷和摘要草稿均属于子图私有字段，不会进入顶层
+    checkpoint。业务版本事实、Evidence、推荐和人工选择不在返回白名单中。
+
+    Args:
+        state: 已完成压缩、跳过或安全降级的 Context Compact 子图状态。
+
+    Returns:
+        Prompt、文档、Context Compact 索引和结构化错误更新。
+    """
+    return {
+        "prompt": copy_prompt_state(state["prompt"]),
+        "documents": [
+            copy_document_record(document)
+            for document in state.get("documents", [])
+        ],
+        "context_compact": copy_context_compact_state(
+            state.get("context_compact")
+        ),
+        "errors": [dict(error) for error in state.get("errors", [])],
+    }
+
+
 def file_governance_to_team_orchestration_state(
     state: FileGovernanceState,
     *,
@@ -59,10 +130,14 @@ def file_governance_to_team_orchestration_state(
     Returns:
         已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
     """
+    registry = state.get("skill_registry", create_pending_skill_registry())
     return TeamOrchestrationGraphState(
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
+        skill_registry=copy_skill_registry(registry),
+        skill_selection=None,
+        skill_context=[],
         task_update=dict(task_update) if task_update is not None else None,
         dispatch_request=(
             dict(dispatch_request) if dispatch_request is not None else None
@@ -95,6 +170,7 @@ def team_orchestration_state_to_file_governance_update(
     """
     return {
         "team": _copy_team_state(state["team"]),
+        "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "team_messages": [
@@ -176,6 +252,9 @@ def file_governance_to_version_analysis_state(
         request=dict(state["request"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
+        skill_registry=copy_skill_registry(
+            state.get("skill_registry", create_pending_skill_registry())
+        ),
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
         files=list(state.get("files", [])),
@@ -223,6 +302,7 @@ def version_analysis_state_to_file_governance_update(
     """
     return {
         "team": _copy_team_state(state["team"]),
+        "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "version_groups": list(state.get("version_groups", [])),
@@ -255,6 +335,9 @@ def version_analysis_to_team_orchestration_state(
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
+        skill_registry=copy_skill_registry(state["skill_registry"]),
+        skill_selection=None,
+        skill_context=[],
         task_update=None,
         dispatch_request=dict(dispatch_request),
         dispatch_result=None,
@@ -283,6 +366,7 @@ def team_orchestration_state_to_version_analysis_update(
     output = raw_output if isinstance(raw_output, VersionSubagentOutput) else None
     return {
         "team": _copy_team_state(state["team"]),
+        "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "current_version_subagent_output": (
@@ -311,10 +395,12 @@ def file_governance_to_evidence_state(
         所有 Evidence 私有执行字段均已初始化的子图状态。
     """
     return EvidenceGraphState(
+        run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),
         documents=list(state.get("documents", [])),
         version_groups=list(state.get("version_groups", [])),
+        memory=copy_memory_state(state.get("memory")),
         pdf_candidate_ids=[],
         pdf_match_jobs=[],
         delivery_log_entries=[],
@@ -339,6 +425,7 @@ def evidence_state_to_file_governance_update(
         可由顶层 reducer 安全合并的证据字段白名单更新。
     """
     return {
+        "memory": copy_memory_state(state.get("memory")),
         "pdf_exports": list(state.get("pdf_exports", [])),
         "deliveries": list(state.get("deliveries", [])),
         "errors": list(state.get("errors", [])),
@@ -360,6 +447,7 @@ def file_governance_to_recommendation_state(
         候选集合和推荐结果均已清空的 Recommendation 子图状态。
     """
     return RecommendationGraphState(
+        run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),
         version_groups=list(state.get("version_groups", [])),
@@ -369,6 +457,7 @@ def file_governance_to_recommendation_state(
         version_chains=list(state.get("version_chains", [])),
         pdf_exports=list(state.get("pdf_exports", [])),
         deliveries=list(state.get("deliveries", [])),
+        memory=copy_memory_state(state.get("memory")),
         candidate_sets=[],
         decisions=[],
         human_review={
@@ -395,6 +484,7 @@ def recommendation_state_to_file_governance_update(
         可由顶层 reducer 安全合并的推荐字段白名单更新。
     """
     return {
+        "memory": copy_memory_state(state.get("memory")),
         "decisions": list(state.get("decisions", [])),
         "human_review": dict(state["human_review"]),
         "errors": list(state.get("errors", [])),

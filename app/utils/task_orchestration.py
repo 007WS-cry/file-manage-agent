@@ -40,6 +40,14 @@ FIXED_TEAM_ROLE_BY_ID: dict[str, str] = {
 # TeamState 允许保存的成员运行状态。
 ALLOWED_AGENT_STATUSES = frozenset({"idle", "working", "waiting", "failed"})
 
+# 固定角色在 Task 执行期间允许临时绑定的受控 Skill ID。
+ALLOWED_SKILL_IDS_BY_ROLE: dict[str, frozenset[str]] = {
+    "coordinator": frozenset({"governance-report"}),
+    "content": frozenset({"file-content-analysis"}),
+    "version": frozenset({"version-relation"}),
+    "evidence": frozenset({"evidence-confidence"}),
+}
+
 
 def create_orchestration_error(node_name: str, error: Exception) -> ErrorRecord:
     """把 Team Orchestration 节点异常转换为结构化致命校验错误。
@@ -152,8 +160,21 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
         skill_ids = raw_member.get("skill_ids")
         if tool_names != []:
             raise ValueError("0.4.4 固定 Subagent 不配置工具或 Worktree 能力")
-        if skill_ids != []:
-            raise ValueError("0.4.4 不允许固定团队提前配置 Skills")
+        if not isinstance(skill_ids, list) or any(
+            not isinstance(skill_id, str) or not skill_id.strip()
+            for skill_id in skill_ids
+        ):
+            raise TypeError(f"成员 {agent_id} 的 skill_ids 必须是非空字符串列表")
+        if len(skill_ids) != len(set(skill_ids)):
+            raise ValueError(f"成员 {agent_id} 的 skill_ids 不得重复")
+        unknown_skill_ids = sorted(
+            set(skill_ids) - ALLOWED_SKILL_IDS_BY_ROLE[expected_role]
+        )
+        if unknown_skill_ids:
+            raise ValueError(
+                f"成员 {agent_id} 包含职责外 Skill："
+                + ", ".join(unknown_skill_ids)
+            )
         normalized_members.append(
             AgentMemberState(
                 id=agent_id,
@@ -167,7 +188,7 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
                 ),
                 current_task_id=current_task_id,
                 tool_names=list(tool_names),
-                skill_ids=[],
+                skill_ids=list(skill_ids),
             )
         )
     if seen_ids != set(FIXED_TEAM_ROLE_BY_ID):

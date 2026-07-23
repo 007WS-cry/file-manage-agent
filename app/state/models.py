@@ -16,6 +16,9 @@ class RunState(TypedDict):
     run_id: str
     # 本次运行的唯一标识。
 
+    thread_id: str
+    # LangGraph Checkpointer 使用的线程 ID；非 CLI 调用可回退为 run_id。
+
     status: Literal[
         "created",
         "running",
@@ -373,6 +376,85 @@ class HumanReviewState(TypedDict):
     # 用户在人工确认阶段提供的补充说明。
 
 
+class MemoryItemState(TypedDict):
+    """一个经过脱敏和长度限制、可在图状态或应用数据库中传递的 Memory 条目。"""
+
+    id: str
+    # Memory 条目唯一 ID；由安全结构化字段计算，不包含业务正文。
+
+    namespace: str
+    # 隔离不同工作空间的哈希命名空间，不保存原始目录路径。
+
+    scope: Literal["short_term", "long_term"]
+    # Memory 生命周期；短期仅随当前图状态存在，长期允许写入应用数据库。
+
+    kind: Literal[
+        "stage_summary",
+        "confirmed_version_choice",
+        "reliable_evidence_relation",
+        "governance_preference",
+    ]
+    # Memory 类型，只允许数据库约束定义的四类治理事实。
+
+    summary: str
+    # 由固定模板生成的有界摘要，禁止写入文档正文、密钥或完整模型 Prompt。
+
+    structured_data: dict[str, Any]
+    # 经过字段白名单校验的 ID、评分和证据类型等结构化数据。
+
+    artifact_refs: list[str]
+    # 支撑结论的受控产物引用；不得保存原始正文或外部凭据。
+
+    source_run_id: str
+    # 产生该条目的治理运行 ID。
+
+    confirmed_by_human: bool
+    # 条目是否直接来自用户明确确认。
+
+    confidence: float
+    # 条目置信度，范围为 0.0 到 1.0。
+
+    created_at: str
+    # 条目创建时间，使用带时区的 ISO 8601 格式。
+
+
+class MemoryState(TypedDict):
+    """治理图共享的短期与长期 Memory 配置、召回结果和待持久化缓冲区。"""
+
+    enabled: bool
+    # 是否启用长期 Memory 数据库访问；默认关闭以保持旧版运行兼容。
+
+    namespace: str
+    # 当前工作空间的隔离命名空间，默认由输入根目录哈希生成。
+
+    database_path: str | None
+    # 独立应用数据库文件路径；关闭 Memory 时为 None。
+
+    checkpoint_path: str | None
+    # 可选 SQLite checkpoint 文件路径，用于强制校验两类数据库不共用文件。
+
+    recall_limit: int
+    # 每次新运行最多召回的长期 Memory 条目数量。
+
+    status: Literal["disabled", "pending", "ready", "failed"]
+    # 长期 Memory 的当前加载或持久化状态。
+
+    recalled_items: list[MemoryItemState]
+    # 本次运行从应用数据库召回的长期治理事实。
+
+    short_term_items: list[MemoryItemState]
+    # 仅随当前 LangGraph 状态和 Checkpointer 存在的阶段摘要。
+
+    pending_long_term_items: list[MemoryItemState]
+    # 已通过安全策略、等待写入应用数据库的长期治理事实。
+
+    persisted_item_ids: list[str]
+    # 本次运行已经成功写入应用数据库的 Memory 条目 ID。
+
+    last_error: str | None
+    # 最近一次 Memory 操作的脱敏错误摘要；没有错误时为 None。
+
+
 class ErrorRecord(TypedDict):
     """节点执行过程中产生的结构化错误。"""
 
@@ -395,9 +477,12 @@ class ErrorRecord(TypedDict):
         "protocol",
         "prompt",
         "hook",
+        "memory",
+        "context",
+        "database",
         "unknown",
     ]
-    # 错误类别；protocol 表示 Team Message 或分派契约错误。
+    # 错误类别；memory、context、database 分别表示记忆、压缩和应用数据库错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -610,6 +695,158 @@ class PromptState(TypedDict):
     # Prompt 当前处于等待加载、已加载、已关闭或加载失败状态。
 
 
+class ContextSummaryState(TypedDict):
+    """一次 Context Compact 产生的有界摘要及受控产物引用。"""
+
+    id: str
+    # Context Summary 唯一 ID，由运行、阶段和压缩序号确定性生成。
+
+    run_id: str
+    # 产生该摘要的治理运行 ID。
+
+    stage: Literal["after_inventory", "after_evidence"]
+    # 触发压缩的固定业务阶段。
+
+    summary: str
+    # 由固定模板生成的简短压缩说明，不包含正文、Prompt 或凭据。
+
+    artifact_refs: list[str]
+    # 被移出图状态的上下文产物引用；不直接保存大型内容。
+
+    estimated_tokens: int
+    # 压缩完成后的近似上下文 Token 数。
+
+    compaction_index: int
+    # 当前运行内从一开始递增的压缩序号。
+
+    created_at: str
+    # 摘要创建时间，使用带时区的 ISO 8601 格式。
+
+
+class ContextCompactState(TypedDict):
+    """顶层治理图共享的 Context Compact 配置、进度和摘要索引。"""
+
+    enabled: bool
+    # 是否启用自动上下文估算和阶段压缩；默认关闭以兼容旧运行。
+
+    trigger_token_threshold: int
+    # 估算上下文超过该 Token 数时才允许触发压缩。
+
+    retained_preview_characters: int
+    # Evidence 完成后每个文档预览仍保留在图状态中的最大字符数。
+
+    persist_summaries: bool
+    # 是否把有界 Context Summary 写入独立应用数据库。
+
+    database_path: str | None
+    # Context Summary 使用的应用数据库文件路径；关闭时为 None。
+
+    checkpoint_path: str | None
+    # 可选 SQLite checkpoint 路径，用于强制数据库文件隔离。
+
+    status: Literal["disabled", "pending", "ready", "failed"]
+    # Context Compact 当前处于关闭、等待、正常或失败状态。
+
+    current_stage: Literal["after_inventory", "after_evidence"] | None
+    # 最近完成估算或压缩的固定阶段。
+
+    estimated_tokens: int
+    # 最近一次阶段处理后的近似上下文 Token 数。
+
+    summaries: list[ContextSummaryState]
+    # 当前运行已经产生的 Context Summary 索引。
+
+    last_error: str | None
+    # 最近一次压缩、产物或数据库操作的脱敏错误；正常时为 None。
+
+
+class ApplicationDatabaseState(TypedDict):
+    """应用数据库的启用状态、SQLite 隔离配置和运行期连接结果。"""
+
+    enabled: bool
+    # 是否持久化运行生命周期、工具审计和人工选择；默认关闭以兼容旧运行。
+
+    backend: Literal["sqlite"]
+    # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
+
+    database_path: str | None
+    # 五张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+
+    checkpoint_path: str | None
+    # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。
+
+    auto_create_parent: bool
+    # 是否允许 Engine 自动创建数据库父目录；当前实现固定为 True。
+
+    echo: bool
+    # 是否输出 SQLAlchemy SQL 日志；默认关闭以减少结构化数据泄漏风险。
+
+    timeout_seconds: float
+    # SQLite 等待短暂文件锁释放的最大秒数。
+
+    status: Literal["disabled", "pending", "ready", "failed"]
+    # 应用数据库当前处于关闭、等待连接、可用或失败状态。
+
+    last_error: str | None
+    # 最近一次建连、运行更新或审核持久化失败的脱敏说明。
+
+
+class ContextCompactionPlanState(TypedDict):
+    """Context Compact 子图根据阶段和阈值生成的不可变压缩计划。"""
+
+    stage: Literal["after_inventory", "after_evidence"]
+    # 当前计划对应的固定业务阶段。
+
+    estimated_tokens_before: int
+    # 执行压缩前的近似上下文 Token 数。
+
+    reclaimable_tokens: int
+    # 当前阶段允许移出图状态的近似 Token 数。
+
+    should_compact: bool
+    # 是否同时满足启用、阈值和可回收上下文条件。
+
+    compact_prompt_content: bool
+    # 是否清空已加载且后续不再消费的 System Prompt 正文。
+
+    compact_document_ids: list[str]
+    # Evidence 完成后允许移出详细预览和结构字段的文档 ID。
+
+
+class ContextCompactGraphState(TypedDict):
+    """独立 Context Compact 子图使用的输入、计划、临时载荷和输出状态。"""
+
+    run: RunState
+    # 当前治理运行信息，用于生成稳定摘要和产物 ID。
+
+    workspace: WorkspaceState
+    # 只读输入目录和可写中间产物目录。
+
+    prompt: PromptState
+    # 可在安全阶段清空正文、但保留版本和摘要哈希的 Prompt 状态。
+
+    documents: Annotated[list[DocumentRecord], merge_by_id]
+    # 可在 Evidence 完成后缩减详细预览的标准化文档记录。
+
+    context_compact: ContextCompactState
+    # 当前压缩配置、历史摘要和状态。
+
+    stage: Literal["after_inventory", "after_evidence"]
+    # 本次子图调用的固定压缩阶段。
+
+    plan: ContextCompactionPlanState | None
+    # Token 估算节点生成的当前压缩计划。
+
+    compaction_payload: Annotated[dict[str, Any] | None, UntrackedValue]
+    # 等待写入中间产物的大型临时上下文，不进入任何 checkpoint。
+
+    summary_draft: ContextSummaryState | None
+    # 等待补充产物引用并写入应用数据库的有界摘要草稿。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 估算、压缩、产物和数据库操作产生的非致命错误。
+
+
 class HookConfigState(TypedDict):
     """Hooks 配置状态：定义生命周期阶段、执行顺序和失败策略。"""
 
@@ -775,29 +1012,176 @@ class TaskStatusUpdate(TypedDict):
     # 本次状态变更发生时间，使用带时区的 ISO 8601 格式。
 
 
+class SkillRecord(TypedDict):
+    """一个受控 Skill 的元数据、按需加载内容和当前绑定状态。"""
+
+    skill_id: str
+    # Skill 的稳定唯一 ID，必须与 resources/skills 下的注册表一致。
+
+    name: str
+    # 面向日志和文档展示的中文名称。
+
+    description: str
+    # 用于选择和审计的简短能力说明，不包含完整 Skill 指令。
+
+    source_path: str
+    # SKILL.md 的受控绝对路径，只能位于注册表所在目录内。
+
+    task_types: list[str]
+    # 允许选择该 Skill 的固定 Task 类型。
+
+    roles: list[str]
+    # 允许绑定该 Skill 的固定 Agent 角色。
+
+    status: Literal["available", "loaded", "bound"]
+    # Skill 当前可用、已读取但未绑定或已绑定到一个 Task 的运行状态。
+
+    bound_task_id: str | None
+    # 当前绑定的真实 Task ID；未绑定时为 None。
+
+    content: str
+    # 按需读取的 SKILL.md 正文；恢复 available 时必须清空。
+
+    content_sha256: str | None
+    # 已加载正文的 SHA-256；未加载或释放后为 None。
+
+
+class SkillRegistryState(TypedDict):
+    """一次治理运行使用的受控 Skill 注册表状态。"""
+
+    version: str
+    # Skill 注册表协议版本，例如 skill-registry-v1。
+
+    source_path: str
+    # registry.yaml 的绝对路径。
+
+    status: Literal["pending", "ready", "failed"]
+    # 注册表等待加载、可供选择或加载失败的状态。
+
+    skills: list[SkillRecord]
+    # 当前已登记的 Skill；只有本次 Task 所需项允许暂存正文。
+
+
+class TaskSkillSelectionState(TypedDict):
+    """Team Orchestration 为一次 Subagent 分派生成的 Skill 选择结果。"""
+
+    task_id: str
+    # 当前分派对应的真实 Task ID。
+
+    task_type: str
+    # 当前 Task 的固定类型。
+
+    role: str
+    # 当前 Task 的固定负责角色。
+
+    skill_ids: list[str]
+    # 依据注册表和固定 Agent 定义选择出的最小 Skill ID 列表。
+
+
+class SkillInstructionState(TypedDict):
+    """传给单个 Subagent 的已验证 Skill 指令快照。"""
+
+    skill_id: str
+    # Skill 的稳定唯一 ID。
+
+    name: str
+    # Skill 的中文名称。
+
+    description: str
+    # Skill 的简短能力说明。
+
+    content: str
+    # 已验证且仅属于当前 Task 的 SKILL.md 正文。
+
+    content_sha256: str
+    # 当前指令正文的 SHA-256，用于审计和 checkpoint 一致性检查。
+
+
+class ModelProfileState(TypedDict):
+    """一个可独立路由和审计的 LangChain 模型 Profile。"""
+
+    id: str
+    # Profile 的稳定唯一 ID，用于任务路由和 LLM 调用审计。
+
+    provider: str
+    # LangChain 规范 Provider 名称；支持主流原生集成、模型路由服务和 Mock。
+
+    model: str
+    # Provider 使用的模型名称，不在业务节点中硬编码。
+
+    api_key_env: str | None
+    # 保存 API Key 的环境变量名称；Mock 使用 None，绝不保存密钥实际值。
+
+    base_url_env: str | None
+    # 保存兼容服务 Base URL 的可选环境变量名称；绝不保存地址实际值。
+
+    options_env: str | None
+    # 保存 Provider 专有 JSON 构造参数的可选环境变量名称；绝不保存参数实际值。
+
+    structured_output_method: Literal[
+        "auto",
+        "function_calling",
+        "json_mode",
+        "json_schema",
+    ]
+    # LangChain 结构化输出策略；auto 由对应 Provider 集成选择默认实现。
+
+    temperature: float
+    # 当前 Profile 的模型生成温度。
+
+    max_output_tokens: int
+    # 当前 Profile 单次结构化输出允许使用的最大 Token 数。
+
+    timeout_seconds: float
+    # 当前 Profile 单次模型调用超时时间，单位为秒。
+
+
 class LLMConfigState(TypedDict):
-    """统一 LLM Client 在一次治理运行中的配置状态。"""
+    """统一 LLM Client 在一次治理运行中的多模型配置状态。"""
 
     enabled: bool
     # 是否允许调用真实模型；关闭时固定使用 Mock 或确定性回退。
 
-    provider: Literal["openai", "mock"]
-    # 当前模型 Provider；支持 OpenAI Provider 和 Mock Provider。
+    provider: str
+    # 默认 Profile 的 Provider 兼容镜像，供旧 checkpoint 和旧调用方读取。
 
     model: str
-    # Provider 使用的模型名称，由配置提供，不在业务节点中硬编码。
+    # 默认 Profile 的模型名称兼容镜像。
 
     api_key_env: str | None
-    # 保存 API Key 的环境变量名称；Mock Provider 使用 None，绝不保存密钥实际值。
+    # 默认 Profile 的 API Key 环境变量名称兼容镜像。
+
+    base_url_env: str | None
+    # 默认 Profile 的 Base URL 环境变量名称兼容镜像。
+
+    options_env: str | None
+    # 默认 Profile 的 Provider 专有参数环境变量名称兼容镜像。
+
+    structured_output_method: Literal[
+        "auto",
+        "function_calling",
+        "json_mode",
+        "json_schema",
+    ]
+    # 默认 Profile 的结构化输出方法兼容镜像。
 
     temperature: float
-    # 模型生成温度；版本治理摘要建议使用较低温度。
+    # 默认 Profile 的生成温度兼容镜像。
 
     max_output_tokens: int
-    # 单次模型结构化输出允许使用的最大 Token 数。
+    # 默认 Profile 的最大输出 Token 兼容镜像。
 
     timeout_seconds: float
-    # 单次模型调用超时时间，单位为秒。
+    # 默认 Profile 的调用超时兼容镜像。
+
+    profiles: list[ModelProfileState]
+    # 本次运行允许路由的模型 Profile；顺序保持请求中的声明顺序。
+
+    default_profile_id: str
+    # 未声明任务专属路由时使用的默认 Profile ID。
+
+    task_profile_ids: dict[Literal["content", "version", "evidence"], str]
+    # 三个固定 Subagent 任务类型到 Profile ID 的可选路由映射。
 
     fallback_enabled: bool
     # 模型失败后是否允许使用协调 Agent 或确定性逻辑继续。
@@ -817,6 +1201,9 @@ class LLMCallRecord(TypedDict):
 
     message_id: str
     # 触发本次调用的 Team Message ID。
+
+    model_profile_id: str
+    # 实际调用或确定性回退使用的模型 Profile ID。
 
     provider: str
     # 实际使用的模型 Provider 名称。
@@ -1060,7 +1447,13 @@ class ContentSubagentGraphState(TypedDict):
     # 用于校验 assignment、result 和 error 消息的固定团队状态。
 
     llm: LLMConfigState
-    # 当前运行使用的统一 LLM 配置。
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Inventory Task 已绑定 Skill 的指令快照。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Content 任务解析出的 Profile ID。
 
     system_prompt: str
     # 固定职责和只读边界组成的系统提示词，不包含业务正文。
@@ -1094,7 +1487,13 @@ class VersionSubagentGraphState(TypedDict):
     # 用于校验 assignment、result 和 error 消息的固定团队状态。
 
     llm: LLMConfigState
-    # 当前运行使用的统一 LLM 配置。
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Version Analysis Task 已绑定 Skill 的指令快照。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Version 任务解析出的 Profile ID。
 
     system_prompt: str
     # 固定版本解释职责和只读边界组成的系统提示词。
@@ -1128,7 +1527,13 @@ class EvidenceSubagentGraphState(TypedDict):
     # 用于校验 assignment、result 和 error 消息的固定团队状态。
 
     llm: LLMConfigState
-    # 当前运行使用的统一 LLM 配置。
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Evidence Task 已绑定 Skill 的指令快照。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Evidence 任务解析出的 Profile ID。
 
     system_prompt: str
     # 固定证据解释职责和只读边界组成的系统提示词。
@@ -1180,6 +1585,18 @@ class FileGovernanceState(TypedDict):
 
     team: TeamState
     # 协调 Agent 和三个固定 Subagent 的团队状态。
+
+    skill_registry: SkillRegistryState
+    # 顶层加载的 Skill 元数据及当前按 Task 绑定状态。
+
+    memory: MemoryState
+    # 短期阶段摘要、长期召回结果及待持久化的安全治理事实。
+
+    context_compact: ContextCompactState
+    # Context Compact 配置、最近估算结果和有界摘要索引。
+
+    application_database: ApplicationDatabaseState
+    # 五张应用表共用的独立数据库配置和当前连接状态。
 
     hook_events: Annotated[
         list[HookEvent],
@@ -1263,23 +1680,22 @@ class TeamOrchestrationGraphState(TypedDict):
     team: TeamState
     # 固定团队成员、并发上限和协议版本。
 
+    skill_registry: SkillRegistryState
+    # 可按当前分派 Task 选择、加载、绑定并释放的 Skill 注册表。
+
+    skill_selection: TaskSkillSelectionState | None
+    # 本次分派生成的最小 Skill 选择；状态同步调用时为 None。
+
+    skill_context: list[SkillInstructionState]
+    # 已加载且绑定到当前分派 Task 的 Skill 指令快照。
+
     task_update: TaskStatusUpdate | None
     # 顶层流程传入的单次状态更新；首次创建 DAG 时可以为 None。
 
-    dispatch_request: (
-        ContentSubagentInput
-        | VersionSubagentInput
-        | EvidenceSubagentInput
-        | None
-    )
+    dispatch_request: ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
     # 可选 Subagent 分派请求；状态同步调用或请求消费完成后为 None。
 
-    dispatch_result: (
-        ContentSubagentOutput
-        | VersionSubagentOutput
-        | EvidenceSubagentOutput
-        | None
-    )
+    dispatch_result: ContentSubagentOutput | VersionSubagentOutput | EvidenceSubagentOutput | None
     # 当前 Subagent 调用产生的 Pydantic 结构化结果。
 
     tasks: Annotated[
@@ -1365,6 +1781,9 @@ class VersionAnalysisGraphState(TypedDict):
     team: TeamState
     # 用于定位固定 Version Subagent 和协调 Agent 的团队状态。
 
+    skill_registry: SkillRegistryState
+    # Version 分派按比较 Task 临时绑定并在返回后释放的 Skill 注册表。
+
     tasks: Annotated[list[TaskItem], merge_by_task_id]
     # Team Orchestration 校验 Version Subagent 分派所需的真实 Task DAG。
 
@@ -1432,6 +1851,9 @@ class VersionAnalysisGraphState(TypedDict):
 class EvidenceGraphState(TypedDict):
     """PDF 来源与本地发送记录匹配子图使用的状态。"""
 
+    run: RunState
+    # 当前治理运行 ID，供证据 Memory 建立安全来源关联。
+
     request: RequestState
     # PDF 匹配阈值和本地发送日志路径。
 
@@ -1443,6 +1865,9 @@ class EvidenceGraphState(TypedDict):
 
     version_groups: Annotated[list[VersionGroupRecord], merge_by_id]
     # 用于限制 PDF 来源候选范围的版本组。
+
+    memory: MemoryState
+    # Evidence 阶段读取和追加的短期、长期 Memory 缓冲区。
 
     pdf_candidate_ids: list[str]
     # 子图内部收集到的非重复、已解析 PDF 文件 ID。
@@ -1465,6 +1890,9 @@ class EvidenceGraphState(TypedDict):
 
 class RecommendationGraphState(TypedDict):
     """结合版本关系和外部证据推荐各版本组主版本的子图状态。"""
+
+    run: RunState
+    # 当前治理运行 ID，供推荐 Memory 建立安全来源关联。
 
     request: RequestState
     # 自动推荐阈值及 PDF 匹配阈值。
@@ -1492,6 +1920,9 @@ class RecommendationGraphState(TypedDict):
 
     deliveries: Annotated[list[DeliveryRecord], merge_by_id]
     # 客户发送和确认记录。
+
+    memory: MemoryState
+    # 供候选评分读取的历史选择，以及本阶段产生的短期摘要。
 
     candidate_sets: Annotated[list[RecommendationCandidateSet], merge_by_id]
     # 每个版本组内部使用的推荐候选集合。

@@ -4,6 +4,7 @@ from typing import cast
 
 from app.llm.config import create_llm_config_state
 from app.state.factories import (
+    create_disabled_application_database_state,
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
@@ -14,24 +15,28 @@ from app.state.models import FileGovernanceState
 
 
 def with_lifecycle_defaults(state: FileGovernanceState) -> FileGovernanceState:
-    """为旧版 checkpoint 或手工状态补齐生命周期、LLM、Team 和 Task 字段。
+    """为旧 checkpoint 补齐生命周期、Agent 和应用数据库默认字段。
 
     Args:
         state: 可能来自 0.2.0 checkpoint 或测试夹具的顶层治理状态。
 
     Returns:
-        包含 Prompt、Hook、LLM、Team、Task 和审计列表默认字段的浅复制状态。
+        包含 Prompt、Hook、多模型 Profile、Team、Task、审计和数据库默认字段的状态。
     """
     normalized_state = dict(state)
     normalized_state.setdefault("prompt", create_prompt_state())
     normalized_state.setdefault("hooks", create_hook_config_state())
-    normalized_state.setdefault("llm", create_llm_config_state())
+    normalized_state["llm"] = create_llm_config_state(normalized_state.get("llm"))
     normalized_state.setdefault("team", create_team_state())
     normalized_state.setdefault("hook_events", [])
     normalized_state.setdefault("tasks", [])
     normalized_state.setdefault("todos", [])
     normalized_state.setdefault("team_messages", [])
     normalized_state.setdefault("llm_calls", [])
+    normalized_state.setdefault(
+        "application_database",
+        create_disabled_application_database_state(),
+    )
     return cast(FileGovernanceState, normalized_state)
 
 

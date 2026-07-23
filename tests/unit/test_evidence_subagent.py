@@ -27,6 +27,7 @@ def _evidence_state() -> EvidenceSubagentGraphState:
         },
         team=create_team_state(),
         llm=create_llm_config_state(),
+        selected_model_profile_id="",
         system_prompt="",
         user_prompt="",
         output=None,

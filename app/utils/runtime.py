@@ -33,6 +33,9 @@ def create_error_record(
         "protocol",
         "prompt",
         "hook",
+        "memory",
+        "context",
+        "database",
         "unknown",
     ],
     message: str,
@@ -44,7 +47,8 @@ def create_error_record(
     Args:
         stage: 错误所属的主流程阶段或子图名称。
         node_name: 产生错误的节点函数名。
-        category: 文件系统、解析、比较、证据、LLM、校验、协议、Prompt、Hook 或未知类别。
+        category: 文件系统、解析、比较、证据、LLM、校验、协议、Prompt、Hook、
+            Memory、Context Compact、应用数据库或未知类别。
         message: 可供报告展示的脱敏错误说明。
         related_file_id: 可选关联文件 ID，不应放入原始文件正文。
         fatal: 错误是否使当前治理运行无法安全继续。

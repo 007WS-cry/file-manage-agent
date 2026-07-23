@@ -14,7 +14,7 @@ from app.graphs.file_governance import build_file_governance_graph
 from app.state.factories import create_initial_state
 from app.storage.checkpoints import open_checkpointer
 
-"""本模块提供带生命周期配置、人工恢复和最小 Task 进度摘要的命令行入口。"""
+"""本模块提供生命周期、应用数据库、人工恢复和最小 Task 摘要命令行入口。"""
 
 
 # CLI 未显式配置 SQLite 数据库时使用的默认 checkpoint 路径。
@@ -71,6 +71,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--checkpoint-path",
         type=Path,
         help="覆盖请求文件中的 SQLite checkpoint 数据库路径。",
+    )
+    run_parser.add_argument(
+        "--application-database-path",
+        type=Path,
+        help="启用并覆盖五张应用表共用的 SQLite 数据库路径。",
     )
 
     resume_parser = subparsers.add_parser(
@@ -255,6 +260,117 @@ def resolve_llm_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     return dict(raw_llm)
 
 
+def resolve_memory_payload(
+    payload: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> dict[str, Any] | None:
+    """解析请求信封中的可选 Memory 配置并规范化数据库路径。
+
+    本函数只复制开关、命名空间种子和路径配置，不创建数据库目录或数据表。
+    数据库父目录由启用后的 Engine 自动创建，表结构仍必须通过 Alembic 管理。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+        base_directory: 请求 JSON 所在目录，用于解析相对数据库路径。
+
+    Returns:
+        独立的 Memory 配置字典；缺省或显式 null 时返回 None。
+
+    Raises:
+        ValueError: ``memory`` 或数据库路径字段类型不合法时抛出。
+    """
+    raw_memory = payload.get("memory")
+    if raw_memory is None:
+        return None
+    if not isinstance(raw_memory, dict):
+        raise ValueError("memory 必须是对象或 null")
+    memory_config = dict(raw_memory)
+    raw_database_path = memory_config.get("database_path")
+    if raw_database_path is not None:
+        if not isinstance(raw_database_path, str) or not raw_database_path.strip():
+            raise ValueError("memory.database_path 必须是非空路径字符串")
+        candidate = Path(raw_database_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_directory / candidate
+        memory_config["database_path"] = str(candidate.resolve())
+    return memory_config
+
+
+def resolve_context_compact_payload(
+    payload: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> dict[str, Any] | None:
+    """解析请求信封中的可选 Context Compact 配置。
+
+    本函数只复制压缩阈值和持久化配置，并把相对应用数据库路径解析为相对请求
+    JSON 的绝对路径；不会估算上下文、写入产物或创建数据库。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+        base_directory: 请求 JSON 所在目录。
+
+    Returns:
+        独立的 Context Compact 配置；缺省或显式 null 时返回 None。
+
+    Raises:
+        ValueError: ``context_compact`` 或数据库路径字段类型不合法时抛出。
+    """
+    raw_context_compact = payload.get("context_compact")
+    if raw_context_compact is None:
+        return None
+    if not isinstance(raw_context_compact, dict):
+        raise ValueError("context_compact 必须是对象或 null")
+    context_compact_config = dict(raw_context_compact)
+    raw_database_path = context_compact_config.get("database_path")
+    if raw_database_path is not None:
+        if not isinstance(raw_database_path, str) or not raw_database_path.strip():
+            raise ValueError("context_compact.database_path 必须是非空路径字符串")
+        candidate = Path(raw_database_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_directory / candidate
+        context_compact_config["database_path"] = str(candidate.resolve())
+    return context_compact_config
+
+
+def resolve_application_database_payload(
+    payload: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> dict[str, Any] | None:
+    """解析请求信封中的可选应用数据库配置。
+
+    本函数只复制固定后端、路径、SQL 日志和锁等待字段，并把相对路径解析为相对
+    请求 JSON 的绝对路径；不会创建目录、数据库文件或数据表。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+        base_directory: 请求 JSON 所在目录。
+
+    Returns:
+        独立应用数据库配置；缺省或显式 null 时返回 None。
+
+    Raises:
+        ValueError: ``application_database`` 或数据库路径字段类型不合法时抛出。
+    """
+    raw_application_database = payload.get("application_database")
+    if raw_application_database is None:
+        return None
+    if not isinstance(raw_application_database, dict):
+        raise ValueError("application_database 必须是对象或 null")
+    application_database_config = dict(raw_application_database)
+    raw_database_path = application_database_config.get("database_path")
+    if raw_database_path is not None:
+        if not isinstance(raw_database_path, str) or not raw_database_path.strip():
+            raise ValueError("application_database.database_path 必须是非空路径字符串")
+        candidate = Path(raw_database_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_directory / candidate
+        application_database_config["database_path"] = str(candidate.resolve())
+    return application_database_config
+
+
 def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
     """把 LangGraph Interrupt 对象转换为可输出的 JSON 值。
 
@@ -357,6 +473,18 @@ def run_command(arguments: argparse.Namespace) -> int:
         base_directory=request_path.parent,
     )
     llm_config = resolve_llm_payload(payload)
+    memory_config = resolve_memory_payload(
+        payload,
+        base_directory=request_path.parent,
+    )
+    context_compact_config = resolve_context_compact_payload(
+        payload,
+        base_directory=request_path.parent,
+    )
+    application_database_config = resolve_application_database_payload(
+        payload,
+        base_directory=request_path.parent,
+    )
     backend = arguments.checkpoint_backend or checkpoint.get("backend", "sqlite")
     if backend not in {"memory", "sqlite"}:
         raise ValueError("checkpoint.backend 只能是 memory 或 sqlite")
@@ -364,12 +492,30 @@ def run_command(arguments: argparse.Namespace) -> int:
     configured_path = checkpoint.get("database_path", DEFAULT_CHECKPOINT_PATH)
     database_path = arguments.checkpoint_path or Path(configured_path)
     thread_id = arguments.thread_id or uuid4().hex
+    if arguments.application_database_path is not None:
+        application_path = str(arguments.application_database_path.expanduser().resolve())
+        application_database_config = dict(application_database_config or {})
+        application_database_config["enabled"] = True
+        application_database_config["database_path"] = application_path
+        if memory_config is not None and memory_config.get("enabled") is True:
+            memory_config["database_path"] = application_path
+        if (
+            context_compact_config is not None
+            and context_compact_config.get("enabled") is True
+            and context_compact_config.get("persist_summaries", True) is True
+        ):
+            context_compact_config["database_path"] = application_path
     state = create_initial_state(
         request,
         workspace,
         prompt_config=prompt_config,
         hook_config=hook_config,
         llm_config=llm_config,
+        memory_config=memory_config,
+        context_compact_config=context_compact_config,
+        application_database_config=application_database_config,
+        checkpoint_path=database_path if backend == "sqlite" else None,
+        thread_id=thread_id,
     )
     with open_checkpointer(
         backend,

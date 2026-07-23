@@ -11,6 +11,7 @@ from app.graphs.routers import (
     route_before_run_hooks_result,
     route_evidence_result,
     route_failure_report_task_sync,
+    route_skill_registry_result,
     route_system_prompt_result,
     route_team_orchestration_result,
     route_version_analysis_result,
@@ -23,6 +24,7 @@ from app.nodes.lifecycle import (
     load_system_prompt,
     validate_request,
 )
+from app.nodes.memory import persist_long_term_memory, recall_long_term_memory
 from app.nodes.report import (
     generate_failure_report,
     generate_governance_report,
@@ -34,7 +36,10 @@ from app.nodes.review import (
     prepare_human_review,
     request_human_review,
 )
+from app.nodes.skills import load_skill_registry
 from app.nodes.subgraphs_nodes import (
+    run_context_compact_after_evidence,
+    run_context_compact_after_inventory,
     run_evidence_subgraph,
     run_inventory_subgraph,
     run_recommendation_subgraph,
@@ -76,15 +81,25 @@ def build_file_governance_graph(
     builder.add_node("execute_before_run_hooks", execute_before_run_hooks)
     builder.add_node("validate_request", validate_request)
     builder.add_node("load_system_prompt", load_system_prompt)
+    builder.add_node("load_skill_registry", load_skill_registry)
+    builder.add_node("recall_long_term_memory", recall_long_term_memory)
     builder.add_node("plan_run_tasks", plan_run_tasks)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
     builder.add_node("sync_inventory_task_status", sync_inventory_task_status)
+    builder.add_node(
+        "run_context_compact_after_inventory",
+        run_context_compact_after_inventory,
+    )
     builder.add_node("dispatch_content_subagent_task", dispatch_content_subagent_task)
     builder.add_node("run_version_analysis_subgraph", run_version_analysis_subgraph)
     builder.add_node("sync_version_task_status", sync_version_task_status)
     builder.add_node("run_evidence_subgraph", run_evidence_subgraph)
     builder.add_node("sync_evidence_task_status", sync_evidence_task_status)
     builder.add_node("dispatch_evidence_subagent_task", dispatch_evidence_subagent_task)
+    builder.add_node(
+        "run_context_compact_after_evidence",
+        run_context_compact_after_evidence,
+    )
     builder.add_node("run_recommendation_subgraph", run_recommendation_subgraph)
     builder.add_node("sync_recommendation_task_status", sync_recommendation_task_status)
     builder.add_node("prepare_human_review", prepare_human_review)
@@ -95,6 +110,7 @@ def build_file_governance_graph(
     builder.add_node("generate_no_data_report", generate_no_data_report)
     builder.add_node("generate_governance_report", generate_governance_report)
     builder.add_node("sync_report_task_status", sync_report_task_status)
+    builder.add_node("persist_long_term_memory", persist_long_term_memory)
     builder.add_node("execute_after_run_hooks", execute_after_run_hooks)
     builder.add_node("generate_lifecycle_failure_report", generate_lifecycle_failure_report)
     builder.add_node("finalize_run", finalize_run)
@@ -118,10 +134,19 @@ def build_file_governance_graph(
         "load_system_prompt",
         route_system_prompt_result,
         {
-            "continue": "plan_run_tasks",
+            "continue": "load_skill_registry",
             "failure": "generate_failure_report",
         },
     )
+    builder.add_conditional_edges(
+        "load_skill_registry",
+        route_skill_registry_result,
+        {
+            "ready": "recall_long_term_memory",
+            "failure": "generate_failure_report",
+        },
+    )
+    builder.add_edge("recall_long_term_memory", "plan_run_tasks")
     builder.add_conditional_edges(
         "plan_run_tasks",
         route_team_orchestration_result,
@@ -135,10 +160,14 @@ def build_file_governance_graph(
         "sync_inventory_task_status",
         has_analyzable_documents,
         {
-            "analyzable": "dispatch_content_subagent_task",
+            "analyzable": "run_context_compact_after_inventory",
             "empty": "generate_no_data_report",
             "failure": "generate_failure_report",
         },
+    )
+    builder.add_edge(
+        "run_context_compact_after_inventory",
+        "dispatch_content_subagent_task",
     )
     builder.add_conditional_edges(
         "dispatch_content_subagent_task",
@@ -167,9 +196,13 @@ def build_file_governance_graph(
         "dispatch_evidence_subagent_task",
         route_team_orchestration_result,
         {
-            "success": "run_recommendation_subgraph",
+            "success": "run_context_compact_after_evidence",
             "failure": "generate_failure_report",
         },
+    )
+    builder.add_edge(
+        "run_context_compact_after_evidence",
+        "run_recommendation_subgraph",
     )
     builder.add_edge("run_recommendation_subgraph", "sync_recommendation_task_status")
     builder.add_conditional_edges(
@@ -197,12 +230,13 @@ def build_file_governance_graph(
         route_failure_report_task_sync,
         {
             "sync": "sync_report_task_status",
-            "skip": "execute_after_run_hooks",
+            "skip": "persist_long_term_memory",
         },
     )
     builder.add_edge("generate_no_data_report", "sync_report_task_status")
     builder.add_edge("generate_governance_report", "sync_report_task_status")
-    builder.add_edge("sync_report_task_status", "execute_after_run_hooks")
+    builder.add_edge("sync_report_task_status", "persist_long_term_memory")
+    builder.add_edge("persist_long_term_memory", "execute_after_run_hooks")
     builder.add_conditional_edges(
         "execute_after_run_hooks",
         route_after_run_hooks_result,

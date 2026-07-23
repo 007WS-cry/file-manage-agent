@@ -253,6 +253,11 @@ def invoke_content_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             input=cast(dict, request),
             team=normalize_fixed_team(state["team"]),
             llm=dict(state["llm"]),
+            skill_context=[
+                dict(instruction)
+                for instruction in state.get("skill_context", [])
+            ],
+            selected_model_profile_id="",
             system_prompt="",
             user_prompt="",
             output=None,
@@ -303,6 +308,11 @@ def invoke_version_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             input=cast(dict, request),
             team=normalize_fixed_team(state["team"]),
             llm=dict(state["llm"]),
+            skill_context=[
+                dict(instruction)
+                for instruction in state.get("skill_context", [])
+            ],
+            selected_model_profile_id="",
             system_prompt="",
             user_prompt="",
             output=None,
@@ -353,6 +363,11 @@ def invoke_evidence_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             input=cast(dict, request),
             team=normalize_fixed_team(state["team"]),
             llm=dict(state["llm"]),
+            skill_context=[
+                dict(instruction)
+                for instruction in state.get("skill_context", [])
+            ],
+            selected_model_profile_id="",
             system_prompt="",
             user_prompt="",
             output=None,
@@ -490,6 +505,7 @@ def fallback_to_coordinator(state: TeamOrchestrationGraphState) -> dict:
                     if assignment is not None
                     else "coordinator-fallback"
                 ),
+                model_profile_id="coordinator-deterministic-fallback",
                 provider="deterministic",
                 model=f"coordinator-{definition.role}-fallback",
                 status="fallback",

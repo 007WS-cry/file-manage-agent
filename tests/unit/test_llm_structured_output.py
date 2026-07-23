@@ -25,7 +25,7 @@ from app.state.reducers import merge_by_message_id
 # 结构化输出测试允许返回的固定产物引用。
 ALLOWED_ARTIFACT_REF = "artifact://normalized/document-001"
 
-# 当前仓库根目录，用于验证 0.5.0 发布版本元数据一致性。
+# 当前仓库根目录，用于验证 0.5.3 发布版本元数据一致性。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -85,10 +85,13 @@ def test_artifact_refs_must_be_within_caller_allowlist() -> None:
         artifact_refs=["artifact://invented/reference"],
     )
 
-    assert validate_output_artifact_refs(
-        valid_output,
-        allowed_refs=[ALLOWED_ARTIFACT_REF],
-    ) is valid_output
+    assert (
+        validate_output_artifact_refs(
+            valid_output,
+            allowed_refs=[ALLOWED_ARTIFACT_REF],
+        )
+        is valid_output
+    )
     with pytest.raises(ValueError, match="未授权产物引用"):
         validate_output_artifact_refs(
             invalid_output,
@@ -163,15 +166,15 @@ def test_initial_state_contains_safe_llm_and_fixed_team_contract(
 
 
 def test_release_version_is_consistent_across_package_and_docker() -> None:
-    """Python 包、项目元数据、Docker 默认值和 README 应统一为 0.5.0。"""
+    """Python 包、项目元数据、Docker 默认值和 README 应统一为 0.6.0。"""
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert app.__version__ == "0.5.0"
-    assert 'version = "0.5.0"' in pyproject
-    assert "ARG APP_VERSION=0.5.0" in dockerfile
-    assert "当前版本 `0.5.0`" in readme
+    assert app.__version__ == "0.6.0"
+    assert 'version = "0.6.0"' in pyproject
+    assert "ARG APP_VERSION=0.6.0" in dockerfile
+    assert "当前版本 `0.6.0`" in readme
 
 
 def test_default_config_and_sample_request_disable_real_provider() -> None:
@@ -180,29 +183,68 @@ def test_default_config_and_sample_request_disable_real_provider() -> None:
         (PROJECT_ROOT / "configs" / "default.yaml").read_text(encoding="utf-8")
     )
     sample_request = json.loads(
-        (PROJECT_ROOT / "examples" / "sample_request.json").read_text(
-            encoding="utf-8"
-        )
+        (PROJECT_ROOT / "examples" / "sample_request.json").read_text(encoding="utf-8")
     )
 
     assert default_config["llm"]["enabled"] is False
     assert default_config["llm"]["provider"] == "mock"
     assert default_config["llm"]["api_key_env"] is None
+    assert default_config["application_database"]["enabled"] is False
     assert sample_request["llm"] == default_config["llm"]
 
 
 def test_real_provider_sample_references_environment_without_secret_value() -> None:
-    """真实 Provider 示例应只声明密钥环境变量名称并启用三个阶段的模型摘要。"""
+    """真实 Provider 示例应以环境变量和多 Profile 路由启用三个模型摘要阶段。"""
     sample_request = json.loads(
-        (PROJECT_ROOT / "examples" / "sample_llm_request.json").read_text(
-            encoding="utf-8"
-        )
+        (PROJECT_ROOT / "examples" / "sample_llm_request.json").read_text(encoding="utf-8")
     )
     llm_config = sample_request["llm"]
 
     assert sample_request["request"]["use_llm_summary"] is True
     assert llm_config["enabled"] is True
-    assert llm_config["provider"] == "openai"
-    assert llm_config["api_key_env"] == "OPENAI_API_KEY"
+    assert llm_config["default_profile_id"] == "content-claude"
+    assert llm_config["task_profile_ids"] == {
+        "content": "content-claude",
+        "version": "version-deepseek",
+        "evidence": "evidence-qwen",
+    }
+    assert {profile["provider"] for profile in llm_config["profiles"]} == {
+        "anthropic",
+        "deepseek",
+        "google_genai",
+        "openai_compatible",
+        "qwen",
+        "zhipuai",
+    }
+    assert {profile["api_key_env"] for profile in llm_config["profiles"]} == {
+        "ANTHROPIC_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_COMPATIBLE_API_KEY",
+        "ZHIPUAI_API_KEY",
+    }
     assert "api_key" not in llm_config
+    assert all("api_key" not in profile for profile in llm_config["profiles"])
     assert llm_config["fallback_enabled"] is True
+
+
+def test_release_multi_model_sample_enables_combined_v060_features() -> None:
+    """0.6.0 组合示例应统一多模型路由、Hooks、Memory、压缩和应用数据库。"""
+    sample_request = json.loads(
+        (PROJECT_ROOT / "examples" / "sample_multi_model_request.json").read_text(encoding="utf-8")
+    )
+
+    assert sample_request["hooks"]["enabled"] is True
+    assert sample_request["memory"]["enabled"] is True
+    assert sample_request["context_compact"]["enabled"] is True
+    assert sample_request["application_database"]["enabled"] is True
+    application_path = sample_request["application_database"]["database_path"]
+    assert sample_request["memory"]["database_path"] == application_path
+    assert sample_request["context_compact"]["database_path"] == application_path
+    assert sample_request["checkpoint"]["database_path"] != application_path
+    assert sample_request["llm"]["task_profile_ids"] == {
+        "content": "content-claude",
+        "version": "version-deepseek",
+        "evidence": "evidence-qwen",
+    }

@@ -38,12 +38,13 @@ pytestdebug.log
 benchmark-results
 *.prof
 
-# 真实输入数据、运行产物与 LangGraph 状态均通过卷挂载提供
+# 真实输入数据、运行产物、应用数据库与 LangGraph 状态均通过卷挂载提供
 data
 .artifacts
 artifacts
 reports
 checkpoints
+database
 .langgraph
 
 # 人工审核响应只在恢复运行时单独只读挂载
@@ -59,7 +60,7 @@ delivery_log.json
 delivery_log*.json
 !examples/sample_delivery_log.json
 
-# SQLite checkpoint 数据库及其事务附属文件
+# SQLite 应用数据库、checkpoint 及其事务附属文件
 *.sqlite
 *.sqlite3
 *.sqlite-*
@@ -80,12 +81,18 @@ resources/prompts/*.local.md
 resources/prompts/*.private.md
 !resources/prompts/file_governance_system_v1.md
 
+# 本地或私有 Skill 变体和注册表覆盖不进入镜像；受控 registry.yaml 与 SKILL.md 保留
+resources/skills/**/*.local.md
+resources/skills/**/*.private.md
+resources/skills/registry.local.yaml
+resources/skills/registry.private.yaml
+
 # Prompt 调试快照和本地生命周期 Hook 审计不进入镜像构建上下文
 prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.0 Task、LLM、业务阶段分派和 Team Protocol 快照只允许在运行时生成
+# 0.6.0 Task、Skill、Memory、Context Compact、工具审计和数据库快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -97,6 +104,9 @@ cli_progress*.json
 llm_call*.json
 llm_audit*.json
 llm_response*.json
+model_profile*.json
+model_routing*.json
+langchain_trace*.json
 subagent_input*.json
 subagent_output*.json
 subagent_prompt*.json
@@ -111,6 +121,25 @@ checkpoint_snapshot*.json
 checkpoint_dump*.json
 release_acceptance*.json
 provider_smoke*.json
+provider_options*.json
+relay_config*.json
+application_database*.json
+database_run*.json
+repository_snapshot*.json
+migration_snapshot*.json
+tool_audit*.json
+human_review_audit*.json
+compatibility_snapshot*.json
+skill_registry*.json
+skill_selection*.json
+skill_binding*.json
+skill_context*.json
+memory_snapshot*.json
+memory_recall*.json
+memory_export*.json
+context_compact*.json
+context_summary*.json
+token_estimation*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

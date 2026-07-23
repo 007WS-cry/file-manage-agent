@@ -4,6 +4,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
+from app.services.memory_policy import capture_human_choice_memory
 from app.services.recommendation import apply_human_selection as apply_human_selection_service
 from app.state.models import FileGovernanceState
 
@@ -107,7 +108,14 @@ def request_human_review(state: FileGovernanceState) -> dict:
 def apply_human_selection(state: FileGovernanceState) -> dict:
     """把已校验的用户选择应用到对应推荐记录，并恢复运行状态。
 
-    该节点只更新状态，不删除、移动、重命名或覆盖任何原始业务文件。
+    该节点只更新状态，不删除、移动、重命名或覆盖任何原始业务文件。启用
+    Memory 时只记录版本组 ID 和所选文件 ID；用户自由文本说明不会进入数据库。
+
+    Args:
+        state: 已从 interrupt 恢复且人工选择通过成员关系校验的顶层状态。
+
+    Returns:
+        已应用人工选择的推荐、审核、运行和安全 Memory 状态。
     """
     group_by_id = {item["id"]: item for item in state.get("version_groups", [])}
     selections = state["human_review"]["selections"]
@@ -127,6 +135,12 @@ def apply_human_selection(state: FileGovernanceState) -> dict:
 
     run = dict(state["run"])
     run.update({"status": "running", "current_stage": "human_review_applied"})
+    memory = capture_human_choice_memory(
+        state.get("memory"),
+        source_run_id=run["run_id"],
+        version_groups=state.get("version_groups", []),
+        selections=selections,
+    )
     return {
         "decisions": decisions,
         "human_review": {
@@ -134,5 +148,6 @@ def apply_human_selection(state: FileGovernanceState) -> dict:
             "selections": dict(selections),
             "review_note": state["human_review"].get("review_note"),
         },
+        "memory": memory,
         "run": run,
     }

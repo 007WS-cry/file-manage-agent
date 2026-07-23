@@ -14,6 +14,7 @@ from app.nodes.evidence import (
     merge_external_evidence,
     validate_evidence_confidence,
 )
+from app.nodes.memory import capture_evidence_memory
 from app.state.models import EvidenceGraphState
 
 """本模块构建带 START、END 和 Send 并行分发的独立 Evidence 子图。"""
@@ -39,6 +40,7 @@ def build_evidence_graph():
     builder.add_node("match_delivery_to_version", match_delivery_to_version)
     builder.add_node("merge_external_evidence", merge_external_evidence)
     builder.add_node("validate_evidence_confidence", validate_evidence_confidence)
+    builder.add_node("capture_evidence_memory", capture_evidence_memory)
 
     builder.add_edge(START, "collect_pdf_candidates")
     builder.add_edge("collect_pdf_candidates", "create_pdf_match_jobs")
@@ -60,9 +62,10 @@ def build_evidence_graph():
     builder.add_edge("load_local_delivery_log", "match_delivery_to_version")
     builder.add_edge("match_delivery_to_version", "merge_external_evidence")
     builder.add_edge("merge_external_evidence", "validate_evidence_confidence")
-    builder.add_edge("validate_evidence_confidence", END)
+    builder.add_edge("validate_evidence_confidence", "capture_evidence_memory")
+    builder.add_edge("capture_evidence_memory", END)
     return builder.compile()
 
 
-# 已编译的独立 Evidence 子图，第二批仅供直接测试和包装节点调用。
+# 已编译的独立 Evidence 子图，包含受控的证据 Memory 捕获节点。
 evidence_graph = build_evidence_graph()

@@ -4,11 +4,18 @@ from langgraph.graph import END, START, StateGraph
 
 from app.graphs.routers import (
     route_orchestration_action,
+    route_skill_preparation_result,
     route_subagent_payload_validation,
     route_task_dag_validation,
     route_team_initialization_result,
     route_team_message_validation,
     select_subagent,
+)
+from app.nodes.skills import (
+    bind_task_skills,
+    load_task_skills,
+    release_task_skills,
+    select_task_skills,
 )
 from app.nodes.team_orchestration import (
     append_task_output_refs,
@@ -46,6 +53,10 @@ def build_team_orchestration_graph():
     builder.add_node("initialize_fixed_agent_team", initialize_fixed_agent_team)
     builder.add_node("assign_tasks_to_roles", assign_tasks_to_roles)
     builder.add_node("validate_orchestration_action", validate_orchestration_action)
+    builder.add_node("select_task_skills", select_task_skills)
+    builder.add_node("load_task_skills", load_task_skills)
+    builder.add_node("bind_task_skills", bind_task_skills)
+    builder.add_node("release_task_skills", release_task_skills)
     builder.add_node("update_task_status", update_task_status)
     builder.add_node("update_todos_from_tasks", update_todos_from_tasks)
     builder.add_node("validate_subagent_payload", validate_subagent_payload)
@@ -77,8 +88,18 @@ def build_team_orchestration_graph():
         route_orchestration_action,
         {
             "status_sync": "update_task_status",
-            "dispatch": "validate_subagent_payload",
+            "dispatch": "select_task_skills",
             "invalid": END,
+        },
+    )
+    builder.add_edge("select_task_skills", "load_task_skills")
+    builder.add_edge("load_task_skills", "bind_task_skills")
+    builder.add_conditional_edges(
+        "bind_task_skills",
+        route_skill_preparation_result,
+        {
+            "ready": "validate_subagent_payload",
+            "fallback": "fallback_to_coordinator",
         },
     )
     builder.add_conditional_edges(
@@ -113,7 +134,8 @@ def build_team_orchestration_graph():
     builder.add_edge("fallback_to_coordinator", "build_fallback_result_message")
     builder.add_edge("build_fallback_result_message", "merge_subagent_artifacts")
     builder.add_edge("merge_subagent_artifacts", "append_task_output_refs")
-    builder.add_edge("append_task_output_refs", "update_todos_from_tasks")
+    builder.add_edge("append_task_output_refs", "release_task_skills")
+    builder.add_edge("release_task_skills", "update_todos_from_tasks")
     builder.add_edge("update_task_status", "update_todos_from_tasks")
     builder.add_edge("update_todos_from_tasks", END)
     return builder.compile()
