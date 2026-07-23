@@ -134,3 +134,19 @@ checkpoints:
 
   # checkpoint 数据库必须位于只读输入目录之外。
   database_path: .artifacts/checkpoints/file-governance.sqlite3
+
+application_database:
+  # 0.5.1 只建立 SQLAlchemy、Repository 和迁移骨架，暂不接入顶层治理图。
+  backend: sqlite
+
+  # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。
+  database_path: .artifacts/database/file-governance-app.sqlite3
+
+  # 创建 Engine 或执行在线迁移时自动创建数据库文件的父目录。
+  auto_create_parent: true
+
+  # 默认不输出 SQL，防止日志意外包含结构化业务字段。
+  echo: false
+
+  # SQLite 遇到短暂文件锁时最多等待的秒数。
+  timeout_seconds: 30.0

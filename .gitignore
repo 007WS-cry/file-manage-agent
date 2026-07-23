@@ -59,7 +59,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.0 Task、LLM、业务阶段分派和 Team Protocol 快照可能包含运行 ID 与产物引用
+# 0.5.1 Task、LLM、数据库审计、业务阶段分派和 Team Protocol 快照可能包含运行 ID 与产物引用
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -85,19 +85,23 @@ checkpoint_snapshot*.json
 checkpoint_dump*.json
 release_acceptance*.json
 provider_smoke*.json
+application_database*.json
+repository_snapshot*.json
+migration_snapshot*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/
 .codex/
 
-# 文件治理运行产物、报告与 LangGraph 状态
+# 文件治理运行产物、报告、应用数据库与 LangGraph 状态
 .artifacts/
 artifacts/
 reports/
 checkpoints/
+database/
 .langgraph/
 
-# SQLite checkpoint 数据库及其事务附属文件
+# SQLite 应用数据库、checkpoint 及其事务附属文件
 *.sqlite
 *.sqlite3
 *.sqlite-*

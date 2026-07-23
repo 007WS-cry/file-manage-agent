@@ -15,6 +15,13 @@
 恢复；数据库必须位于输入目录之外，并应配置访问控制、磁盘加密、保留期限和
 安全删除策略。测试或单进程嵌入场景可以显式使用 `InMemorySaver`。
 
+0.5.1 新增的应用数据库与 LangGraph Checkpointer 是两套独立存储。默认应用
+数据库位于 `.artifacts/database/file-governance-app.sqlite3`，checkpoint 位于
+`.artifacts/checkpoints/file-governance.sqlite3`，不得配置为同一个文件。应用
+数据库只允许保存脱敏运行摘要、结构化 Memory、上下文摘要、工具审计和人工选择；
+不得保存 API Key、完整 Prompt、完整工具输出或文档正文。Repository 不自行提交
+事务，Session 必须在单个请求或图节点内创建、提交或回滚并关闭，不得跨线程共享。
+
 标准化内容和中间产物统一由 `app/storage/artifacts.py` 写入独立目录。产物 ID
 不允许包含路径分隔符，写入使用临时文件和原子替换；调用方仍应限制产物目录的
 操作系统权限，并避免将包含业务正文的 JSON 提交到源码仓库。

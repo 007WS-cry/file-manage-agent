@@ -38,12 +38,13 @@ pytestdebug.log
 benchmark-results
 *.prof
 
-# 真实输入数据、运行产物与 LangGraph 状态均通过卷挂载提供
+# 真实输入数据、运行产物、应用数据库与 LangGraph 状态均通过卷挂载提供
 data
 .artifacts
 artifacts
 reports
 checkpoints
+database
 .langgraph
 
 # 人工审核响应只在恢复运行时单独只读挂载
@@ -59,7 +60,7 @@ delivery_log.json
 delivery_log*.json
 !examples/sample_delivery_log.json
 
-# SQLite checkpoint 数据库及其事务附属文件
+# SQLite 应用数据库、checkpoint 及其事务附属文件
 *.sqlite
 *.sqlite3
 *.sqlite-*
@@ -85,7 +86,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.0 Task、LLM、业务阶段分派和 Team Protocol 快照只允许在运行时生成
+# 0.5.1 Task、LLM、数据库审计、业务阶段分派和 Team Protocol 快照只允许在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -111,6 +112,9 @@ checkpoint_snapshot*.json
 checkpoint_dump*.json
 release_acceptance*.json
 provider_smoke*.json
+application_database*.json
+repository_snapshot*.json
+migration_snapshot*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*
