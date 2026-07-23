@@ -53,6 +53,9 @@ class FixedSubagentDefinition:
     task_types: tuple[str, ...]
     # 允许路由到该 Agent 的 Task 类型。
 
+    skill_ids: tuple[str, ...]
+    # 该固定 Agent 执行任务前必须按需绑定的受控 Skill ID。
+
     output_model: type[BaseModel]
     # LLM 结构化输出必须满足的 Pydantic 模型。
 
@@ -70,6 +73,7 @@ FIXED_SUBAGENT_REGISTRY: Mapping[str, FixedSubagentDefinition] = MappingProxyTyp
             agent_id=CONTENT_SUBAGENT_ID,
             role="content",
             task_types=CONTENT_SUBAGENT_TASK_TYPES,
+            skill_ids=("file-content-analysis",),
             output_model=ContentSubagentOutput,
             prompt_builder=build_content_subagent_prompts,
             fallback_builder=build_deterministic_content_output,
@@ -78,6 +82,7 @@ FIXED_SUBAGENT_REGISTRY: Mapping[str, FixedSubagentDefinition] = MappingProxyTyp
             agent_id=VERSION_SUBAGENT_ID,
             role="version",
             task_types=VERSION_SUBAGENT_TASK_TYPES,
+            skill_ids=("version-relation",),
             output_model=VersionSubagentOutput,
             prompt_builder=build_version_subagent_prompts,
             fallback_builder=build_deterministic_version_output,
@@ -86,6 +91,7 @@ FIXED_SUBAGENT_REGISTRY: Mapping[str, FixedSubagentDefinition] = MappingProxyTyp
             agent_id=EVIDENCE_SUBAGENT_ID,
             role="evidence",
             task_types=EVIDENCE_SUBAGENT_TASK_TYPES,
+            skill_ids=("evidence-confidence",),
             output_model=EvidenceSubagentOutput,
             prompt_builder=build_evidence_subagent_prompts,
             fallback_builder=build_deterministic_evidence_output,

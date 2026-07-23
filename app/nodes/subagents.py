@@ -262,6 +262,23 @@ def build_content_subagent_prompt(state: ContentSubagentGraphState) -> dict:
     """
     try:
         system_prompt, user_prompt = build_content_subagent_prompts(state["input"])
+        skill_blocks: list[str] = []
+        for instruction in state.get("skill_context", []):
+            if instruction.get("skill_id") != "file-content-analysis":
+                raise ValueError("Content Subagent 收到职责外 Skill")
+            content = str(instruction.get("content", ""))
+            digest = str(instruction.get("content_sha256", ""))
+            if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("Content Skill 正文为空或摘要不一致")
+            skill_blocks.append(
+                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
+            )
+        if skill_blocks:
+            system_prompt = (
+                system_prompt
+                + "\n\n## 当前 Task 已绑定 Skills\n"
+                + "\n\n".join(skill_blocks)
+            )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
         return {
@@ -536,6 +553,23 @@ def build_version_subagent_prompt(state: VersionSubagentGraphState) -> dict:
     """
     try:
         system_prompt, user_prompt = build_version_subagent_prompts(state["input"])
+        skill_blocks: list[str] = []
+        for instruction in state.get("skill_context", []):
+            if instruction.get("skill_id") != "version-relation":
+                raise ValueError("Version Subagent 收到职责外 Skill")
+            content = str(instruction.get("content", ""))
+            digest = str(instruction.get("content_sha256", ""))
+            if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("Version Skill 正文为空或摘要不一致")
+            skill_blocks.append(
+                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
+            )
+        if skill_blocks:
+            system_prompt = (
+                system_prompt
+                + "\n\n## 当前 Task 已绑定 Skills\n"
+                + "\n\n".join(skill_blocks)
+            )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
         return {
@@ -803,6 +837,23 @@ def build_evidence_subagent_prompt(state: EvidenceSubagentGraphState) -> dict:
     """
     try:
         system_prompt, user_prompt = build_evidence_subagent_prompts(state["input"])
+        skill_blocks: list[str] = []
+        for instruction in state.get("skill_context", []):
+            if instruction.get("skill_id") != "evidence-confidence":
+                raise ValueError("Evidence Subagent 收到职责外 Skill")
+            content = str(instruction.get("content", ""))
+            digest = str(instruction.get("content_sha256", ""))
+            if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
+                raise ValueError("Evidence Skill 正文为空或摘要不一致")
+            skill_blocks.append(
+                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
+            )
+        if skill_blocks:
+            system_prompt = (
+                system_prompt
+                + "\n\n## 当前 Task 已绑定 Skills\n"
+                + "\n\n".join(skill_blocks)
+            )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
         return {

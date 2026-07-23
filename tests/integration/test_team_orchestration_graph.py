@@ -291,6 +291,7 @@ def test_converters_do_not_leak_task_update_or_unrelated_top_errors() -> None:
 
     assert set(top_update) == {
         "team",
+        "skill_registry",
         "tasks",
         "todos",
         "team_messages",
@@ -319,6 +320,7 @@ def test_top_level_wrapper_returns_only_public_orchestration_fields() -> None:
 
     assert set(update) == {
         "team",
+        "skill_registry",
         "tasks",
         "todos",
         "team_messages",

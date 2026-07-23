@@ -147,6 +147,53 @@ def route_team_orchestration_result(state: FileGovernanceState) -> Literal["succ
     return "failure" if has_orchestration_error else "success"
 
 
+def route_skill_registry_result(
+    state: FileGovernanceState,
+) -> Literal["ready", "failure"]:
+    """根据顶层 Skill 元数据加载结果选择 Task 规划或失败报告。
+
+    Args:
+        state: 已执行 ``load_skill_registry`` 节点的顶层治理状态。
+
+    Returns:
+        注册表 ready 且没有对应致命错误时返回 ``ready``，否则返回 ``failure``。
+    """
+    registry_ready = state.get("skill_registry", {}).get("status") == "ready"
+    has_skill_error = any(
+        error.get("stage") == "skills" and error.get("fatal") is True
+        for error in state.get("errors", [])
+    )
+    return "ready" if registry_ready and not has_skill_error else "failure"
+
+
+def route_skill_preparation_result(
+    state: TeamOrchestrationGraphState,
+) -> Literal["ready", "fallback"]:
+    """根据 Skill 选择、加载和绑定结果决定调用 Subagent 或协调者回退。
+
+    Args:
+        state: 已依次执行三个 Skill 准备节点的 Team Orchestration 状态。
+
+    Returns:
+        当前选择、指令上下文和绑定均完整时返回 ``ready``，否则返回 ``fallback``。
+    """
+    skill_nodes = {
+        "select_task_skills",
+        "load_task_skills",
+        "bind_task_skills",
+    }
+    has_error = any(
+        error.get("node_name") in skill_nodes for error in state.get("errors", [])
+    )
+    selection = state.get("skill_selection")
+    context = state.get("skill_context", [])
+    if has_error or selection is None or not context:
+        return "fallback"
+    selected_ids = selection.get("skill_ids", [])
+    context_ids = [instruction.get("skill_id") for instruction in context]
+    return "ready" if context_ids == selected_ids else "fallback"
+
+
 def route_failure_report_task_sync(
     state: FileGovernanceState,
 ) -> Literal["sync", "skip"]:

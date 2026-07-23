@@ -11,6 +11,7 @@ from app.graphs.routers import (
     route_before_run_hooks_result,
     route_evidence_result,
     route_failure_report_task_sync,
+    route_skill_registry_result,
     route_system_prompt_result,
     route_team_orchestration_result,
     route_version_analysis_result,
@@ -34,6 +35,7 @@ from app.nodes.review import (
     prepare_human_review,
     request_human_review,
 )
+from app.nodes.skills import load_skill_registry
 from app.nodes.subgraphs_nodes import (
     run_evidence_subgraph,
     run_inventory_subgraph,
@@ -76,6 +78,7 @@ def build_file_governance_graph(
     builder.add_node("execute_before_run_hooks", execute_before_run_hooks)
     builder.add_node("validate_request", validate_request)
     builder.add_node("load_system_prompt", load_system_prompt)
+    builder.add_node("load_skill_registry", load_skill_registry)
     builder.add_node("plan_run_tasks", plan_run_tasks)
     builder.add_node("run_inventory_subgraph", run_inventory_subgraph)
     builder.add_node("sync_inventory_task_status", sync_inventory_task_status)
@@ -118,7 +121,15 @@ def build_file_governance_graph(
         "load_system_prompt",
         route_system_prompt_result,
         {
-            "continue": "plan_run_tasks",
+            "continue": "load_skill_registry",
+            "failure": "generate_failure_report",
+        },
+    )
+    builder.add_conditional_edges(
+        "load_skill_registry",
+        route_skill_registry_result,
+        {
+            "ready": "plan_run_tasks",
             "failure": "generate_failure_report",
         },
     )
