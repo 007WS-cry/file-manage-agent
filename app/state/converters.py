@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from typing import Literal
+
+from app.services.context_compaction import (
+    copy_context_compact_state,
+    copy_document_record,
+    copy_prompt_state,
+)
 from app.services.memory_policy import copy_memory_state
 from app.skills.loader import create_pending_skill_registry
 from app.skills.registry import copy_skill_registry
 from app.state.models import (
     ContentSubagentInput,
+    ContextCompactGraphState,
     EvidenceGraphState,
     EvidenceSubagentInput,
     FileGovernanceState,
@@ -36,6 +44,66 @@ def _copy_team_state(team: TeamState) -> TeamState:
         protocol_version=team["protocol_version"],
         max_parallel_agents=team["max_parallel_agents"],
     )
+
+
+def file_governance_to_context_compact_state(
+    state: FileGovernanceState,
+    *,
+    stage: Literal["after_inventory", "after_evidence"],
+) -> ContextCompactGraphState:
+    """把顶层治理状态转换为一次隔离的 Context Compact 子图输入。
+
+    Args:
+        state: 已完成 Inventory 或 Evidence 阶段的顶层治理状态。
+        stage: 本次固定压缩阶段。
+
+    Returns:
+        只包含运行、工作空间、Prompt、文档和压缩私有字段的子图状态。
+    """
+    return ContextCompactGraphState(
+        run=dict(state["run"]),
+        workspace=dict(state["workspace"]),
+        prompt=copy_prompt_state(state["prompt"]),
+        documents=[
+            copy_document_record(document)
+            for document in state.get("documents", [])
+        ],
+        context_compact=copy_context_compact_state(
+            state.get("context_compact")
+        ),
+        stage=stage,
+        plan=None,
+        compaction_payload=None,
+        summary_draft=None,
+        errors=[dict(error) for error in state.get("errors", [])],
+    )
+
+
+def context_compact_state_to_file_governance_update(
+    state: ContextCompactGraphState,
+) -> dict:
+    """把 Context Compact 结果过滤为允许写回顶层的字段。
+
+    压缩计划、未跟踪临时载荷和摘要草稿均属于子图私有字段，不会进入顶层
+    checkpoint。业务版本事实、Evidence、推荐和人工选择不在返回白名单中。
+
+    Args:
+        state: 已完成压缩、跳过或安全降级的 Context Compact 子图状态。
+
+    Returns:
+        Prompt、文档、Context Compact 索引和结构化错误更新。
+    """
+    return {
+        "prompt": copy_prompt_state(state["prompt"]),
+        "documents": [
+            copy_document_record(document)
+            for document in state.get("documents", [])
+        ],
+        "context_compact": copy_context_compact_state(
+            state.get("context_compact")
+        ),
+        "errors": [dict(error) for error in state.get("errors", [])],
+    }
 
 
 def file_governance_to_team_orchestration_state(

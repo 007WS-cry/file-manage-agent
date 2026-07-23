@@ -7,6 +7,7 @@ from langgraph.types import Send
 from app.services.task_system import TASK_DAG_TEMPLATE, build_task_id, validate_task_dag
 from app.state.models import (
     ContentSubagentGraphState,
+    ContextCompactGraphState,
     EvidenceGraphState,
     EvidenceSubagentGraphState,
     FileGovernanceState,
@@ -16,7 +17,26 @@ from app.state.models import (
     VersionSubagentGraphState,
 )
 
-"""本模块实现顶层治理图以及 Inventory、Version Analysis、Evidence 子图路由。"""
+"""本模块实现各 LangGraph 通过 conditional_edge 明确调用的条件路由函数。"""
+
+
+def route_context_compaction(
+    state: ContextCompactGraphState,
+) -> Literal["compact", "skip"]:
+    """根据 Token 估算计划选择执行压缩或保持当前上下文。
+
+    Args:
+        state: 已执行 ``estimate_context_tokens`` 的 Context Compact 子图状态。
+
+    Returns:
+        计划明确要求压缩时返回 ``compact``，否则返回 ``skip``。
+    """
+    plan = state.get("plan")
+    return (
+        "compact"
+        if plan is not None and plan.get("should_compact") is True
+        else "skip"
+    )
 
 
 def route_before_run_hooks_result(

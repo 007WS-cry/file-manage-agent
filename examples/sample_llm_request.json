@@ -126,6 +126,13 @@
     "database_path": "../.artifacts/database/file-governance-app.sqlite3",
     "recall_limit": 50
   },
+  "context_compact": {
+    "enabled": false,
+    "trigger_token_threshold": 12000,
+    "retained_preview_characters": 0,
+    "persist_summaries": true,
+    "database_path": "../.artifacts/database/file-governance-app.sqlite3"
+  },
   "checkpoint": {
     "backend": "sqlite",
     "database_path": "../.artifacts/checkpoints/file-governance-llm-0.5.2.sqlite3"

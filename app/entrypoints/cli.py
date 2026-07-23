@@ -292,6 +292,45 @@ def resolve_memory_payload(
     return memory_config
 
 
+def resolve_context_compact_payload(
+    payload: dict[str, Any],
+    *,
+    base_directory: Path,
+) -> dict[str, Any] | None:
+    """解析请求信封中的可选 Context Compact 配置。
+
+    本函数只复制压缩阈值和持久化配置，并把相对应用数据库路径解析为相对请求
+    JSON 的绝对路径；不会估算上下文、写入产物或创建数据库。
+
+    Args:
+        payload: CLI 已读取并验证为对象的完整请求信封。
+        base_directory: 请求 JSON 所在目录。
+
+    Returns:
+        独立的 Context Compact 配置；缺省或显式 null 时返回 None。
+
+    Raises:
+        ValueError: ``context_compact`` 或数据库路径字段类型不合法时抛出。
+    """
+    raw_context_compact = payload.get("context_compact")
+    if raw_context_compact is None:
+        return None
+    if not isinstance(raw_context_compact, dict):
+        raise ValueError("context_compact 必须是对象或 null")
+    context_compact_config = dict(raw_context_compact)
+    raw_database_path = context_compact_config.get("database_path")
+    if raw_database_path is not None:
+        if not isinstance(raw_database_path, str) or not raw_database_path.strip():
+            raise ValueError(
+                "context_compact.database_path 必须是非空路径字符串"
+            )
+        candidate = Path(raw_database_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = base_directory / candidate
+        context_compact_config["database_path"] = str(candidate.resolve())
+    return context_compact_config
+
+
 def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
     """把 LangGraph Interrupt 对象转换为可输出的 JSON 值。
 
@@ -398,6 +437,10 @@ def run_command(arguments: argparse.Namespace) -> int:
         payload,
         base_directory=request_path.parent,
     )
+    context_compact_config = resolve_context_compact_payload(
+        payload,
+        base_directory=request_path.parent,
+    )
     backend = arguments.checkpoint_backend or checkpoint.get("backend", "sqlite")
     if backend not in {"memory", "sqlite"}:
         raise ValueError("checkpoint.backend 只能是 memory 或 sqlite")
@@ -412,6 +455,7 @@ def run_command(arguments: argparse.Namespace) -> int:
         hook_config=hook_config,
         llm_config=llm_config,
         memory_config=memory_config,
+        context_compact_config=context_compact_config,
         checkpoint_path=database_path if backend == "sqlite" else None,
     )
     with open_checkpointer(

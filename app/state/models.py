@@ -475,9 +475,10 @@ class ErrorRecord(TypedDict):
         "prompt",
         "hook",
         "memory",
+        "context",
         "unknown",
     ]
-    # 错误类别；protocol 表示团队契约错误，memory 表示安全召回或持久化错误。
+    # 错误类别；memory 表示长期记忆错误，context 表示上下文压缩错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -688,6 +689,127 @@ class PromptState(TypedDict):
         "failed",
     ]
     # Prompt 当前处于等待加载、已加载、已关闭或加载失败状态。
+
+
+class ContextSummaryState(TypedDict):
+    """一次 Context Compact 产生的有界摘要及受控产物引用。"""
+
+    id: str
+    # Context Summary 唯一 ID，由运行、阶段和压缩序号确定性生成。
+
+    run_id: str
+    # 产生该摘要的治理运行 ID。
+
+    stage: Literal["after_inventory", "after_evidence"]
+    # 触发压缩的固定业务阶段。
+
+    summary: str
+    # 由固定模板生成的简短压缩说明，不包含正文、Prompt 或凭据。
+
+    artifact_refs: list[str]
+    # 被移出图状态的上下文产物引用；不直接保存大型内容。
+
+    estimated_tokens: int
+    # 压缩完成后的近似上下文 Token 数。
+
+    compaction_index: int
+    # 当前运行内从一开始递增的压缩序号。
+
+    created_at: str
+    # 摘要创建时间，使用带时区的 ISO 8601 格式。
+
+
+class ContextCompactState(TypedDict):
+    """顶层治理图共享的 Context Compact 配置、进度和摘要索引。"""
+
+    enabled: bool
+    # 是否启用自动上下文估算和阶段压缩；默认关闭以兼容旧运行。
+
+    trigger_token_threshold: int
+    # 估算上下文超过该 Token 数时才允许触发压缩。
+
+    retained_preview_characters: int
+    # Evidence 完成后每个文档预览仍保留在图状态中的最大字符数。
+
+    persist_summaries: bool
+    # 是否把有界 Context Summary 写入独立应用数据库。
+
+    database_path: str | None
+    # Context Summary 使用的应用数据库文件路径；关闭时为 None。
+
+    checkpoint_path: str | None
+    # 可选 SQLite checkpoint 路径，用于强制数据库文件隔离。
+
+    status: Literal["disabled", "pending", "ready", "failed"]
+    # Context Compact 当前处于关闭、等待、正常或失败状态。
+
+    current_stage: Literal["after_inventory", "after_evidence"] | None
+    # 最近完成估算或压缩的固定阶段。
+
+    estimated_tokens: int
+    # 最近一次阶段处理后的近似上下文 Token 数。
+
+    summaries: list[ContextSummaryState]
+    # 当前运行已经产生的 Context Summary 索引。
+
+    last_error: str | None
+    # 最近一次压缩、产物或数据库操作的脱敏错误；正常时为 None。
+
+
+class ContextCompactionPlanState(TypedDict):
+    """Context Compact 子图根据阶段和阈值生成的不可变压缩计划。"""
+
+    stage: Literal["after_inventory", "after_evidence"]
+    # 当前计划对应的固定业务阶段。
+
+    estimated_tokens_before: int
+    # 执行压缩前的近似上下文 Token 数。
+
+    reclaimable_tokens: int
+    # 当前阶段允许移出图状态的近似 Token 数。
+
+    should_compact: bool
+    # 是否同时满足启用、阈值和可回收上下文条件。
+
+    compact_prompt_content: bool
+    # 是否清空已加载且后续不再消费的 System Prompt 正文。
+
+    compact_document_ids: list[str]
+    # Evidence 完成后允许移出详细预览和结构字段的文档 ID。
+
+
+class ContextCompactGraphState(TypedDict):
+    """独立 Context Compact 子图使用的输入、计划、临时载荷和输出状态。"""
+
+    run: RunState
+    # 当前治理运行信息，用于生成稳定摘要和产物 ID。
+
+    workspace: WorkspaceState
+    # 只读输入目录和可写中间产物目录。
+
+    prompt: PromptState
+    # 可在安全阶段清空正文、但保留版本和摘要哈希的 Prompt 状态。
+
+    documents: Annotated[list[DocumentRecord], merge_by_id]
+    # 可在 Evidence 完成后缩减详细预览的标准化文档记录。
+
+    context_compact: ContextCompactState
+    # 当前压缩配置、历史摘要和状态。
+
+    stage: Literal["after_inventory", "after_evidence"]
+    # 本次子图调用的固定压缩阶段。
+
+    plan: ContextCompactionPlanState | None
+    # Token 估算节点生成的当前压缩计划。
+
+    compaction_payload: Annotated[dict[str, Any] | None, UntrackedValue]
+    # 等待写入中间产物的大型临时上下文，不进入任何 checkpoint。
+
+    summary_draft: ContextSummaryState | None
+    # 等待补充产物引用并写入应用数据库的有界摘要草稿。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 估算、压缩、产物和数据库操作产生的非致命错误。
 
 
 class HookConfigState(TypedDict):
@@ -1434,6 +1556,9 @@ class FileGovernanceState(TypedDict):
 
     memory: MemoryState
     # 短期阶段摘要、长期召回结果及待持久化的安全治理事实。
+
+    context_compact: ContextCompactState
+    # Context Compact 配置、最近估算结果和有界摘要索引。
 
     hook_events: Annotated[
         list[HookEvent],
