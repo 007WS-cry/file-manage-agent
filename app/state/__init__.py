@@ -1,5 +1,6 @@
 from app.state.models import (
     AgentMemberState,
+    ApplicationDatabaseState,
     ContentSubagentGraphState,
     ContentSubagentInput,
     ContentSubagentOutput,
@@ -40,6 +41,7 @@ from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_i
 # 本状态包允许外部直接导入的公共接口名称。
 __all__ = [
     "AgentMemberState",
+    "ApplicationDatabaseState",
     "ContentSubagentGraphState",
     "ContentSubagentInput",
     "ContentSubagentOutput",

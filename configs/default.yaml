@@ -26,7 +26,7 @@ prompt:
   dynamic_rules: []
 
 hooks:
-  # 0.2.3 已接入顶层前后置节点；默认关闭时仅记录配置中已声明 Hook 的跳过事件。
+  # 0.6.0 可在 after_run 把脱敏 Python Tool 审计写入应用数据库；默认仍关闭。
   enabled: false
 
   # 列表顺序就是各生命周期阶段的预期执行顺序。
@@ -158,7 +158,7 @@ memory:
   recall_limit: 50
 
 context_compact:
-  # 0.5.5 默认关闭；显式启用后在 Inventory 和 Evidence 安全点估算上下文。
+  # 0.6.0 继续默认关闭；显式启用后在 Inventory 和 Evidence 安全点估算上下文。
   enabled: false
 
   # 估算上下文超过该 Token 数且存在可回收字段时才执行压缩。
@@ -174,7 +174,10 @@ context_compact:
   database_path: .artifacts/database/file-governance-app.sqlite3
 
 application_database:
-  # 0.5.5 已由长期 Memory 与 Context Summary 使用；其他表保留为后续批次骨架。
+  # 默认关闭以兼容 0.5.0；Memory 或 Context Summary 启用时会自动接通同一数据库。
+  enabled: false
+
+  # 0.6.0 已接通运行历史、Memory、Context Summary、工具审计和人工选择五张表。
   backend: sqlite
 
   # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。

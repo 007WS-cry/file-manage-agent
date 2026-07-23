@@ -16,6 +16,9 @@ class RunState(TypedDict):
     run_id: str
     # 本次运行的唯一标识。
 
+    thread_id: str
+    # LangGraph Checkpointer 使用的线程 ID；非 CLI 调用可回退为 run_id。
+
     status: Literal[
         "created",
         "running",
@@ -476,9 +479,10 @@ class ErrorRecord(TypedDict):
         "hook",
         "memory",
         "context",
+        "database",
         "unknown",
     ]
-    # 错误类别；memory 表示长期记忆错误，context 表示上下文压缩错误。
+    # 错误类别；memory、context、database 分别表示记忆、压缩和应用数据库错误。
 
     message: str
     # 可供日志和报告展示的错误说明。
@@ -754,6 +758,37 @@ class ContextCompactState(TypedDict):
 
     last_error: str | None
     # 最近一次压缩、产物或数据库操作的脱敏错误；正常时为 None。
+
+
+class ApplicationDatabaseState(TypedDict):
+    """应用数据库的启用状态、SQLite 隔离配置和运行期连接结果。"""
+
+    enabled: bool
+    # 是否持久化运行生命周期、工具审计和人工选择；默认关闭以兼容旧运行。
+
+    backend: Literal["sqlite"]
+    # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
+
+    database_path: str | None
+    # 五张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+
+    checkpoint_path: str | None
+    # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。
+
+    auto_create_parent: bool
+    # 是否允许 Engine 自动创建数据库父目录；当前实现固定为 True。
+
+    echo: bool
+    # 是否输出 SQLAlchemy SQL 日志；默认关闭以减少结构化数据泄漏风险。
+
+    timeout_seconds: float
+    # SQLite 等待短暂文件锁释放的最大秒数。
+
+    status: Literal["disabled", "pending", "ready", "failed"]
+    # 应用数据库当前处于关闭、等待连接、可用或失败状态。
+
+    last_error: str | None
+    # 最近一次建连、运行更新或审核持久化失败的脱敏说明。
 
 
 class ContextCompactionPlanState(TypedDict):
@@ -1560,6 +1595,9 @@ class FileGovernanceState(TypedDict):
     context_compact: ContextCompactState
     # Context Compact 配置、最近估算结果和有界摘要索引。
 
+    application_database: ApplicationDatabaseState
+    # 五张应用表共用的独立数据库配置和当前连接状态。
+
     hook_events: Annotated[
         list[HookEvent],
         merge_by_id,
@@ -1654,20 +1692,10 @@ class TeamOrchestrationGraphState(TypedDict):
     task_update: TaskStatusUpdate | None
     # 顶层流程传入的单次状态更新；首次创建 DAG 时可以为 None。
 
-    dispatch_request: (
-        ContentSubagentInput
-        | VersionSubagentInput
-        | EvidenceSubagentInput
-        | None
-    )
+    dispatch_request: ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
     # 可选 Subagent 分派请求；状态同步调用或请求消费完成后为 None。
 
-    dispatch_result: (
-        ContentSubagentOutput
-        | VersionSubagentOutput
-        | EvidenceSubagentOutput
-        | None
-    )
+    dispatch_result: ContentSubagentOutput | VersionSubagentOutput | EvidenceSubagentOutput | None
     # 当前 Subagent 调用产生的 Pydantic 结构化结果。
 
     tasks: Annotated[

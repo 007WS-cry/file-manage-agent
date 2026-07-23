@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.5 Task、Skill、Memory、Context Compact、模型路由和数据库快照可能包含运行 ID 与产物引用
+# 0.6.0 Task、Skill、Memory、Context Compact、工具审计和数据库快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -97,8 +97,12 @@ provider_smoke*.json
 provider_options*.json
 relay_config*.json
 application_database*.json
+database_run*.json
 repository_snapshot*.json
 migration_snapshot*.json
+tool_audit*.json
+human_review_audit*.json
+compatibility_snapshot*.json
 skill_registry*.json
 skill_selection*.json
 skill_binding*.json
