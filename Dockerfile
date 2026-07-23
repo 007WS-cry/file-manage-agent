@@ -1,10 +1,11 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.5.1
+ARG APP_VERSION=0.5.2
+ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持固定 Agent Team、独立应用数据库迁移、兼容升级与安全 checkpoint 的只读 LangGraph 文件版本治理 Agent"
+    org.opencontainers.image.description="支持固定 Agent Team、LangChain 多模型路由、独立应用数据库迁移与安全 checkpoint 的只读文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -27,7 +28,11 @@ COPY examples ./examples
 COPY resources ./resources
 
 RUN test -f /app/resources/prompts/file_governance_system_v1.md \
-    && python -m pip install "." \
+    && if [ -n "${LLM_EXTRAS}" ]; then \
+        python -m pip install ".[${LLM_EXTRAS}]"; \
+    else \
+        python -m pip install "."; \
+    fi \
     && mkdir -p /data/input /data/artifacts/content \
         /data/artifacts/reports /data/artifacts/checkpoints \
         /data/artifacts/database /data/evidence \

@@ -36,7 +36,8 @@ def initialize_run(state: FileGovernanceState) -> dict:
         state: 调用方提交的顶层状态；推荐由 ``create_initial_state`` 创建。
 
     Returns:
-        进入 ``running`` 状态的运行信息及缺省 LLM、Team、Task、证据和报告字段。
+        进入 ``running`` 状态的运行信息、规范化模型 Profile 及缺省 Team、Task、
+        证据和报告字段。
     """
     previous_run = state.get("run", {})
     run_id = previous_run.get("run_id") or uuid4().hex
@@ -67,7 +68,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "deliveries": state.get("deliveries", []),
         "prompt": state.get("prompt", create_prompt_state()),
         "hooks": state.get("hooks", create_hook_config_state()),
-        "llm": state.get("llm", create_llm_config_state()),
+        "llm": create_llm_config_state(state.get("llm")),
         "team": state.get("team", create_team_state()),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),

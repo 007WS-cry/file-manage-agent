@@ -49,17 +49,26 @@ hooks:
     cleanup_run_resources_hook: ignore
 
 llm:
-  # 0.5.0 默认关闭真实模型；三个业务阶段分派时强制使用 Mock 且不访问网络。
+  # 0.5.2 继续默认关闭真实模型；三个业务阶段分派时强制使用 Mock 且不访问网络。
   enabled: false
 
-  # 首批支持 mock 和 openai；启用真实模型时改为 openai。
+  # 这是兼容旧请求的单模型写法，运行时会规范化为 ID 为 default 的单一 Profile。
   provider: mock
 
   # 模型名称只保存在配置和审计中，不在业务节点中硬编码。
   model: mock-structured-v1
 
-  # Mock Provider 不使用密钥；OpenAI Provider 应设置为 OPENAI_API_KEY 等环境变量名。
+  # Mock 不使用密钥；多模型写法和任务路由参见 examples/sample_llm_request.json。
   api_key_env: null
+
+  # Mock 不使用自定义端点；真实 Provider 可只保存对应 Base URL 的环境变量名称。
+  base_url_env: null
+
+  # Provider 专有参数必须通过 JSON 环境变量注入，默认不读取任何扩展参数。
+  options_env: null
+
+  # auto 让各 LangChain Provider 选择默认结构化输出实现。
+  structured_output_method: auto
 
   # 文件版本治理摘要默认使用低温度，减少同一输入下的输出漂移。
   temperature: 0.0

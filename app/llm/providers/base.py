@@ -20,6 +20,10 @@ class LLMProviderTimeoutError(LLMProviderError):
     """表示 Provider 在配置的时间边界内未完成模型调用。"""
 
 
+class LLMProviderStructuredOutputError(LLMProviderError):
+    """表示 Provider 已响应但 LangChain 无法得到合法的结构化输出。"""
+
+
 @dataclass(frozen=True, slots=True)
 class LLMProviderResponse:
     """Provider 成功返回的结构化对象和 Token 使用量。"""
@@ -38,7 +42,7 @@ class LLMProviderResponse:
 
 
 class LLMProvider(ABC):
-    """所有真实和 Mock 模型 Provider 必须实现的同步结构化调用接口。"""
+    """所有 LangChain、原生兼容和 Mock Provider 必须实现的同步结构化调用接口。"""
 
     name: str
     # 写入审计记录的稳定 Provider 名称。

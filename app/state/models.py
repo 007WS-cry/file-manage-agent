@@ -775,29 +775,91 @@ class TaskStatusUpdate(TypedDict):
     # 本次状态变更发生时间，使用带时区的 ISO 8601 格式。
 
 
+class ModelProfileState(TypedDict):
+    """一个可独立路由和审计的 LangChain 模型 Profile。"""
+
+    id: str
+    # Profile 的稳定唯一 ID，用于任务路由和 LLM 调用审计。
+
+    provider: str
+    # LangChain 规范 Provider 名称；支持主流原生集成、模型路由服务和 Mock。
+
+    model: str
+    # Provider 使用的模型名称，不在业务节点中硬编码。
+
+    api_key_env: str | None
+    # 保存 API Key 的环境变量名称；Mock 使用 None，绝不保存密钥实际值。
+
+    base_url_env: str | None
+    # 保存兼容服务 Base URL 的可选环境变量名称；绝不保存地址实际值。
+
+    options_env: str | None
+    # 保存 Provider 专有 JSON 构造参数的可选环境变量名称；绝不保存参数实际值。
+
+    structured_output_method: Literal[
+        "auto",
+        "function_calling",
+        "json_mode",
+        "json_schema",
+    ]
+    # LangChain 结构化输出策略；auto 由对应 Provider 集成选择默认实现。
+
+    temperature: float
+    # 当前 Profile 的模型生成温度。
+
+    max_output_tokens: int
+    # 当前 Profile 单次结构化输出允许使用的最大 Token 数。
+
+    timeout_seconds: float
+    # 当前 Profile 单次模型调用超时时间，单位为秒。
+
+
 class LLMConfigState(TypedDict):
-    """统一 LLM Client 在一次治理运行中的配置状态。"""
+    """统一 LLM Client 在一次治理运行中的多模型配置状态。"""
 
     enabled: bool
     # 是否允许调用真实模型；关闭时固定使用 Mock 或确定性回退。
 
-    provider: Literal["openai", "mock"]
-    # 当前模型 Provider；支持 OpenAI Provider 和 Mock Provider。
+    provider: str
+    # 默认 Profile 的 Provider 兼容镜像，供旧 checkpoint 和旧调用方读取。
 
     model: str
-    # Provider 使用的模型名称，由配置提供，不在业务节点中硬编码。
+    # 默认 Profile 的模型名称兼容镜像。
 
     api_key_env: str | None
-    # 保存 API Key 的环境变量名称；Mock Provider 使用 None，绝不保存密钥实际值。
+    # 默认 Profile 的 API Key 环境变量名称兼容镜像。
+
+    base_url_env: str | None
+    # 默认 Profile 的 Base URL 环境变量名称兼容镜像。
+
+    options_env: str | None
+    # 默认 Profile 的 Provider 专有参数环境变量名称兼容镜像。
+
+    structured_output_method: Literal[
+        "auto",
+        "function_calling",
+        "json_mode",
+        "json_schema",
+    ]
+    # 默认 Profile 的结构化输出方法兼容镜像。
 
     temperature: float
-    # 模型生成温度；版本治理摘要建议使用较低温度。
+    # 默认 Profile 的生成温度兼容镜像。
 
     max_output_tokens: int
-    # 单次模型结构化输出允许使用的最大 Token 数。
+    # 默认 Profile 的最大输出 Token 兼容镜像。
 
     timeout_seconds: float
-    # 单次模型调用超时时间，单位为秒。
+    # 默认 Profile 的调用超时兼容镜像。
+
+    profiles: list[ModelProfileState]
+    # 本次运行允许路由的模型 Profile；顺序保持请求中的声明顺序。
+
+    default_profile_id: str
+    # 未声明任务专属路由时使用的默认 Profile ID。
+
+    task_profile_ids: dict[Literal["content", "version", "evidence"], str]
+    # 三个固定 Subagent 任务类型到 Profile ID 的可选路由映射。
 
     fallback_enabled: bool
     # 模型失败后是否允许使用协调 Agent 或确定性逻辑继续。
@@ -817,6 +879,9 @@ class LLMCallRecord(TypedDict):
 
     message_id: str
     # 触发本次调用的 Team Message ID。
+
+    model_profile_id: str
+    # 实际调用或确定性回退使用的模型 Profile ID。
 
     provider: str
     # 实际使用的模型 Provider 名称。
@@ -1060,7 +1125,10 @@ class ContentSubagentGraphState(TypedDict):
     # 用于校验 assignment、result 和 error 消息的固定团队状态。
 
     llm: LLMConfigState
-    # 当前运行使用的统一 LLM 配置。
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Content 任务解析出的 Profile ID。
 
     system_prompt: str
     # 固定职责和只读边界组成的系统提示词，不包含业务正文。
@@ -1094,7 +1162,10 @@ class VersionSubagentGraphState(TypedDict):
     # 用于校验 assignment、result 和 error 消息的固定团队状态。
 
     llm: LLMConfigState
-    # 当前运行使用的统一 LLM 配置。
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Version 任务解析出的 Profile ID。
 
     system_prompt: str
     # 固定版本解释职责和只读边界组成的系统提示词。
@@ -1128,7 +1199,10 @@ class EvidenceSubagentGraphState(TypedDict):
     # 用于校验 assignment、result 和 error 消息的固定团队状态。
 
     llm: LLMConfigState
-    # 当前运行使用的统一 LLM 配置。
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Evidence 任务解析出的 Profile ID。
 
     system_prompt: str
     # 固定证据解释职责和只读边界组成的系统提示词。

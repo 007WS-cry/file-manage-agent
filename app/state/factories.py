@@ -310,10 +310,12 @@ def create_initial_state(
         workspace: 只读输入根目录以及可写产物、报告目录。
         prompt_config: 可选 System Prompt 配置；省略时保持完全关闭。
         hook_config: 可选生命周期 Hook 配置；省略时保持完全关闭。
-        llm_config: 可选 LLM 配置；省略时关闭真实模型并使用安全 Mock 配置。
+        llm_config: 可选单模型或多 Profile LLM 配置；省略时关闭真实模型并使用
+            安全 Mock Profile，旧版单模型配置会自动转换为默认 Profile。
 
     Returns:
-        所有 reducer 列表、生命周期配置、证据和人工审核字段均已初始化的状态。
+        所有 reducer 列表、模型 Profile 路由、生命周期配置、证据和人工审核字段
+        均已初始化的状态。
     """
     normalized_request = dict(request)
     normalized_request.setdefault("pdf_match_threshold", 0.82)

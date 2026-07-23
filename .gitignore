@@ -59,7 +59,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.5.1 Task、LLM、数据库审计、业务阶段分派和 Team Protocol 快照可能包含运行 ID 与产物引用
+# 0.5.2 Task、模型路由、LLM、数据库审计和 Team Protocol 快照可能包含运行 ID 与产物引用
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -71,6 +71,9 @@ cli_progress*.json
 llm_call*.json
 llm_audit*.json
 llm_response*.json
+model_profile*.json
+model_routing*.json
+langchain_trace*.json
 subagent_input*.json
 subagent_output*.json
 subagent_prompt*.json
@@ -85,6 +88,8 @@ checkpoint_snapshot*.json
 checkpoint_dump*.json
 release_acceptance*.json
 provider_smoke*.json
+provider_options*.json
+relay_config*.json
 application_database*.json
 repository_snapshot*.json
 migration_snapshot*.json
