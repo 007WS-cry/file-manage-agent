@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.5.5
+ARG APP_VERSION=0.6.0
 ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持 Context Compact、安全短期/长期 Memory、Task 级 Skills、固定 Agent Team、LangChain 多模型路由、应用数据库迁移与 checkpoint 的只读文件版本治理 Agent"
+    org.opencontainers.image.description="支持多模型 Task 路由、按需 Skills、安全 Memory、Context Compact、五表应用数据库审计与独立 checkpoint 的只读文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

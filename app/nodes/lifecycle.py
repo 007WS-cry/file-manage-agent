@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+from datetime import datetime
 from pathlib import Path
 from typing import cast
 from uuid import uuid4
@@ -20,11 +22,19 @@ from app.llm.prompt_loader import (
 from app.services.context_compaction import copy_context_compact_state
 from app.services.memory_policy import copy_memory_state
 from app.state.factories import (
+    copy_application_database_state,
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
 )
 from app.state.models import FileGovernanceState
+from app.storage.database import (
+    create_application_engine,
+    create_session_factory,
+    open_application_session,
+)
+from app.storage.orm_models import HumanReviewModel
+from app.storage.repositories import create_repository_bundle
 from app.utils.lifecycle import update_run_stage, with_lifecycle_defaults
 from app.utils.runtime import create_error_record, paths_overlap, utc_now_iso
 
@@ -43,10 +53,13 @@ def initialize_run(state: FileGovernanceState) -> dict:
     """
     previous_run = state.get("run", {})
     run_id = previous_run.get("run_id") or uuid4().hex
+    thread_id = previous_run.get("thread_id") or run_id
     started_at = previous_run.get("started_at") or utc_now_iso()
-    return {
+    application_database = copy_application_database_state(state.get("application_database"))
+    result = {
         "run": {
             "run_id": run_id,
+            "thread_id": thread_id,
             "status": "running",
             "current_stage": "initialize_run",
             "started_at": started_at,
@@ -73,15 +86,65 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "llm": create_llm_config_state(state.get("llm")),
         "team": state.get("team", create_team_state()),
         "memory": copy_memory_state(state.get("memory")),
-        "context_compact": copy_context_compact_state(
-            state.get("context_compact")
-        ),
+        "context_compact": copy_context_compact_state(state.get("context_compact")),
+        "application_database": application_database,
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),
         "team_messages": state.get("team_messages", []),
         "llm_calls": state.get("llm_calls", []),
     }
+    if not application_database["enabled"]:
+        return result
+
+    engine = None
+    try:
+        database_path = application_database.get("database_path")
+        if database_path is None:
+            raise ValueError("应用数据库已启用但未配置 database_path")
+        engine = create_application_engine(
+            database_path,
+            input_root=state["workspace"]["input_root"],
+            checkpoint_path=application_database.get("checkpoint_path"),
+            echo=application_database["echo"],
+            timeout_seconds=application_database["timeout_seconds"],
+        )
+        session_factory = create_session_factory(engine)
+        with open_application_session(session_factory) as session:
+            repositories = create_repository_bundle(session)
+            run_record = repositories.governance_runs.get_or_create_minimal(
+                run_id,
+                thread_id=thread_id,
+                current_stage="initialize_run",
+                request_summary={
+                    "recursive": bool(state["request"].get("recursive", True)),
+                    "max_files": int(state["request"].get("max_files", 0)),
+                    "allowed_extension_count": len(state["request"].get("allowed_extensions", [])),
+                    "use_llm_summary": bool(state["request"].get("use_llm_summary", False)),
+                },
+            )
+            run_record.started_at = datetime.fromisoformat(started_at)
+        application_database["status"] = "ready"
+        application_database["last_error"] = None
+        result["application_database"] = application_database
+        return result
+    except Exception:
+        application_database["status"] = "failed"
+        application_database["last_error"] = "治理运行初始化记录写入失败。"
+        result["application_database"] = application_database
+        result["errors"] = [
+            create_error_record(
+                stage="application_database",
+                node_name="initialize_run",
+                category="database",
+                message="应用数据库初始化失败，治理流程已安全降级。",
+                fatal=False,
+            )
+        ]
+        return result
+    finally:
+        if engine is not None:
+            engine.dispose()
 
 
 def execute_before_run_hooks(state: FileGovernanceState) -> dict:
@@ -319,13 +382,13 @@ def execute_after_run_hooks(state: FileGovernanceState) -> dict:
 
 
 def finalize_run(state: FileGovernanceState) -> dict:
-    """根据错误严重程度设置最终状态和结束时间。
+    """设置最终状态，并持久化运行摘要和脱敏人工选择。
 
     Args:
         state: 已生成成功、无数据或失败报告的顶层状态。
 
     Returns:
-        状态为 ``completed``、``partial`` 或 ``failed`` 的最终运行信息。
+        最终运行信息、应用数据库状态以及可选非致命数据库错误。
     """
     errors = state.get("errors", [])
     if any(error["fatal"] for error in errors):
@@ -343,4 +406,84 @@ def finalize_run(state: FileGovernanceState) -> dict:
             "finished_at": utc_now_iso(),
         }
     )
-    return {"run": run}
+    application_database = copy_application_database_state(state.get("application_database"))
+    result = {
+        "run": run,
+        "application_database": application_database,
+    }
+    if not application_database["enabled"] or application_database["status"] == "failed":
+        return result
+
+    engine = None
+    try:
+        database_path = application_database.get("database_path")
+        if database_path is None:
+            raise ValueError("应用数据库已启用但未配置 database_path")
+        engine = create_application_engine(
+            database_path,
+            input_root=state["workspace"]["input_root"],
+            checkpoint_path=application_database.get("checkpoint_path"),
+            echo=application_database["echo"],
+            timeout_seconds=application_database["timeout_seconds"],
+        )
+        session_factory = create_session_factory(engine)
+        with open_application_session(session_factory) as session:
+            repositories = create_repository_bundle(session)
+            repositories.governance_runs.get_or_create_minimal(
+                run["run_id"],
+                thread_id=run["thread_id"],
+                current_stage="finished",
+                request_summary={"recovered_run": True},
+            )
+            repositories.governance_runs.update_status(
+                run["run_id"],
+                status=run["status"],
+                current_stage=run["current_stage"],
+                report_path=state.get("report", {}).get("report_path"),
+                error_summary=(
+                    f"fatal={sum(bool(item['fatal']) for item in errors)};total={len(errors)}"
+                    if errors
+                    else None
+                ),
+                finished_at=datetime.fromisoformat(run["finished_at"]),
+            )
+            human_review = state.get("human_review", {})
+            selections = human_review.get("selections", {})
+            for group_id, selected_file_id in sorted(selections.items()):
+                identity = f"{run['run_id']}\x1f{group_id}"
+                review_id = "review-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+                if repositories.human_reviews.get(review_id) is None:
+                    repositories.human_reviews.add(
+                        HumanReviewModel(
+                            id=review_id,
+                            run_id=run["run_id"],
+                            group_id=group_id,
+                            selected_file_id=selected_file_id,
+                            review_note=None,
+                            reviewer_label="user",
+                        )
+                    )
+        application_database["status"] = "ready"
+        application_database["last_error"] = None
+        result["application_database"] = application_database
+        return result
+    except Exception:
+        application_database["status"] = "failed"
+        application_database["last_error"] = "治理运行收口记录写入失败。"
+        if run["status"] == "completed":
+            run["status"] = "partial"
+        result["run"] = run
+        result["application_database"] = application_database
+        result["errors"] = [
+            create_error_record(
+                stage="application_database",
+                node_name="finalize_run",
+                category="database",
+                message="应用数据库收口失败，治理报告与确定性结论仍然保留。",
+                fatal=False,
+            )
+        ]
+        return result
+    finally:
+        if engine is not None:
+            engine.dispose()

@@ -18,6 +18,7 @@ from app.services.memory_policy import (
 from app.skills.loader import create_pending_skill_registry
 from app.state.models import (
     AgentMemberState,
+    ApplicationDatabaseState,
     ContextCompactState,
     FileGovernanceState,
     HookConfigState,
@@ -70,6 +71,72 @@ DEFAULT_MEMORY_RECALL_LIMIT = 50
 
 # 可覆盖长期 Memory 默认应用数据库位置的环境变量名称，与 Alembic 保持一致。
 APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
+
+
+def create_disabled_application_database_state() -> ApplicationDatabaseState:
+    """创建不会打开连接或产生持久化副作用的应用数据库状态。
+
+    Returns:
+        路径为空、状态为 ``disabled`` 的 SQLite 应用数据库配置。
+    """
+    return ApplicationDatabaseState(
+        enabled=False,
+        backend="sqlite",
+        database_path=None,
+        checkpoint_path=None,
+        auto_create_parent=True,
+        echo=False,
+        timeout_seconds=30.0,
+        status="disabled",
+        last_error=None,
+    )
+
+
+def copy_application_database_state(
+    application_database: Mapping[str, object] | None,
+) -> ApplicationDatabaseState:
+    """复制应用数据库状态，并为 0.5.0 checkpoint 补齐关闭默认值。
+
+    Args:
+        application_database: 当前顶层状态中的可选应用数据库对象。
+
+    Returns:
+        与输入解除引用关系的完整应用数据库状态。
+    """
+    if application_database is None:
+        return create_disabled_application_database_state()
+    enabled = bool(application_database.get("enabled", False))
+    raw_status = application_database.get(
+        "status",
+        "pending" if enabled else "disabled",
+    )
+    status = raw_status if raw_status in {"disabled", "pending", "ready", "failed"} else "failed"
+    return ApplicationDatabaseState(
+        enabled=enabled,
+        backend="sqlite",
+        database_path=(
+            str(application_database["database_path"])
+            if application_database.get("database_path") is not None
+            else None
+        ),
+        checkpoint_path=(
+            str(application_database["checkpoint_path"])
+            if application_database.get("checkpoint_path") is not None
+            else None
+        ),
+        auto_create_parent=bool(application_database.get("auto_create_parent", True)),
+        echo=bool(application_database.get("echo", False)),
+        timeout_seconds=float(application_database.get("timeout_seconds", 30.0)),
+        status=cast(
+            Literal["disabled", "pending", "ready", "failed"],
+            status,
+        ),
+        last_error=(
+            str(application_database["last_error"])
+            if application_database.get("last_error") is not None
+            else None
+        ),
+    )
 
 
 def _normalize_string_list(value: object, *, field_name: str) -> list[str]:
@@ -232,9 +299,7 @@ def create_hook_config_state(
         if not isinstance(raw_policy, str):
             raise TypeError(f"Hook {raw_name} 的失败策略必须是字符串")
         if raw_policy not in {"block", "ignore"}:
-            raise ValueError(
-                f"Hook {raw_name} 的失败策略只能是 block 或 ignore"
-            )
+            raise ValueError(f"Hook {raw_name} 的失败策略只能是 block 或 ignore")
         normalized_name = raw_name.strip()
         if normalized_name in failure_policies:
             raise ValueError(f"failure_policies 不得包含重复 Hook：{normalized_name}")
@@ -447,42 +512,30 @@ def create_context_compact_state(
         raise TypeError("context_compact_config.enabled 必须是布尔值")
     persist_summaries = config.get("persist_summaries", True)
     if not isinstance(persist_summaries, bool):
-        raise TypeError(
-            "context_compact_config.persist_summaries 必须是布尔值"
-        )
+        raise TypeError("context_compact_config.persist_summaries 必须是布尔值")
 
     trigger_token_threshold = config.get(
         "trigger_token_threshold",
         DEFAULT_CONTEXT_COMPACT_TRIGGER_TOKENS,
     )
-    if (
-        isinstance(trigger_token_threshold, bool)
-        or not isinstance(trigger_token_threshold, int)
-    ):
-        raise TypeError(
-            "context_compact_config.trigger_token_threshold 必须是整数"
-        )
+    if isinstance(trigger_token_threshold, bool) or not isinstance(trigger_token_threshold, int):
+        raise TypeError("context_compact_config.trigger_token_threshold 必须是整数")
     if trigger_token_threshold < 1 or trigger_token_threshold > 10_000_000:
         raise ValueError(
-            "context_compact_config.trigger_token_threshold "
-            "必须位于 1 到 10000000 之间"
+            "context_compact_config.trigger_token_threshold 必须位于 1 到 10000000 之间"
         )
 
     retained_preview_characters = config.get(
         "retained_preview_characters",
         DEFAULT_RETAINED_PREVIEW_CHARACTERS,
     )
-    if (
-        isinstance(retained_preview_characters, bool)
-        or not isinstance(retained_preview_characters, int)
+    if isinstance(retained_preview_characters, bool) or not isinstance(
+        retained_preview_characters, int
     ):
-        raise TypeError(
-            "context_compact_config.retained_preview_characters 必须是整数"
-        )
+        raise TypeError("context_compact_config.retained_preview_characters 必须是整数")
     if retained_preview_characters < 0 or retained_preview_characters > 1000:
         raise ValueError(
-            "context_compact_config.retained_preview_characters "
-            "必须位于 0 到 1000 之间"
+            "context_compact_config.retained_preview_characters 必须位于 0 到 1000 之间"
         )
 
     raw_database_path = config.get(
@@ -493,9 +546,7 @@ def create_context_compact_state(
         ),
     )
     if not isinstance(raw_database_path, (str, Path)):
-        raise TypeError(
-            "context_compact_config.database_path 必须是字符串或 Path"
-        )
+        raise TypeError("context_compact_config.database_path 必须是字符串或 Path")
     use_database = enabled and persist_summaries
     database_path = (
         str(
@@ -527,6 +578,119 @@ def create_context_compact_state(
     )
 
 
+def create_application_database_state(
+    request: RequestState,
+    application_database_config: Mapping[str, object] | None = None,
+    *,
+    memory: MemoryState | None = None,
+    context_compact: ContextCompactState | None = None,
+    checkpoint_path: str | Path | None = None,
+) -> ApplicationDatabaseState:
+    """创建与 Checkpointer 隔离、并供五张应用表共同使用的数据库状态。
+
+    Memory 或 Context Summary 已启用时会自动启用本状态，并要求三者使用同一个
+    SQLite 文件。只启用运行历史或工具审计时，可以单独传入
+    ``application_database_config.enabled=true``。
+
+    Args:
+        request: 包含只读输入目录的治理请求。
+        application_database_config: 可选后端、路径、日志和锁等待配置。
+        memory: 已创建的 Memory 状态，用于统一数据库文件。
+        context_compact: 已创建的 Context Compact 状态，用于统一数据库文件。
+        checkpoint_path: 可选 SQLite Checkpointer 路径，用于文件隔离校验。
+
+    Returns:
+        状态为 ``pending`` 或 ``disabled`` 的应用数据库配置。
+
+    Raises:
+        TypeError: 配置字段类型不符合协议时抛出。
+        ValueError: 后端、路径、超时或数据库隔离配置不安全时抛出。
+    """
+    config = dict(application_database_config or {})
+    _reject_unknown_fields(
+        config,
+        allowed_fields={
+            "enabled",
+            "backend",
+            "database_path",
+            "auto_create_parent",
+            "echo",
+            "timeout_seconds",
+        },
+        config_name="application_database_config",
+    )
+    configured_enabled = config.get("enabled", False)
+    if not isinstance(configured_enabled, bool):
+        raise TypeError("application_database_config.enabled 必须是布尔值")
+    backend = config.get("backend", "sqlite")
+    if backend != "sqlite":
+        raise ValueError("application_database_config.backend 目前只能是 sqlite")
+    auto_create_parent = config.get("auto_create_parent", True)
+    if not isinstance(auto_create_parent, bool):
+        raise TypeError("application_database_config.auto_create_parent 必须是布尔值")
+    if not auto_create_parent:
+        raise ValueError("application_database_config.auto_create_parent 必须为 True")
+    echo = config.get("echo", False)
+    if not isinstance(echo, bool):
+        raise TypeError("application_database_config.echo 必须是布尔值")
+    timeout_seconds = config.get("timeout_seconds", 30.0)
+    if isinstance(timeout_seconds, bool) or not isinstance(
+        timeout_seconds,
+        (int, float),
+    ):
+        raise TypeError("application_database_config.timeout_seconds 必须是数字")
+    normalized_timeout = float(timeout_seconds)
+    if normalized_timeout <= 0 or normalized_timeout > 300:
+        raise ValueError("application_database_config.timeout_seconds 必须位于 0 到 300 之间")
+
+    dependent_paths = [
+        value
+        for value in (
+            memory.get("database_path") if memory is not None else None,
+            (context_compact.get("database_path") if context_compact is not None else None),
+        )
+        if value is not None
+    ]
+    enabled = configured_enabled or bool(dependent_paths)
+    if not enabled:
+        return create_disabled_application_database_state()
+
+    raw_database_path = config.get(
+        "database_path",
+        dependent_paths[0]
+        if dependent_paths
+        else os.environ.get(
+            APPLICATION_DATABASE_PATH_ENV,
+            str(DEFAULT_APPLICATION_DATABASE_PATH),
+        ),
+    )
+    if not isinstance(raw_database_path, (str, Path)):
+        raise TypeError("application_database_config.database_path 必须是字符串或 Path")
+    database_path = validate_application_database_path(
+        raw_database_path,
+        input_root=request["root_directory"],
+        checkpoint_path=checkpoint_path,
+    )
+    for dependent_path in dependent_paths:
+        if Path(dependent_path).expanduser().resolve() != database_path:
+            raise ValueError("应用数据库、Memory 与 Context Summary 必须共用同一个 SQLite 文件")
+    return ApplicationDatabaseState(
+        enabled=True,
+        backend="sqlite",
+        database_path=str(database_path),
+        checkpoint_path=(
+            str(Path(checkpoint_path).expanduser().resolve())
+            if checkpoint_path is not None
+            else None
+        ),
+        auto_create_parent=True,
+        echo=echo,
+        timeout_seconds=normalized_timeout,
+        status="pending",
+        last_error=None,
+    )
+
+
 def create_initial_state(
     request: RequestState,
     workspace: WorkspaceState,
@@ -537,7 +701,9 @@ def create_initial_state(
     skill_registry_path: str | Path | None = None,
     memory_config: Mapping[str, object] | None = None,
     context_compact_config: Mapping[str, object] | None = None,
+    application_database_config: Mapping[str, object] | None = None,
     checkpoint_path: str | Path | None = None,
+    thread_id: str | None = None,
 ) -> FileGovernanceState:
     """创建可直接传给顶层 LangGraph 的完整初始状态。
 
@@ -551,7 +717,9 @@ def create_initial_state(
         skill_registry_path: 可选受控 Skill 注册表路径；省略时使用项目默认资源。
         memory_config: 可选短期与长期 Memory 配置；省略时不访问应用数据库。
         context_compact_config: 可选 Context Compact 阈值、预览与持久化配置。
+        application_database_config: 可选运行历史、工具审计与人工选择数据库配置。
         checkpoint_path: 可选 SQLite Checkpointer 路径，用于与应用数据库隔离。
+        thread_id: 可选 Checkpointer 线程 ID；非 CLI 调用可在初始化时回退为 run_id。
 
     Returns:
         所有 reducer 列表、模型 Profile 路由、生命周期配置、证据和人工审核字段
@@ -560,9 +728,29 @@ def create_initial_state(
     normalized_request = dict(request)
     normalized_request.setdefault("pdf_match_threshold", 0.82)
     normalized_request.setdefault("delivery_log_path", None)
+    if thread_id is not None and (not isinstance(thread_id, str) or not thread_id.strip()):
+        raise ValueError("thread_id 必须是非空字符串或 None")
+    memory = create_memory_state(
+        normalized_request,
+        memory_config,
+        checkpoint_path=checkpoint_path,
+    )
+    context_compact = create_context_compact_state(
+        normalized_request,
+        context_compact_config,
+        checkpoint_path=checkpoint_path,
+    )
+    application_database = create_application_database_state(
+        normalized_request,
+        application_database_config,
+        memory=memory,
+        context_compact=context_compact,
+        checkpoint_path=checkpoint_path,
+    )
     return FileGovernanceState(
         run={
             "run_id": "",
+            "thread_id": thread_id.strip() if thread_id is not None else "",
             "status": "created",
             "current_stage": "created",
             "started_at": None,
@@ -575,16 +763,9 @@ def create_initial_state(
         llm=create_llm_config_state(llm_config),
         team=create_team_state(),
         skill_registry=create_pending_skill_registry(skill_registry_path),
-        memory=create_memory_state(
-            normalized_request,
-            memory_config,
-            checkpoint_path=checkpoint_path,
-        ),
-        context_compact=create_context_compact_state(
-            normalized_request,
-            context_compact_config,
-            checkpoint_path=checkpoint_path,
-        ),
+        memory=memory,
+        context_compact=context_compact,
+        application_database=application_database,
         hook_events=[],
         todos=[],
         tasks=[],
