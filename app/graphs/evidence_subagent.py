@@ -16,6 +16,7 @@ from app.nodes.subagents import (
     execute_before_model_hooks,
     invoke_evidence_structured_llm,
     persist_evidence_analysis_artifact,
+    resolve_model_profile,
     validate_evidence_subagent_input,
     validate_evidence_subagent_output,
 )
@@ -32,6 +33,7 @@ def build_evidence_subagent_graph():
     """
     builder = StateGraph(EvidenceSubagentGraphState)
     builder.add_node("validate_evidence_subagent_input", validate_evidence_subagent_input)
+    builder.add_node("resolve_model_profile", resolve_model_profile)
     builder.add_node("build_evidence_subagent_prompt", build_evidence_subagent_prompt)
     builder.add_node("execute_before_model_hooks", execute_before_model_hooks)
     builder.add_node("invoke_evidence_structured_llm", invoke_evidence_structured_llm)
@@ -49,10 +51,11 @@ def build_evidence_subagent_graph():
         "validate_evidence_subagent_input",
         route_subagent_input_validation,
         {
-            "valid": "build_evidence_subagent_prompt",
+            "valid": "resolve_model_profile",
             "invalid": "build_evidence_result_message",
         },
     )
+    builder.add_edge("resolve_model_profile", "build_evidence_subagent_prompt")
     builder.add_edge("build_evidence_subagent_prompt", "execute_before_model_hooks")
     builder.add_conditional_edges(
         "execute_before_model_hooks",

@@ -25,7 +25,7 @@ from app.state.reducers import merge_by_message_id
 # 结构化输出测试允许返回的固定产物引用。
 ALLOWED_ARTIFACT_REF = "artifact://normalized/document-001"
 
-# 当前仓库根目录，用于验证 0.5.1 发布版本元数据一致性。
+# 当前仓库根目录，用于验证 0.5.2 发布版本元数据一致性。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -163,15 +163,15 @@ def test_initial_state_contains_safe_llm_and_fixed_team_contract(
 
 
 def test_release_version_is_consistent_across_package_and_docker() -> None:
-    """Python 包、项目元数据、Docker 默认值和 README 应统一为 0.5.1。"""
+    """Python 包、项目元数据、Docker 默认值和 README 应统一为 0.5.2。"""
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert app.__version__ == "0.5.1"
-    assert 'version = "0.5.1"' in pyproject
-    assert "ARG APP_VERSION=0.5.1" in dockerfile
-    assert "当前版本 `0.5.1`" in readme
+    assert app.__version__ == "0.5.2"
+    assert 'version = "0.5.2"' in pyproject
+    assert "ARG APP_VERSION=0.5.2" in dockerfile
+    assert "当前版本 `0.5.2`" in readme
 
 
 def test_default_config_and_sample_request_disable_real_provider() -> None:
@@ -192,7 +192,7 @@ def test_default_config_and_sample_request_disable_real_provider() -> None:
 
 
 def test_real_provider_sample_references_environment_without_secret_value() -> None:
-    """真实 Provider 示例应只声明密钥环境变量名称并启用三个阶段的模型摘要。"""
+    """真实 Provider 示例应以环境变量和多 Profile 路由启用三个模型摘要阶段。"""
     sample_request = json.loads(
         (PROJECT_ROOT / "examples" / "sample_llm_request.json").read_text(
             encoding="utf-8"
@@ -202,7 +202,28 @@ def test_real_provider_sample_references_environment_without_secret_value() -> N
 
     assert sample_request["request"]["use_llm_summary"] is True
     assert llm_config["enabled"] is True
-    assert llm_config["provider"] == "openai"
-    assert llm_config["api_key_env"] == "OPENAI_API_KEY"
+    assert llm_config["default_profile_id"] == "content-claude"
+    assert llm_config["task_profile_ids"] == {
+        "content": "content-claude",
+        "version": "version-deepseek",
+        "evidence": "evidence-qwen",
+    }
+    assert {profile["provider"] for profile in llm_config["profiles"]} == {
+        "anthropic",
+        "deepseek",
+        "google_genai",
+        "openai_compatible",
+        "qwen",
+        "zhipuai",
+    }
+    assert {profile["api_key_env"] for profile in llm_config["profiles"]} == {
+        "ANTHROPIC_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_COMPATIBLE_API_KEY",
+        "ZHIPUAI_API_KEY",
+    }
     assert "api_key" not in llm_config
+    assert all("api_key" not in profile for profile in llm_config["profiles"])
     assert llm_config["fallback_enabled"] is True

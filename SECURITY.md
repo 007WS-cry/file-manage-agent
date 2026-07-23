@@ -59,10 +59,18 @@ Task、Todo、最小 Subagent 输入和结构化错误。单次 `task_update`、
 三个固定 Subagent 可以通过统一 Client 调用 Mock 或显式启用的真实 Provider，但不能
 主动打开 `artifact_refs`、调用 MCP、本地文件工具或继续递归委派。
 
-LLM 配置只允许保存 API Key 环境变量名称。实际密钥由真实 Provider 在调用时读取，
-不得进入请求 JSON、YAML、LangGraph 状态、checkpoint、错误、报告或调用审计。模型
-失败、超时、非法 Pydantic 输出和越权引用必须回退到确定性结果；Version Subagent
-只有在审计状态为成功且未回退时才允许替换解释摘要，不能修改版本方向或推荐事实。
+LLM Profile 只允许保存 API Key、可选 Base URL 和 Provider 专有参数的环境变量
+名称。实际值由真实 Provider 在调用时读取，不得进入请求 JSON、YAML、LangGraph
+状态、checkpoint、错误、报告或调用审计。专有参数 JSON 不得覆盖模型、凭据、
+端点、超时、重试或 Token 预算。任务路由只能引用已声明 Profile；关闭真实模型时必须强制
+使用 `disabled-mock`。模型失败、超时、非法 Pydantic 输出和越权引用必须回退到
+确定性结果；Version Subagent 只有在审计状态为成功且未回退时才允许替换解释摘要，
+不能修改版本方向或推荐事实。
+
+LangChain 的各个可选 Provider 包只在显式启用对应真实 Profile 时延迟加载。项目不主动开启
+LangSmith tracing；生产环境不得无意设置 `LANGSMITH_TRACING=true`，否则有界 Prompt
+和响应元数据可能发送到外部遥测服务。确需 tracing 时必须先完成数据授权、访问控制、
+保留期限和脱敏审查。
 
 ## CLI 进度输出
 

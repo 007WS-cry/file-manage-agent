@@ -49,16 +49,79 @@
   },
   "llm": {
     "enabled": true,
-    "provider": "openai",
-    "model": "gpt-4.1-mini",
-    "api_key_env": "OPENAI_API_KEY",
-    "temperature": 0.0,
-    "max_output_tokens": 800,
-    "timeout_seconds": 30.0,
+    "profiles": [
+      {
+        "id": "content-claude",
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "api_key_env": "ANTHROPIC_API_KEY",
+        "temperature": 0.0,
+        "max_output_tokens": 800,
+        "timeout_seconds": 30.0
+      },
+      {
+        "id": "version-deepseek",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "structured_output_method": "function_calling",
+        "temperature": 0.0,
+        "max_output_tokens": 1600,
+        "timeout_seconds": 45.0
+      },
+      {
+        "id": "evidence-qwen",
+        "provider": "qwen",
+        "model": "qwen-flash",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "base_url_env": "DASHSCOPE_API_BASE",
+        "structured_output_method": "function_calling",
+        "temperature": 0.0,
+        "max_output_tokens": 800,
+        "timeout_seconds": 30.0
+      },
+      {
+        "id": "alternate-gemini",
+        "provider": "google_genai",
+        "model": "gemini-3.5-flash",
+        "api_key_env": "GOOGLE_API_KEY",
+        "structured_output_method": "json_schema",
+        "temperature": 0.0,
+        "max_output_tokens": 800,
+        "timeout_seconds": 30.0
+      },
+      {
+        "id": "alternate-glm",
+        "provider": "zhipuai",
+        "model": "glm-5.1",
+        "api_key_env": "ZHIPUAI_API_KEY",
+        "base_url_env": "ZHIPUAI_BASE_URL",
+        "temperature": 0.0,
+        "max_output_tokens": 800,
+        "timeout_seconds": 30.0
+      },
+      {
+        "id": "alternate-relay",
+        "provider": "openai_compatible",
+        "model": "relay-model",
+        "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+        "base_url_env": "OPENAI_COMPATIBLE_BASE_URL",
+        "options_env": "OPENAI_COMPATIBLE_OPTIONS",
+        "temperature": 0.0,
+        "max_output_tokens": 800,
+        "timeout_seconds": 30.0
+      }
+    ],
+    "default_profile_id": "content-claude",
+    "task_profile_ids": {
+      "content": "content-claude",
+      "version": "version-deepseek",
+      "evidence": "evidence-qwen"
+    },
     "fallback_enabled": true
   },
   "checkpoint": {
     "backend": "sqlite",
-    "database_path": "../.artifacts/checkpoints/file-governance-llm-0.5.sqlite3"
+    "database_path": "../.artifacts/checkpoints/file-governance-llm-0.5.2.sqlite3"
   }
 }

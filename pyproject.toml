@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.5.1"
-description = "基于 LangGraph、固定 Subagent Team、应用数据库骨架和确定性回退的只读文件版本治理 Agent"
+version = "0.5.2"
+description = "基于 LangGraph、LangChain 多模型路由、应用数据库骨架和确定性回退的只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -15,6 +15,8 @@ dependencies = [
     "PyYAML>=6,<7",
     "pydantic>=2.10,<3",
     "openai>=2.0,<3",
+    "langchain>=1.1,<2",
+    "langchain-openai>=1.0,<2",
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-sqlite>=3.1,<4",
     "SQLAlchemy>=2.0,<3",
@@ -28,6 +30,24 @@ file-governance = "app.entrypoints.cli:main"
 dev = [
     "pytest>=8,<10",
     "ruff>=0.12,<1",
+]
+anthropic = [
+    "langchain-anthropic>=1.0,<2",
+]
+gemini = [
+    "langchain-google-genai>=4.0,<5",
+]
+deepseek = [
+    "langchain-deepseek>=1.0,<2",
+]
+qwen = [
+    "langchain-qwq>=0.3,<1",
+]
+openrouter = [
+    "langchain-openrouter>=0.2,<1",
+]
+litellm = [
+    "langchain-litellm>=0.7,<1",
 ]
 
 [tool.setuptools]

@@ -500,6 +500,7 @@ def route_subagent_prompt_validation(
         Prompt 构造或安全检查失败时返回 ``error``，否则返回 ``invoke``。
     """
     prompt_nodes = {
+        "resolve_model_profile",
         "build_content_subagent_prompt",
         "build_version_subagent_prompt",
         "build_evidence_subagent_prompt",
