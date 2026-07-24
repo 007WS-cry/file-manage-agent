@@ -486,7 +486,7 @@ class ErrorRecord(TypedDict):
         "timeout",
         "unknown",
     ]
-    # 错误分类；0.6.1 只建立协议和策略，不执行自动恢复。
+    # 错误分类；由 Error Recovery 子图查询对应的确定性恢复策略。
 
     exception_type: str | None
     # 已脱敏的异常类型名称；规则校验产生的错误可以为 None。
@@ -677,7 +677,7 @@ class RecoveryPolicyState(TypedDict):
     """一次治理运行使用的错误分类和恢复策略快照。"""
 
     enabled: bool
-    # 是否启用恢复策略判断；0.6.1 只保存策略，不接入恢复子图。
+    # 是否启用恢复策略判断；关闭时异常由恢复入口转入失败报告。
 
     default_policy: RecoveryCategoryPolicyState
     # 未知或未单独配置错误类别使用的默认策略。
@@ -730,7 +730,7 @@ class RecoveryState(TypedDict):
     # 当前运行使用的确定性恢复策略快照。
 
     pending_error_ids: list[str]
-    # 等待后续 Error Recovery 子图处理的错误 ID 队列。
+    # 等待 Error Recovery 子图处理的错误 ID 队列。
 
     current_error_id: str | None
     # 当前正在分类或处理的错误 ID。
@@ -745,7 +745,7 @@ class RecoveryState(TypedDict):
         "wait_human",
         "abort",
     ]
-    # Error Recovery 子图未来输出的恢复动作。
+    # Error Recovery 子图输出的恢复动作。
 
     resume_node: str | None
     # 自动重试或补充输入后需要重新执行的顶层节点。
@@ -1055,13 +1055,13 @@ class ApplicationDatabaseState(TypedDict):
     """应用数据库的启用状态、SQLite 隔离配置和运行期连接结果。"""
 
     enabled: bool
-    # 是否持久化运行生命周期、工具审计和人工选择；默认关闭以兼容旧运行。
+    # 是否持久化运行、Memory、审计、人工选择、错误恢复和节点执行；默认关闭。
 
     backend: Literal["sqlite"]
     # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
 
     database_path: str | None
-    # 五张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+    # 七张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
 
     checkpoint_path: str | None
     # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。
@@ -1903,7 +1903,7 @@ class FileGovernanceState(TypedDict):
     # Context Compact 配置、最近估算结果和有界摘要索引。
 
     application_database: ApplicationDatabaseState
-    # 五张应用表共用的独立数据库配置和当前连接状态。
+    # 七张应用表共用的独立数据库配置和当前连接状态。
 
     recovery: RecoveryState
     # 当前运行的恢复策略、待处理错误和恢复动作。
@@ -2254,10 +2254,19 @@ class RecommendationGraphState(TypedDict):
 
 
 class RecoveryGraphState(TypedDict):
-    """未来 Error Recovery 子图使用的最小共享状态。"""
+    """Error Recovery 子图使用的策略、持久化配置和最小业务共享状态。"""
 
     run: RunState
     # 当前治理运行及 recovering、waiting_human 等生命周期状态。
+
+    request: RequestState
+    # 人工修正输入路径时允许更新的治理请求；其余业务参数保持只读。
+
+    workspace: WorkspaceState
+    # 用于校验替换路径和安全读取幂等状态更新产物的工作空间。
+
+    application_database: ApplicationDatabaseState
+    # 恢复记录和节点执行记录使用的独立应用数据库配置。
 
     tasks: Annotated[
         list[TaskItem],

@@ -163,7 +163,15 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     ) in edges
     assert (
         "sync_human_review_task_status",
-        "generate_failure_report",
+        "run_error_recovery_subgraph",
+    ) in edges
+    assert (
+        "run_error_recovery_subgraph",
+        "select_resume_after_failed_stage",
+    ) in edges
+    assert (
+        "select_resume_after_failed_stage",
+        "generate_governance_report",
     ) in edges
     assert ("generate_no_data_report", "sync_report_task_status") in edges
     assert ("generate_governance_report", "sync_report_task_status") in edges
@@ -172,6 +180,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     assert ("execute_after_run_hooks", "finalize_run") in edges
     assert (
         "execute_after_run_hooks",
+        "run_error_recovery_subgraph",
+    ) in edges
+    assert (
+        "run_error_recovery_subgraph",
         "generate_lifecycle_failure_report",
     ) in edges
 
