@@ -89,6 +89,13 @@ coordinator、no-memory、keep-context、default-skill 和 partial-result 等既
 长期 Memory 或应用数据库。`partial` 表示已安全收口但完整性降低，不得被 CLI、
 Task 统计或报告错误地标记为 `failed`。
 
+0.7.0 的故障注入和兼容验收不得把测试异常、完整状态或 checkpoint 快照写入
+源码、镜像或应用数据库。恢复型人工 checkpoint 只能包含运行、请求路径、
+Task、脱敏错误、节点执行和降级引用，不得包含 `documents`、`team_messages`、
+完整报告或业务正文。幂等复用必须同时校验固定键、输入摘要、受控产物路径和结果
+摘要；任一条件不匹配都必须重新执行或进入 Recovery。0.6.0 旧状态只允许补齐空
+恢复默认值，不得借兼容转换绕过路径隔离、恢复动作白名单或主版本人工确认协议。
+
 标准化内容和中间产物统一由 `app/storage/artifacts.py` 写入独立目录。产物 ID
 不允许包含路径分隔符，写入使用临时文件和原子替换；调用方仍应限制产物目录的
 操作系统权限，并避免将包含业务正文的 JSON 提交到源码仓库。

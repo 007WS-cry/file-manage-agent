@@ -189,11 +189,11 @@ def test_no_data_report_settles_all_todos_without_pending_items(
     assert "未发现可用于版本分析的标准化文档" in result["report"]["report_markdown"]
 
 
-def test_business_failure_marks_only_origin_failed_and_blocks_downstream(
+def test_business_partial_fallback_continues_safe_downstream_tasks(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """业务子图失败降级后应保留部分结果，并阻断依赖该 Task 的下游。"""
+    """业务子图应用 partial_result 后应保留部分结果并继续可安全执行的下游。"""
     governance_module = importlib.import_module("app.graphs.file_governance")
 
     def fail_version_analysis(state: FileGovernanceState) -> dict:
@@ -225,15 +225,14 @@ def test_business_failure_marks_only_origin_failed_and_blocks_downstream(
 
     assert task_by_type(result, "inventory")["status"] == "completed"
     assert task_by_type(result, "version_analysis")["status"] == "partial"
-    for task_type in ("evidence", "recommendation", "human_review"):
-        task = task_by_type(result, task_type)
-        assert task["status"] == "skipped"
-        assert task["error"] is not None
+    assert task_by_type(result, "evidence")["status"] == "completed"
+    assert task_by_type(result, "recommendation")["status"] == "completed"
+    human_review_task = task_by_type(result, "human_review")
+    assert human_review_task["status"] == "skipped"
+    assert human_review_task["error"] is None
     assert sum(task["status"] == "failed" for task in result["tasks"]) == 0
     assert task_by_type(result, "report")["status"] == "completed"
-    assert result["todos"][1]["status"] == "blocked"
-    assert result["todos"][2]["status"] == "blocked"
-    assert result["todos"][3]["status"] == "completed"
+    assert all(todo["status"] == "completed" for todo in result["todos"])
     assert result["run"]["status"] == "partial"
     assert any(
         error["status"] == "fallback_applied" and error["fallback"] == "partial_result"

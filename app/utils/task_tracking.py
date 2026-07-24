@@ -353,24 +353,6 @@ def _fatal_errors_for_stage(
     ]
 
 
-def _format_failure_message(stage: str, errors: list[ErrorRecord]) -> str:
-    """为失败 Task 合并稳定且可读的错误摘要。
-
-    Args:
-        stage: 失败的 Task 类型或业务阶段。
-        errors: 当前阶段的一个或多个致命错误。
-
-    Returns:
-        用中文分号连接的错误消息；缺少消息时返回阶段级兜底说明。
-    """
-    messages = [
-        str(error.get("message", "")).strip()
-        for error in errors
-        if str(error.get("message", "")).strip()
-    ]
-    return "；".join(messages) if messages else f"{stage} 阶段执行失败"
-
-
 def has_orchestration_failure(errors: list[ErrorRecord]) -> bool:
     """判断一次 Task 编排调用是否产生致命错误。
 
@@ -528,45 +510,18 @@ def _needs_human_review(state: FileGovernanceState) -> bool:
     )
 
 
-def _block_downstream_tasks(
-    state: FileGovernanceState,
-    failed_task_type: str,
-    failure_message: str,
-) -> tuple[FileGovernanceState, list[ErrorRecord]]:
-    """把失败业务 Task 之后、报告之前的 Task 标记为阻断跳过。
-
-    Args:
-        state: 已把当前业务 Task 标记为 failed 的工作状态。
-        failed_task_type: 实际执行失败的 Task 类型。
-        failure_message: 写入失败 Task 的错误摘要。
-
-    Returns:
-        下游 Task 已跳过的工作状态和新增编排错误。
-    """
-    working_state = state
-    new_errors: list[ErrorRecord] = []
-    failed_index = TASK_EXECUTION_ORDER.index(failed_task_type)
-    blocking_reason = f"被上游 {failed_task_type} 失败阻断：{failure_message}"
-    for task_type in TASK_EXECUTION_ORDER[failed_index + 1 : -1]:
-        working_state, update_errors = apply_task_status(
-            working_state,
-            task_type,
-            "skipped",
-            error=blocking_reason,
-        )
-        new_errors.extend(update_errors)
-        if has_orchestration_failure(update_errors):
-            break
-    return working_state, new_errors
-
-
 def sync_business_task_status(
     state: FileGovernanceState,
     task_type: str,
     *,
     next_task_type: str | None,
 ) -> dict:
-    """同步一个业务子图结果并在成功时启动确定的下一阶段。
+    """同步一个业务子图结果，并把未决错误留给 Recovery 后再决定 Task 终态。
+
+    节点发现未决错误时不得提前把当前 Task 标记为 failed 或跳过下游 Task，
+    否则后续安全降级无法在不违反 Task 终态协议的前提下继续流程。Recovery
+    选择 abort 时会统一写入失败状态；选择重试或降级后，本函数会在续跑时
+    完成当前 Task 并启动确定的下一阶段。
 
     Args:
         state: 已合并当前业务子图结果的顶层治理状态。
@@ -580,21 +535,7 @@ def sync_business_task_status(
     new_errors: list[ErrorRecord] = []
     fatal_errors = _fatal_errors_for_stage(state, task_type)
     if fatal_errors:
-        failure_message = _format_failure_message(task_type, fatal_errors)
-        working_state, update_errors = apply_task_status(
-            working_state,
-            task_type,
-            "failed",
-            error=failure_message,
-        )
-        new_errors.extend(update_errors)
-        if not has_orchestration_failure(update_errors):
-            working_state, blocked_errors = _block_downstream_tasks(
-                working_state,
-                task_type,
-                failure_message,
-            )
-            new_errors.extend(blocked_errors)
+        # 未决错误必须先进入 Recovery；此处保持 DAG 可恢复，不抢先写入不可逆终态。
         return public_task_update(working_state, new_errors)
 
     working_state, update_errors = apply_task_status(

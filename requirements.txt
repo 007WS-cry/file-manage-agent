@@ -1,4 +1,4 @@
-# 0.6.5 恢复型人工确认、部分报告与 CLI 运行依赖统一来自 pyproject.toml。
+# 0.7.0 故障注入、幂等重放、人工恢复与部分报告依赖统一来自 pyproject.toml。
 -e .
 
 # Claude、Gemini、DeepSeek、Qwen、OpenRouter 和 LiteLLM 请按 README 使用 extras 按需安装。
