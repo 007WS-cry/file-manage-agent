@@ -10,6 +10,10 @@ from app.services.context_compaction import (
 from app.services.memory_policy import copy_memory_state
 from app.skills.loader import create_pending_skill_registry
 from app.skills.registry import copy_skill_registry
+from app.state.factories import (
+    copy_application_database_state,
+    copy_recovery_state,
+)
 from app.state.models import (
     ContentSubagentInput,
     ContextCompactGraphState,
@@ -18,6 +22,7 @@ from app.state.models import (
     FileGovernanceState,
     InventoryGraphState,
     RecommendationGraphState,
+    RecoveryGraphState,
     TaskStatusUpdate,
     TeamOrchestrationGraphState,
     TeamState,
@@ -25,6 +30,7 @@ from app.state.models import (
     VersionSubagentInput,
     VersionSubagentOutput,
 )
+from app.utils.error_context import copy_error_context, create_error_context
 
 """本模块转换顶层、业务及团队编排状态，并隔离队列和单次分派私有字段。"""
 
@@ -46,6 +52,81 @@ def _copy_team_state(team: TeamState) -> TeamState:
     )
 
 
+def file_governance_to_recovery_state(
+    state: FileGovernanceState,
+) -> RecoveryGraphState:
+    """把顶层治理状态转换为隔离的 Error Recovery 子图输入。
+
+    恢复子图只接收运行、路径配置、应用数据库、Task、错误、节点执行和降级记录。
+    文件正文、版本比较、推荐、模型消息和最终报告不会进入恢复判断。
+
+    Args:
+        state: 已通过条件边或子图异常处理入口转入恢复流程的顶层状态。
+
+    Returns:
+        可独立 checkpoint 且不包含数据库 Session 的恢复子图状态。
+    """
+    return RecoveryGraphState(
+        run=dict(state["run"]),
+        request=dict(state["request"]),
+        workspace=dict(state["workspace"]),
+        application_database=copy_application_database_state(state.get("application_database")),
+        tasks=[dict(task) for task in state.get("tasks", [])],
+        errors=[dict(error) for error in state.get("errors", [])],
+        node_executions=[
+            {
+                **dict(execution),
+                "result_refs": list(execution.get("result_refs", [])),
+            }
+            for execution in state.get("node_executions", [])
+        ],
+        degradations=[
+            {
+                **dict(degradation),
+                "affected_file_ids": list(degradation.get("affected_file_ids", [])),
+            }
+            for degradation in state.get("degradations", [])
+        ],
+        recovery=copy_recovery_state(state.get("recovery")),
+    )
+
+
+def recovery_state_to_file_governance_update(
+    state: RecoveryGraphState,
+) -> dict:
+    """把 Error Recovery 结果过滤为允许写回顶层的字段。
+
+    Args:
+        state: 已完成复用、重试安排、安全降级、人工选择或终止判断的恢复状态。
+
+    Returns:
+        运行、可选路径修正、恢复审计及 Task 状态组成的白名单更新。
+    """
+    return {
+        "run": dict(state["run"]),
+        "request": dict(state["request"]),
+        "workspace": dict(state["workspace"]),
+        "application_database": copy_application_database_state(state.get("application_database")),
+        "tasks": [dict(task) for task in state.get("tasks", [])],
+        "errors": [dict(error) for error in state.get("errors", [])],
+        "node_executions": [
+            {
+                **dict(execution),
+                "result_refs": list(execution.get("result_refs", [])),
+            }
+            for execution in state.get("node_executions", [])
+        ],
+        "degradations": [
+            {
+                **dict(degradation),
+                "affected_file_ids": list(degradation.get("affected_file_ids", [])),
+            }
+            for degradation in state.get("degradations", [])
+        ],
+        "recovery": copy_recovery_state(state.get("recovery")),
+    }
+
+
 def file_governance_to_context_compact_state(
     state: FileGovernanceState,
     *,
@@ -61,16 +142,15 @@ def file_governance_to_context_compact_state(
         只包含运行、工作空间、Prompt、文档和压缩私有字段的子图状态。
     """
     return ContextCompactGraphState(
+        error_context=create_error_context(
+            state,
+            task_type=("inventory" if stage == "after_inventory" else "evidence"),
+        ),
         run=dict(state["run"]),
         workspace=dict(state["workspace"]),
         prompt=copy_prompt_state(state["prompt"]),
-        documents=[
-            copy_document_record(document)
-            for document in state.get("documents", [])
-        ],
-        context_compact=copy_context_compact_state(
-            state.get("context_compact")
-        ),
+        documents=[copy_document_record(document) for document in state.get("documents", [])],
+        context_compact=copy_context_compact_state(state.get("context_compact")),
         stage=stage,
         plan=None,
         compaction_payload=None,
@@ -95,13 +175,8 @@ def context_compact_state_to_file_governance_update(
     """
     return {
         "prompt": copy_prompt_state(state["prompt"]),
-        "documents": [
-            copy_document_record(document)
-            for document in state.get("documents", [])
-        ],
-        "context_compact": copy_context_compact_state(
-            state.get("context_compact")
-        ),
+        "documents": [copy_document_record(document) for document in state.get("documents", [])],
+        "context_compact": copy_context_compact_state(state.get("context_compact")),
         "errors": [dict(error) for error in state.get("errors", [])],
     }
 
@@ -111,16 +186,14 @@ def file_governance_to_team_orchestration_state(
     *,
     task_update: TaskStatusUpdate | None = None,
     dispatch_request: (
-        ContentSubagentInput
-        | VersionSubagentInput
-        | EvidenceSubagentInput
-        | None
+        ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
     ) = None,
 ) -> TeamOrchestrationGraphState:
     """把顶层治理状态转换为 Team Orchestration 子图输入。
 
     顶层运行信息、Task 和 Todo 按值复制。``task_update`` 只作为本次子图调用的
-    私有命令传入；顶层已有业务错误不进入子图，避免干扰 DAG 校验路由。
+    私有命令传入；仅同一 Task 的错误恢复进度进入子图，供重试保持计数，
+    其他历史业务错误仍被隔离，避免干扰 DAG 校验路由。
 
     Args:
         state: 包含运行信息和可选已有 Task、Todo 的顶层治理状态。
@@ -128,10 +201,20 @@ def file_governance_to_team_orchestration_state(
         dispatch_request: 本次 Team Orchestration 调用使用的可选固定 Subagent 请求。
 
     Returns:
-        已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
+        已隔离无关历史错误且包含独立数据副本的团队编排子图状态。
     """
     registry = state.get("skill_registry", create_pending_skill_registry())
+    context_task_id = None
+    if task_update is not None:
+        context_task_id = str(task_update["task_id"])
+    elif dispatch_request is not None:
+        context_task_id = str(dispatch_request["task_id"])
     return TeamOrchestrationGraphState(
+        error_context=create_error_context(
+            state,
+            task_type="inventory" if context_task_id is None else None,
+            task_id=context_task_id,
+        ),
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
@@ -139,17 +222,18 @@ def file_governance_to_team_orchestration_state(
         skill_selection=None,
         skill_context=[],
         task_update=dict(task_update) if task_update is not None else None,
-        dispatch_request=(
-            dict(dispatch_request) if dispatch_request is not None else None
-        ),
+        dispatch_request=(dict(dispatch_request) if dispatch_request is not None else None),
         dispatch_result=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
-        team_messages=[
-            dict(message) for message in state.get("team_messages", [])
-        ],
+        team_messages=[dict(message) for message in state.get("team_messages", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
-        errors=[],
+        errors=[
+            dict(error)
+            for error in state.get("errors", [])
+            if context_task_id is not None
+            and error.get("task_id") == context_task_id
+        ],
     )
 
 
@@ -173,9 +257,7 @@ def team_orchestration_state_to_file_governance_update(
         "skill_registry": copy_skill_registry(state["skill_registry"]),
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
-        "team_messages": [
-            dict(message) for message in state.get("team_messages", [])
-        ],
+        "team_messages": [dict(message) for message in state.get("team_messages", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }
@@ -197,6 +279,7 @@ def file_governance_to_inventory_state(
         所有 Inventory 私有字段均已初始化的子图状态。
     """
     return InventoryGraphState(
+        error_context=create_error_context(state, task_type="inventory"),
         request=dict(state["request"]),
         workspace=dict(state["workspace"]),
         discovered_paths=[],
@@ -248,6 +331,10 @@ def file_governance_to_version_analysis_state(
         所有版本分析私有字段均已初始化的子图状态。
     """
     return VersionAnalysisGraphState(
+        error_context=create_error_context(
+            state,
+            task_type="version_analysis",
+        ),
         run=dict(state["run"]),
         request=dict(state["request"]),
         llm=dict(state["llm"]),
@@ -277,9 +364,7 @@ def file_governance_to_version_analysis_state(
             "selections": {},
             "review_note": state["human_review"].get("review_note"),
         },
-        team_messages=[
-            dict(message) for message in state.get("team_messages", [])
-        ],
+        team_messages=[dict(message) for message in state.get("team_messages", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=list(state.get("errors", [])),
     )
@@ -310,9 +395,7 @@ def version_analysis_state_to_file_governance_update(
         "version_edges": list(state.get("version_edges", [])),
         "branches": list(state.get("branches", [])),
         "version_chains": list(state.get("version_chains", [])),
-        "team_messages": [
-            dict(message) for message in state.get("team_messages", [])
-        ],
+        "team_messages": [dict(message) for message in state.get("team_messages", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": list(state.get("errors", [])),
     }
@@ -332,6 +415,7 @@ def version_analysis_to_team_orchestration_state(
         包含真实 Task DAG、固定团队和审计历史的独立编排子图状态。
     """
     return TeamOrchestrationGraphState(
+        error_context=copy_error_context(state["error_context"]),
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
@@ -343,11 +427,13 @@ def version_analysis_to_team_orchestration_state(
         dispatch_result=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
-        team_messages=[
-            dict(message) for message in state.get("team_messages", [])
-        ],
+        team_messages=[dict(message) for message in state.get("team_messages", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
-        errors=[],
+        errors=[
+            dict(error)
+            for error in state.get("errors", [])
+            if error.get("task_id") == dispatch_request["task_id"]
+        ],
     )
 
 
@@ -372,9 +458,7 @@ def team_orchestration_state_to_version_analysis_update(
         "current_version_subagent_output": (
             output.model_copy(deep=True) if output is not None else None
         ),
-        "team_messages": [
-            dict(message) for message in state.get("team_messages", [])
-        ],
+        "team_messages": [dict(message) for message in state.get("team_messages", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }
@@ -395,6 +479,7 @@ def file_governance_to_evidence_state(
         所有 Evidence 私有执行字段均已初始化的子图状态。
     """
     return EvidenceGraphState(
+        error_context=create_error_context(state, task_type="evidence"),
         run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),
@@ -447,6 +532,10 @@ def file_governance_to_recommendation_state(
         候选集合和推荐结果均已清空的 Recommendation 子图状态。
     """
     return RecommendationGraphState(
+        error_context=create_error_context(
+            state,
+            task_type="recommendation",
+        ),
         run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),

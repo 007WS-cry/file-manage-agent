@@ -11,7 +11,7 @@ from alembic import context
 from app.storage.database import build_application_database_url
 from app.storage.orm_models import Base
 
-"""本模块配置应用数据库的 Alembic 在线和离线迁移环境，并自动准备 SQLite 父目录。"""
+"""本模块配置七表应用数据库的 Alembic 在线和离线迁移，并自动准备 SQLite 父目录。"""
 
 
 # Alembic 当前运行使用的全局配置对象。
@@ -22,6 +22,12 @@ target_metadata = Base.metadata
 
 # 部署环境可通过该环境变量覆盖 alembic.ini 中的默认 SQLite 路径。
 APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
+
+# 在线和离线迁移共用的结构比较及单迁移事务选项。
+MIGRATION_CONTEXT_OPTIONS = {
+    "compare_type": True,
+    "transaction_per_migration": True,
+}
 
 
 def _apply_database_path_override() -> None:
@@ -89,8 +95,8 @@ def run_migrations_offline() -> None:
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        compare_type=True,
         render_as_batch=database_url.startswith("sqlite"),
+        **MIGRATION_CONTEXT_OPTIONS,
     )
     with context.begin_transaction():
         context.run_migrations()
@@ -114,8 +120,8 @@ def run_migrations_online() -> None:
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
-            compare_type=True,
             render_as_batch=connection.dialect.name == "sqlite",
+            **MIGRATION_CONTEXT_OPTIONS,
         )
         with context.begin_transaction():
             context.run_migrations()

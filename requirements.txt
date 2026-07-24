@@ -1,4 +1,4 @@
-# 0.6.0 基础运行、多模型、Skills、Memory、Context Compact 与数据库依赖统一来自 pyproject.toml。
+# 0.7.0 故障注入、幂等重放、人工恢复与部分报告依赖统一来自 pyproject.toml。
 -e .
 
 # Claude、Gemini、DeepSeek、Qwen、OpenRouter 和 LiteLLM 请按 README 使用 extras 按需安装。

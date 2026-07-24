@@ -177,7 +177,7 @@ application_database:
   # 默认关闭以兼容 0.5.0；Memory 或 Context Summary 启用时会自动接通同一数据库。
   enabled: false
 
-  # 0.6.0 已接通运行历史、Memory、Context Summary、工具审计和人工选择五张表。
+  # 七张应用表保存运行、Memory、摘要、审计、人工选择、错误恢复和节点执行事实。
   backend: sqlite
 
   # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。
@@ -191,3 +191,80 @@ application_database:
 
   # SQLite 遇到短暂文件锁时最多等待的秒数。
   timeout_seconds: 30.0
+
+recovery:
+  # 0.7.0 已完成故障注入、恢复重放与兼容验收；关闭时保留兼容失败语义。
+  enabled: true
+
+  # 未单独配置错误类别时使用保守策略：不自动重试、不静默降级、允许人工处理。
+  default_policy:
+    retryable: false
+    max_retries: 0
+    initial_backoff_seconds: 0.5
+    backoff_multiplier: 2.0
+    max_backoff_seconds: 8.0
+    fallback: null
+    requires_human: true
+
+  # 类别配置只覆盖默认策略中的差异字段，加载后会形成完整、可 checkpoint 的策略快照。
+  categories:
+    filesystem:
+      retryable: true
+      max_retries: 1
+
+    parse:
+      fallback: skip_file
+      requires_human: false
+
+    comparison:
+      fallback: partial_result
+      requires_human: true
+
+    evidence:
+      retryable: true
+      max_retries: 1
+      fallback: partial_result
+      requires_human: false
+
+    llm:
+      retryable: true
+      max_retries: 1
+      fallback: coordinator
+      requires_human: false
+
+    protocol:
+      fallback: coordinator
+      requires_human: true
+
+    memory:
+      retryable: true
+      max_retries: 1
+      fallback: no_memory
+      requires_human: false
+
+    skill:
+      retryable: true
+      max_retries: 1
+      fallback: default_skill
+      requires_human: false
+
+    context:
+      fallback: keep_context
+      requires_human: false
+
+    database:
+      retryable: true
+      max_retries: 2
+      initial_backoff_seconds: 1.0
+      max_backoff_seconds: 10.0
+
+    checkpoint:
+      retryable: true
+      max_retries: 1
+      initial_backoff_seconds: 1.0
+
+    timeout:
+      retryable: true
+      max_retries: 2
+      initial_backoff_seconds: 1.0
+      max_backoff_seconds: 10.0

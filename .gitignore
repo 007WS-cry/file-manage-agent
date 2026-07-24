@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.6.0 Task、Skill、Memory、Context Compact、工具审计和数据库快照含运行信息
+# 0.7.0 Task、故障注入、人工恢复、幂等重放和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -113,6 +113,29 @@ memory_export*.json
 context_compact*.json
 context_summary*.json
 token_estimation*.json
+recovery_policy*.json
+recovery_state*.json
+error_recovery*.json
+node_execution*.json
+degradation*.json
+retry_attempt*.json
+fault_injection*.json
+recovery_repository*.json
+recovery_persistence*.json
+idempotency_replay*.json
+recovery_transaction*.json
+recovery_route*.json
+recovery_graph*.json
+recovery_resume*.json
+recovery_result*.json
+subgraph_error*.json
+error_context*.json
+recovery_registration*.json
+fallback_registration*.json
+replay_snapshot*.json
+state_reference*.json
+release_validation*.json
+v060_compatibility*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/
@@ -139,9 +162,11 @@ data/input/*
 !data/input/.gitkeep
 data/artifacts/
 
-# 人工审核响应包含具体运行 ID，不提交到仓库
+# 主版本审核与错误恢复响应包含具体运行 ID、路径或说明，不提交到仓库
 review_response.json
 review_response*.json
+recovery_response.json
+recovery_response*.json
 
 # 本地 Docker 手工测试请求包含运行路径，不提交到仓库
 docker_request.json

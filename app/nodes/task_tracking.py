@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.state.models import FileGovernanceState
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 from app.utils.task_tracking import (
     apply_task_status,
     build_content_dispatch_requests,
@@ -72,7 +72,8 @@ def dispatch_content_subagent_task(state: FileGovernanceState) -> dict:
     except Exception as error:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="dispatch_content_subagent_task",
                     category="protocol",
@@ -145,7 +146,8 @@ def dispatch_evidence_subagent_task(state: FileGovernanceState) -> dict:
     except Exception as error:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="dispatch_evidence_subagent_task",
                     category="protocol",
@@ -198,6 +200,7 @@ def sync_report_task_status(state: FileGovernanceState) -> dict:
 
     成功、无数据和业务失败报告均走同一节点。报告 Task 只描述报告是否生成，
     不继承业务 Task 的失败状态，因此下游阻断不会被误报为报告自身失败。
+    已安全降级的上游 Task 保持 ``partial``，不会被本节点改写为 ``failed``。
 
     Args:
         state: 已生成任一种业务报告且具有合法固定 Task DAG 的顶层状态。

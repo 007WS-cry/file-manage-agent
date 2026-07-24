@@ -1,18 +1,24 @@
 from __future__ import annotations
 
 from app.services.reporting import (
+    build_recovery_report_lines,
     build_report_state,
     build_version_summary_lines,
     escape_markdown_cell,
 )
 from app.state.models import FileGovernanceState
+from app.utils.error_context import is_error_unresolved
 
 """本模块实现失败、无数据、版本摘要、证据治理及生命周期收口报告节点。"""
 
 
 def generate_failure_report(state: FileGovernanceState) -> dict:
     """根据致命错误生成失败报告，并保留已获得的部分事实。"""
-    errors = state.get("errors", [])
+    errors = [
+        error
+        for error in state.get("errors", [])
+        if is_error_unresolved(error)
+    ]
     lines = [
         "# 文件版本治理失败报告",
         "",
@@ -28,6 +34,7 @@ def generate_failure_report(state: FileGovernanceState) -> dict:
         )
     else:
         lines.append("- 未记录到结构化错误，请检查运行日志。")
+    lines.extend(build_recovery_report_lines(state))
     summary = "文件版本治理未能安全完成。"
     markdown = "\n".join(lines)
     warnings = [error["message"] for error in errors]
@@ -37,7 +44,11 @@ def generate_failure_report(state: FileGovernanceState) -> dict:
 def generate_no_data_report(state: FileGovernanceState) -> dict:
     """在没有可分析文档时生成文件统计和解析警告报告。"""
     files = state.get("files", [])
-    errors = state.get("errors", [])
+    errors = [
+        error
+        for error in state.get("errors", [])
+        if is_error_unresolved(error)
+    ]
     status_counts: dict[str, int] = {}
     for file_record in files:
         status = file_record["parse_status"]
@@ -57,6 +68,7 @@ def generate_no_data_report(state: FileGovernanceState) -> dict:
     if errors:
         lines.extend(["", "## 警告", ""])
         lines.extend(f"- {error['message']}" for error in errors)
+    lines.extend(build_recovery_report_lines(state))
     summary = "没有可分析文档，未执行版本推荐。"
     markdown = "\n".join(lines)
     warnings = [error["message"] for error in errors]
@@ -245,10 +257,15 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
                 f"{escape_markdown_cell(delivery['evidence_ref'])} |"
             )
 
-    errors = state.get("errors", [])
+    errors = [
+        error
+        for error in state.get("errors", [])
+        if is_error_unresolved(error)
+    ]
     if errors:
         lines.extend(["", "## 运行警告", ""])
         lines.extend(f"- `{error['node_name']}`：{error['message']}" for error in errors)
+    lines.extend(build_recovery_report_lines(state))
     lines.extend(
         [
             "",
@@ -283,7 +300,7 @@ def generate_lifecycle_failure_report(state: FileGovernanceState) -> dict:
     lifecycle_errors = [
         error
         for error in state.get("errors", [])
-        if error["fatal"]
+        if is_error_unresolved(error)
         and error["category"] == "hook"
         and error["stage"] in {"after_run", "after_run_hooks"}
     ]

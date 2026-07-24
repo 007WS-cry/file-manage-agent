@@ -28,7 +28,7 @@ from app.state.models import (
     VersionAnalysisGraphState,
     VersionSubagentInput,
 )
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 from app.utils.state_lookup import find_comparison_job_by_id
 from app.utils.task_orchestration import find_latest_subagent_message
 from app.utils.task_tracking import (
@@ -77,7 +77,8 @@ def group_related_documents(state: VersionAnalysisGraphState) -> dict:
             "comparison_jobs": [],
             "comparison_queue": [],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_analysis",
                     node_name="group_related_documents",
                     category="comparison",
@@ -100,7 +101,8 @@ def add_duplicate_version_edges(state: VersionAnalysisGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as exc:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_analysis",
                     node_name="add_duplicate_version_edges",
                     category="validation",
@@ -123,7 +125,8 @@ def generate_candidate_pairs(state: VersionAnalysisGraphState) -> dict:
         return {
             "comparison_jobs": [],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_analysis",
                     node_name="generate_candidate_pairs",
                     category="validation",
@@ -343,10 +346,11 @@ def prepare_version_subagent_input(state: VersionAnalysisGraphState) -> dict:
             "current_version_subagent_input": None,
             "current_version_subagent_output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="prepare_version_subagent_input",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:1_000],
                     fatal=False,
                 )
@@ -374,7 +378,8 @@ def summarize_key_changes_with_subagent(
         return {
             "current_version_subagent_output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="summarize_key_changes_with_subagent",
                     category="protocol",
@@ -495,7 +500,8 @@ def record_comparison_error(state: VersionAnalysisGraphState) -> dict:
     return {
         "comparison_jobs": jobs,
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="version_analysis",
                 node_name="record_comparison_error",
                 category="comparison",
@@ -524,7 +530,8 @@ def build_version_edges(state: VersionAnalysisGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as exc:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_analysis",
                     node_name="build_version_edges",
                     category="validation",
@@ -557,7 +564,8 @@ def build_version_chains(state: VersionAnalysisGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as exc:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_analysis",
                     node_name="build_version_chains",
                     category="validation",
@@ -594,7 +602,8 @@ def validate_version_results(state: VersionAnalysisGraphState) -> dict:
         return {}
     return {
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="version_analysis",
                 node_name="validate_version_results",
                 category="validation",

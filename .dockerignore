@@ -47,9 +47,11 @@ checkpoints
 database
 .langgraph
 
-# 人工审核响应只在恢复运行时单独只读挂载
+# 主版本审核与错误恢复响应只在恢复运行时单独只读挂载
 review_response.json
 review_response*.json
+recovery_response.json
+recovery_response*.json
 
 # 本地 Docker 手工测试请求通过只读挂载提供，不进入镜像构建上下文
 docker_request.json
@@ -92,7 +94,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.6.0 Task、Skill、Memory、Context Compact、工具审计和数据库快照只在运行时生成
+# 0.7.0 Task、故障注入、人工恢复、幂等重放和发布验收快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -140,6 +142,29 @@ memory_export*.json
 context_compact*.json
 context_summary*.json
 token_estimation*.json
+recovery_policy*.json
+recovery_state*.json
+error_recovery*.json
+node_execution*.json
+degradation*.json
+retry_attempt*.json
+fault_injection*.json
+recovery_repository*.json
+recovery_persistence*.json
+idempotency_replay*.json
+recovery_transaction*.json
+recovery_route*.json
+recovery_graph*.json
+recovery_resume*.json
+recovery_result*.json
+subgraph_error*.json
+error_context*.json
+recovery_registration*.json
+fallback_registration*.json
+replay_snapshot*.json
+state_reference*.json
+release_validation*.json
+v060_compatibility*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

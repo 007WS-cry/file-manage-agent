@@ -11,7 +11,7 @@ from app.agents.protocol import (
     MAX_TEXT_LIST_TOTAL_CHARACTERS,
 )
 from app.graphs.team_orchestration import team_orchestration_graph
-from app.services.task_system import build_task_id
+from app.services.task_system import build_task_execution_id, build_task_id
 from app.state.converters import (
     file_governance_to_team_orchestration_state,
     team_orchestration_state_to_file_governance_update,
@@ -29,6 +29,7 @@ from app.state.models import (
     VersionAnalysisGraphState,
     VersionSubagentInput,
 )
+from app.utils.error_context import is_error_unresolved
 from app.utils.runtime import utc_now_iso
 
 """本模块提供顶层 Task 跟踪节点使用的编排调用、状态转换和结果收敛辅助能力。"""
@@ -63,10 +64,7 @@ def run_team_orchestration_subgraph(
     *,
     task_update: TaskStatusUpdate | None = None,
     dispatch_request: (
-        ContentSubagentInput
-        | VersionSubagentInput
-        | EvidenceSubagentInput
-        | None
+        ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
     ) = None,
 ) -> dict:
     """显式转换状态并执行一次 Task 同步或固定 Subagent 分派。
@@ -207,20 +205,15 @@ def build_evidence_dispatch_requests(
     """
     task_id = build_task_id(state["run"]["run_id"], "evidence")
     file_names = {
-        file_record["id"]: file_record["file_name"]
-        for file_record in state.get("files", [])
+        file_record["id"]: file_record["file_name"] for file_record in state.get("files", [])
     }
     requests: list[EvidenceSubagentInput] = []
     for group in sorted(state.get("version_groups", []), key=lambda item: item["id"]):
         pdf_records = [
-            item
-            for item in state.get("pdf_exports", [])
-            if item.get("group_id") == group["id"]
+            item for item in state.get("pdf_exports", []) if item.get("group_id") == group["id"]
         ][: MAX_ARTIFACT_REFS // 2]
         delivery_records = [
-            item
-            for item in state.get("deliveries", [])
-            if item.get("group_id") == group["id"]
+            item for item in state.get("deliveries", []) if item.get("group_id") == group["id"]
         ][: MAX_ARTIFACT_REFS - len(pdf_records)]
 
         pdf_parts = []
@@ -287,9 +280,7 @@ def apply_team_dispatch_update(
             "team": team,
             "tasks": list(update.get("tasks", state.get("tasks", []))),
             "todos": list(update.get("todos", state.get("todos", []))),
-            "team_messages": list(
-                update.get("team_messages", state.get("team_messages", []))
-            ),
+            "team_messages": list(update.get("team_messages", state.get("team_messages", []))),
             "llm_calls": list(update.get("llm_calls", state.get("llm_calls", []))),
         },
     )
@@ -297,9 +288,7 @@ def apply_team_dispatch_update(
 
 def dispatch_stage_subagent_requests(
     state: FileGovernanceState,
-    requests: Sequence[
-        ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput
-    ],
+    requests: Sequence[ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput],
 ) -> tuple[FileGovernanceState, list[ErrorRecord]]:
     """通过 Team Orchestration 串行执行一个业务阶段的全部最小分派请求。
 
@@ -360,26 +349,8 @@ def _fatal_errors_for_stage(
     return [
         error
         for error in state.get("errors", [])
-        if error.get("stage") == stage and error.get("fatal") is True
+        if error.get("stage") == stage and is_error_unresolved(error)
     ]
-
-
-def _format_failure_message(stage: str, errors: list[ErrorRecord]) -> str:
-    """为失败 Task 合并稳定且可读的错误摘要。
-
-    Args:
-        stage: 失败的 Task 类型或业务阶段。
-        errors: 当前阶段的一个或多个致命错误。
-
-    Returns:
-        用中文分号连接的错误消息；缺少消息时返回阶段级兜底说明。
-    """
-    messages = [
-        str(error.get("message", "")).strip()
-        for error in errors
-        if str(error.get("message", "")).strip()
-    ]
-    return "；".join(messages) if messages else f"{stage} 阶段执行失败"
 
 
 def has_orchestration_failure(errors: list[ErrorRecord]) -> bool:
@@ -392,7 +363,7 @@ def has_orchestration_failure(errors: list[ErrorRecord]) -> bool:
         存在致命编排错误时返回 True，否则返回 False。
     """
     return any(
-        error.get("stage") == "team_orchestration" and error.get("fatal") is True
+        error.get("stage") == "team_orchestration" and is_error_unresolved(error)
         for error in errors
     )
 
@@ -400,22 +371,30 @@ def has_orchestration_failure(errors: list[ErrorRecord]) -> bool:
 def apply_task_status(
     state: FileGovernanceState,
     task_type: str,
-    status: Literal["running", "completed", "failed", "skipped"],
+    status: Literal[
+        "running",
+        "retrying",
+        "completed",
+        "partial",
+        "failed",
+        "skipped",
+    ],
     *,
     output_refs: tuple[str, ...] = (),
     error: str | None = None,
 ) -> tuple[FileGovernanceState, list[ErrorRecord]]:
     """通过独立 Team Orchestration 子图幂等更新一个 Task。
 
-    completed 更新遇到 pending Task 时会先补一次 running，使所有状态转换仍遵循
-    Task System 协议。已经处于任一终态的 Task 不会被重新打开或改写时间。
+    completed 或 partial 更新遇到 pending Task 时会先补一次 running，使所有状态
+    转换仍遵循 Task System 协议。已经处于任一终态的 Task 不会被重新打开或改写
+    时间；每次从 pending 或 retrying 进入 running 时累计一次执行尝试。
 
     Args:
         state: 当前顶层治理状态。
         task_type: 等待更新的固定 Task 类型。
         status: 目标 Task 状态。
         output_refs: 本次完成产生的顶层状态字段引用。
-        error: failed 或阻断性 skipped 状态使用的错误说明。
+        error: retrying、partial、failed 或阻断性 skipped 状态使用的错误说明。
 
     Returns:
         合并最新 Task、Todo 的工作状态，以及本次新产生的编排错误。
@@ -425,9 +404,9 @@ def apply_task_status(
         current_status = current["status"]
         if current_status == status:
             return state, []
-        if current_status in {"completed", "failed", "skipped"}:
+        if current_status in {"completed", "partial", "failed", "skipped"}:
             return state, []
-        if status == "completed" and current_status == "pending":
+        if status in {"completed", "partial"} and current_status == "pending":
             running_state, running_errors = apply_task_status(
                 state,
                 task_type,
@@ -435,17 +414,33 @@ def apply_task_status(
             )
             if has_orchestration_failure(running_errors):
                 return running_state, running_errors
-            completed_state, completed_errors = apply_task_status(
+            terminal_state, terminal_errors = apply_task_status(
                 running_state,
                 task_type,
-                "completed",
+                status,
                 output_refs=output_refs,
+                error=error,
             )
-            return completed_state, [*running_errors, *completed_errors]
+            return terminal_state, [*running_errors, *terminal_errors]
 
+    run_id = state["run"]["run_id"]
+    execution_id = (
+        str(current["execution_id"])
+        if current is not None and current.get("execution_id")
+        else build_task_execution_id(run_id, task_type)
+    )
+    current_attempt_count = current.get("attempt_count", 0) if current is not None else 0
+    attempt_count = (
+        current_attempt_count + 1
+        if status == "running"
+        and (current is None or current.get("status") in {"pending", "retrying"})
+        else current_attempt_count
+    )
     update = TaskStatusUpdate(
-        task_id=build_task_id(state["run"]["run_id"], task_type),
+        task_id=build_task_id(run_id, task_type),
+        execution_id=execution_id,
         status=status,
+        attempt_count=attempt_count,
         output_refs=list(output_refs),
         error=error,
         updated_at=utc_now_iso(),
@@ -515,45 +510,18 @@ def _needs_human_review(state: FileGovernanceState) -> bool:
     )
 
 
-def _block_downstream_tasks(
-    state: FileGovernanceState,
-    failed_task_type: str,
-    failure_message: str,
-) -> tuple[FileGovernanceState, list[ErrorRecord]]:
-    """把失败业务 Task 之后、报告之前的 Task 标记为阻断跳过。
-
-    Args:
-        state: 已把当前业务 Task 标记为 failed 的工作状态。
-        failed_task_type: 实际执行失败的 Task 类型。
-        failure_message: 写入失败 Task 的错误摘要。
-
-    Returns:
-        下游 Task 已跳过的工作状态和新增编排错误。
-    """
-    working_state = state
-    new_errors: list[ErrorRecord] = []
-    failed_index = TASK_EXECUTION_ORDER.index(failed_task_type)
-    blocking_reason = f"被上游 {failed_task_type} 失败阻断：{failure_message}"
-    for task_type in TASK_EXECUTION_ORDER[failed_index + 1 : -1]:
-        working_state, update_errors = apply_task_status(
-            working_state,
-            task_type,
-            "skipped",
-            error=blocking_reason,
-        )
-        new_errors.extend(update_errors)
-        if has_orchestration_failure(update_errors):
-            break
-    return working_state, new_errors
-
-
 def sync_business_task_status(
     state: FileGovernanceState,
     task_type: str,
     *,
     next_task_type: str | None,
 ) -> dict:
-    """同步一个业务子图结果并在成功时启动确定的下一阶段。
+    """同步一个业务子图结果，并把未决错误留给 Recovery 后再决定 Task 终态。
+
+    节点发现未决错误时不得提前把当前 Task 标记为 failed 或跳过下游 Task，
+    否则后续安全降级无法在不违反 Task 终态协议的前提下继续流程。Recovery
+    选择 abort 时会统一写入失败状态；选择重试或降级后，本函数会在续跑时
+    完成当前 Task 并启动确定的下一阶段。
 
     Args:
         state: 已合并当前业务子图结果的顶层治理状态。
@@ -567,21 +535,7 @@ def sync_business_task_status(
     new_errors: list[ErrorRecord] = []
     fatal_errors = _fatal_errors_for_stage(state, task_type)
     if fatal_errors:
-        failure_message = _format_failure_message(task_type, fatal_errors)
-        working_state, update_errors = apply_task_status(
-            working_state,
-            task_type,
-            "failed",
-            error=failure_message,
-        )
-        new_errors.extend(update_errors)
-        if not has_orchestration_failure(update_errors):
-            working_state, blocked_errors = _block_downstream_tasks(
-                working_state,
-                task_type,
-                failure_message,
-            )
-            new_errors.extend(blocked_errors)
+        # 未决错误必须先进入 Recovery；此处保持 DAG 可恢复，不抢先写入不可逆终态。
         return public_task_update(working_state, new_errors)
 
     working_state, update_errors = apply_task_status(
@@ -659,7 +613,7 @@ def settle_unfinished_tasks_before_report(
         )
     for task_type in TASK_EXECUTION_ORDER[:-1]:
         task = _task_by_type(working_state, task_type)
-        if task is None or task["status"] not in {"pending", "running"}:
+        if task is None or task["status"] not in {"pending", "running", "retrying"}:
             continue
         working_state, update_errors = apply_task_status(
             working_state,

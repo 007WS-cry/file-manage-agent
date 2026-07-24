@@ -23,6 +23,7 @@ from app.services.context_compaction import copy_context_compact_state
 from app.services.memory_policy import copy_memory_state
 from app.state.factories import (
     copy_application_database_state,
+    copy_recovery_state,
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
@@ -35,8 +36,9 @@ from app.storage.database import (
 )
 from app.storage.orm_models import HumanReviewModel
 from app.storage.repositories import create_repository_bundle
+from app.utils.error_context import create_node_error, is_error_unresolved
 from app.utils.lifecycle import update_run_stage, with_lifecycle_defaults
-from app.utils.runtime import create_error_record, paths_overlap, utc_now_iso
+from app.utils.runtime import paths_overlap, utc_now_iso
 
 """本模块只定义顶层运行初始化、Hook、Prompt、请求校验和最终收口图节点。"""
 
@@ -56,6 +58,16 @@ def initialize_run(state: FileGovernanceState) -> dict:
     thread_id = previous_run.get("thread_id") or run_id
     started_at = previous_run.get("started_at") or utc_now_iso()
     application_database = copy_application_database_state(state.get("application_database"))
+    report = {
+        "summary": "",
+        "report_markdown": "",
+        "warnings": [],
+        "report_path": None,
+        "generated_at": None,
+        "degradation_ids": [],
+        "recovered_error_ids": [],
+        **state.get("report", {}),
+    }
     result = {
         "run": {
             "run_id": run_id,
@@ -69,16 +81,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
             "human_review",
             {"pending_group_ids": [], "selections": {}, "review_note": None},
         ),
-        "report": state.get(
-            "report",
-            {
-                "summary": "",
-                "report_markdown": "",
-                "warnings": [],
-                "report_path": None,
-                "generated_at": None,
-            },
-        ),
+        "report": report,
         "pdf_exports": state.get("pdf_exports", []),
         "deliveries": state.get("deliveries", []),
         "prompt": state.get("prompt", create_prompt_state()),
@@ -88,11 +91,14 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "memory": copy_memory_state(state.get("memory")),
         "context_compact": copy_context_compact_state(state.get("context_compact")),
         "application_database": application_database,
+        "recovery": copy_recovery_state(state.get("recovery")),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),
         "team_messages": state.get("team_messages", []),
         "llm_calls": state.get("llm_calls", []),
+        "node_executions": state.get("node_executions", []),
+        "degradations": state.get("degradations", []),
     }
     if not application_database["enabled"]:
         return result
@@ -133,7 +139,8 @@ def initialize_run(state: FileGovernanceState) -> dict:
         application_database["last_error"] = "治理运行初始化记录写入失败。"
         result["application_database"] = application_database
         result["errors"] = [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="application_database",
                 node_name="initialize_run",
                 category="database",
@@ -169,7 +176,8 @@ def execute_before_run_hooks(state: FileGovernanceState) -> dict:
         return {
             "run": update_run_stage(normalized_state, "before_run_hooks_failed"),
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="before_run_hooks",
                     node_name="execute_before_run_hooks",
                     category="hook",
@@ -284,7 +292,8 @@ def validate_request(state: FileGovernanceState) -> dict:
         return {
             "run": run,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="request_validation",
                     node_name="validate_request",
                     category="validation",
@@ -337,7 +346,8 @@ def load_system_prompt(state: FileGovernanceState) -> dict:
             "prompt": record_prompt_load_error(prompt_state),
             "run": update_run_stage(normalized_state, "system_prompt_failed"),
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="system_prompt",
                     node_name="load_system_prompt",
                     category="prompt",
@@ -370,7 +380,8 @@ def execute_after_run_hooks(state: FileGovernanceState) -> dict:
         return {
             "run": update_run_stage(normalized_state, "after_run_hooks_failed"),
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="after_run_hooks",
                     node_name="execute_after_run_hooks",
                     category="hook",
@@ -391,7 +402,7 @@ def finalize_run(state: FileGovernanceState) -> dict:
         最终运行信息、应用数据库状态以及可选非致命数据库错误。
     """
     errors = state.get("errors", [])
-    if any(error["fatal"] for error in errors):
+    if any(is_error_unresolved(error) for error in errors):
         status = "failed"
     elif errors:
         status = "partial"
@@ -441,7 +452,9 @@ def finalize_run(state: FileGovernanceState) -> dict:
                 current_stage=run["current_stage"],
                 report_path=state.get("report", {}).get("report_path"),
                 error_summary=(
-                    f"fatal={sum(bool(item['fatal']) for item in errors)};total={len(errors)}"
+                    "fatal="
+                    f"{sum(is_error_unresolved(item) for item in errors)};"
+                    f"total={len(errors)}"
                     if errors
                     else None
                 ),
@@ -475,7 +488,8 @@ def finalize_run(state: FileGovernanceState) -> dict:
         result["run"] = run
         result["application_database"] = application_database
         result["errors"] = [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="application_database",
                 node_name="finalize_run",
                 category="database",

@@ -8,6 +8,7 @@ import pytest
 from app.services.task_system import (
     TASK_ROLE_BY_TYPE,
     assign_tasks_to_roles,
+    build_task_execution_id,
     build_task_id,
     create_task_dag,
     resolve_subagent_task,
@@ -95,6 +96,10 @@ def test_same_run_id_creates_identical_stable_dag() -> None:
         build_task_id(RUN_ID, "human_review"),
         build_task_id(RUN_ID, "report"),
     ]
+    assert [task["execution_id"] for task in first] == [
+        build_task_execution_id(RUN_ID, task["task_type"]) for task in first
+    ]
+    assert all(task["attempt_count"] == 0 for task in first)
     assert topologically_sort_tasks(first) == first
 
 
@@ -142,6 +147,26 @@ def test_recreating_partial_dag_only_adds_missing_tasks() -> None:
     assert len(recreated) == 6
     assert recreated[0] == existing_inventory
     assert recreated[1]["created_at"] == "2026-07-21T09:00:00+00:00"
+
+
+def test_recreating_legacy_dag_backfills_execution_contract() -> None:
+    """0.6.0 Task 应补齐稳定执行 ID 和零次尝试，且不改变已有业务字段。"""
+    legacy = cast(TaskItem, dict(_create_tasks()[0]))
+    legacy.pop("execution_id")
+    legacy.pop("attempt_count")
+    legacy["status"] = "running"
+    legacy["output_refs"] = ["files"]
+
+    recreated = create_task_dag(
+        RUN_ID,
+        created_at=CREATED_AT,
+        existing_tasks=[legacy],
+    )
+
+    assert recreated[0]["execution_id"] == build_task_execution_id(RUN_ID, "inventory")
+    assert recreated[0]["attempt_count"] == 0
+    assert recreated[0]["status"] == "running"
+    assert recreated[0]["output_refs"] == ["files"]
 
 
 def test_merge_by_task_id_updates_without_duplicates_or_reordering() -> None:
@@ -310,6 +335,20 @@ def test_todo_projection_distinguishes_normal_skip_from_blocked_skip() -> None:
 
     assert normal_todos[2]["status"] == "completed"
     assert blocked_todos[2]["status"] == "blocked"
+
+
+def test_todo_projection_maps_retrying_and_partial_statuses() -> None:
+    """重试中 Task 应展示进行中，部分完成 Task 应允许关联 Todo 正常收口。"""
+    retrying_tasks = _create_tasks()
+    _replace_task(retrying_tasks, "inventory", status="retrying", error="准备重试")
+    partial_tasks = _create_tasks()
+    _replace_task(partial_tasks, "inventory", status="partial", error="跳过一个损坏文件")
+
+    retrying_todos = update_todos_from_tasks(RUN_ID, retrying_tasks)
+    partial_todos = update_todos_from_tasks(RUN_ID, partial_tasks)
+
+    assert retrying_todos[0]["status"] == "in_progress"
+    assert partial_todos[0]["status"] == "completed"
 
 
 def test_failed_task_blocks_its_related_todo() -> None:

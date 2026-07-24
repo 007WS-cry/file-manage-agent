@@ -19,7 +19,7 @@ from app.tools.file_scanner import (
 from app.tools.file_scanner import (
     mark_exact_duplicates as mark_exact_duplicates_tool,
 )
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 from app.utils.state_lookup import find_file_by_id
 
 """本模块实现 Inventory 子图的文件发现、逐文件解析、标准化和错误隔离节点。"""
@@ -58,7 +58,8 @@ def discover_input_files(state: InventoryGraphState) -> dict:
             "current_document": None,
             "current_parse_error": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="inventory",
                     node_name="discover_input_files",
                     category="filesystem",
@@ -85,7 +86,8 @@ def register_file_metadata(state: InventoryGraphState) -> dict:
             files.append(build_file_record(file_path))
         except (OSError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="inventory",
                     node_name="register_file_metadata",
                     category="filesystem",
@@ -113,7 +115,8 @@ def mark_exact_duplicates(state: InventoryGraphState) -> dict:
     except (TypeError, ValueError) as exc:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="inventory",
                     node_name="mark_exact_duplicates",
                     category="validation",
@@ -193,7 +196,8 @@ def record_unsupported_file(state: InventoryGraphState) -> dict:
     return {
         "files": files,
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="inventory",
                 node_name="record_unsupported_file",
                 category="parse",
@@ -286,7 +290,8 @@ def record_parse_error(state: InventoryGraphState) -> dict:
     return {
         "files": files,
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="inventory",
                 node_name="record_parse_error",
                 category="parse",
@@ -327,7 +332,8 @@ def validate_inventory_results(state: InventoryGraphState) -> dict:
         return {}
     return {
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="inventory",
                 node_name="validate_inventory_results",
                 category="validation",

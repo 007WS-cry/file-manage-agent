@@ -163,7 +163,15 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     ) in edges
     assert (
         "sync_human_review_task_status",
-        "generate_failure_report",
+        "run_error_recovery_subgraph",
+    ) in edges
+    assert (
+        "run_error_recovery_subgraph",
+        "select_resume_after_failed_stage",
+    ) in edges
+    assert (
+        "select_resume_after_failed_stage",
+        "generate_governance_report",
     ) in edges
     assert ("generate_no_data_report", "sync_report_task_status") in edges
     assert ("generate_governance_report", "sync_report_task_status") in edges
@@ -172,6 +180,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     assert ("execute_after_run_hooks", "finalize_run") in edges
     assert (
         "execute_after_run_hooks",
+        "run_error_recovery_subgraph",
+    ) in edges
+    assert (
+        "run_error_recovery_subgraph",
         "generate_lifecycle_failure_report",
     ) in edges
 
@@ -246,9 +258,15 @@ def test_invalid_delivery_log_is_nonfatal_and_reaches_recommendation(
     assert len(result["decisions"]) == 1
     assert any(error["stage"] == "evidence" and not error["fatal"] for error in result["errors"])
     task_statuses = {task["task_type"]: task["status"] for task in result["tasks"]}
-    assert task_statuses["evidence"] == "completed"
+    assert task_statuses["evidence"] == "partial"
     assert task_statuses["report"] == "completed"
-    assert "## 运行警告" in result["report"]["report_markdown"]
+    assert any(
+        degradation["stage"] == "evidence"
+        and degradation["action"] == "partial_result"
+        for degradation in result["degradations"]
+    )
+    assert "## 已恢复错误" in result["report"]["report_markdown"]
+    assert "## 降级项" in result["report"]["report_markdown"]
 
 
 def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> None:
@@ -398,7 +416,9 @@ def test_cli_runs_empty_directory_request(tmp_path: Path, capsys) -> None:
     assert output["task_status_counts"] == {
         "pending": 0,
         "running": 0,
+        "retrying": 0,
         "completed": 2,
+        "partial": 0,
         "failed": 0,
         "skipped": 4,
     }
@@ -466,7 +486,9 @@ def test_cli_outputs_task_progress_during_pause_and_after_resume(
     assert paused_output["task_status_counts"] == {
         "pending": 1,
         "running": 1,
+        "retrying": 0,
         "completed": 4,
+        "partial": 0,
         "failed": 0,
         "skipped": 0,
     }
@@ -507,7 +529,9 @@ def test_cli_outputs_task_progress_during_pause_and_after_resume(
     assert resumed_output["task_status_counts"] == {
         "pending": 0,
         "running": 0,
+        "retrying": 0,
         "completed": 6,
+        "partial": 0,
         "failed": 0,
         "skipped": 0,
     }

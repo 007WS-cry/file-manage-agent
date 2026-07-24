@@ -14,7 +14,7 @@ from app.graphs.file_governance import build_file_governance_graph
 from app.state.factories import create_initial_state
 from app.storage.checkpoints import open_checkpointer
 
-"""本模块提供生命周期、应用数据库、人工恢复和最小 Task 摘要命令行入口。"""
+"""本模块提供生命周期、应用数据库、分类型人工恢复和最小 Task 摘要 CLI。"""
 
 
 # CLI 未显式配置 SQLite 数据库时使用的默认 checkpoint 路径。
@@ -26,7 +26,9 @@ MAX_CLI_JSON_BYTES = 1024 * 1024
 TASK_STATUS_VALUES: tuple[str, ...] = (
     "pending",
     "running",
+    "retrying",
     "completed",
+    "partial",
     "failed",
     "skipped",
 )
@@ -75,12 +77,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--application-database-path",
         type=Path,
-        help="启用并覆盖五张应用表共用的 SQLite 数据库路径。",
+        help="启用并覆盖七张应用表共用的 SQLite 数据库路径。",
     )
 
     resume_parser = subparsers.add_parser(
         "resume",
-        help="从 SQLite checkpoint 恢复一次人工审核。",
+        help="从 SQLite checkpoint 恢复主版本审核或错误恢复。",
     )
     resume_parser.add_argument("response_file", type=Path, help="人工选择 JSON 文件路径。")
     resume_parser.add_argument(
@@ -371,18 +373,105 @@ def resolve_application_database_payload(
     return application_database_config
 
 
+def build_interrupt_cli_prompt(payload: dict[str, Any]) -> str:
+    """根据 interrupt kind 生成不会混淆两种人工协议的 CLI 提示。
+
+    Args:
+        payload: LangGraph interrupt 暴露的受控字典载荷。
+
+    Returns:
+        面向 CLI 用户的下一步中文提示；未知类型返回通用恢复说明。
+    """
+    kind = payload.get("kind")
+    if kind == "file_governance_review":
+        return (
+            "请在恢复 JSON 中提交 selections（每个待审核 group_id 对应一个组内 "
+            "file_id），可选提交 review_note，然后使用 resume 子命令恢复。"
+        )
+    if kind == "error_recovery":
+        action_labels = {
+            "retry": "重新执行失败节点",
+            "skip_file": "跳过关联文件并记录降级",
+            "provide_path": "提供新的只读输入目录后重试",
+            "abort": "终止本次治理运行",
+        }
+        raw_allowed_actions = payload.get("allowed_actions", [])
+        if not isinstance(raw_allowed_actions, (list, tuple)):
+            raw_allowed_actions = []
+        allowed_actions = [
+            action
+            for action in raw_allowed_actions
+            if isinstance(action, str) and action in action_labels
+        ]
+        action_text = "、".join(
+            f"{action}（{action_labels[action]}）" for action in allowed_actions
+        )
+        if not action_text:
+            action_text = "interrupt 载荷声明的白名单动作"
+        return (
+            f"请在恢复 JSON 中从 {action_text} 选择 action；"
+            "选择 provide_path 时必须同时提交 replacement_path，然后使用 resume 子命令恢复。"
+        )
+    return "请按 interrupt 的 instruction 和 expected_schema 准备恢复 JSON。"
+
+
+def build_interrupt_response_example(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """为已知 interrupt kind 构造最小兼容恢复 JSON 示例。
+
+    Args:
+        payload: LangGraph interrupt 暴露的受控字典载荷。
+
+    Returns:
+        主版本选择或错误恢复的最小示例；未知类型返回 None。
+    """
+    kind = payload.get("kind")
+    if kind == "file_governance_review":
+        return {
+            "selections": {"<group_id>": "<file_id>"},
+            "review_note": None,
+        }
+    if kind == "error_recovery":
+        raw_allowed_actions = payload.get("allowed_actions", [])
+        if not isinstance(raw_allowed_actions, (list, tuple)):
+            raw_allowed_actions = []
+        allowed_actions = [
+            action
+            for action in raw_allowed_actions
+            if isinstance(action, str)
+            and action in {"retry", "skip_file", "provide_path", "abort"}
+        ]
+        example_action = allowed_actions[0] if allowed_actions else "abort"
+        example: dict[str, Any] = {
+            "action": example_action,
+            "note": None,
+        }
+        if example_action == "provide_path":
+            example["replacement_path"] = "<absolute_input_directory>"
+        return example
+    return None
+
+
 def serialize_interrupts(result: dict[str, Any]) -> list[Any]:
-    """把 LangGraph Interrupt 对象转换为可输出的 JSON 值。
+    """把 LangGraph Interrupt 转换为带分类型 CLI 提示的 JSON 值。
 
     Args:
         result: 图调用返回的顶层状态对象。
 
     Returns:
-        Interrupt 的 ``value`` 列表；不存在暂停时返回空列表。
+        Interrupt 的安全载荷、CLI 提示和兼容响应示例；不存在暂停时返回空列表。
     """
     values = []
     for item in result.get("__interrupt__", ()):
-        values.append(getattr(item, "value", item))
+        value = getattr(item, "value", item)
+        if not isinstance(value, dict):
+            values.append(value)
+            continue
+        serialized = dict(value)
+        serialized["cli_prompt"] = build_interrupt_cli_prompt(serialized)
+        response_example = build_interrupt_response_example(serialized)
+        if response_example is not None:
+            serialized["response_example"] = response_example
+        values.append(serialized)
     return values
 
 
@@ -415,13 +504,14 @@ def serialize_todos(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def count_task_statuses(result: dict[str, Any]) -> dict[str, int]:
-    """统计顶层状态中五种固定 Task 状态的数量。
+    """统计顶层状态中七种固定 Task 状态的数量。
 
     Args:
         result: 图调用返回的顶层状态对象。
 
     Returns:
-        始终包含 pending、running、completed、failed、skipped 的计数字典。
+        始终包含 pending、running、retrying、completed、partial、failed、
+        skipped 的计数字典。
     """
     counts = {status: 0 for status in TASK_STATUS_VALUES}
     for task in result.get("tasks", []):
@@ -532,7 +622,7 @@ def run_command(arguments: argparse.Namespace) -> int:
 
 
 def resume_command(arguments: argparse.Namespace) -> int:
-    """执行 ``resume`` 子命令并从 SQLite 恢复人工审核。
+    """执行 ``resume`` 子命令并按 checkpoint 中的 interrupt kind 恢复。
 
     Args:
         arguments: ``argparse`` 解析后的恢复参数。
@@ -559,7 +649,7 @@ def resume_command(arguments: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """解析 CLI 参数并执行新的治理运行或人工审核恢复。
+    """解析 CLI 参数并执行新的治理运行或分类型人工恢复。
 
     Args:
         argv: 可选命令行参数序列；为 ``None`` 时读取当前进程参数。
