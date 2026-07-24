@@ -104,6 +104,49 @@ RECOVERY_TASK_NODES = {
     "report": "generate_failure_report",
 }
 
+# Team Orchestration 内部子图调用错误到顶层分派包装节点的固定映射。
+RECOVERY_ORCHESTRATION_NODE_TRANSITIONS = {
+    "invoke_content_subagent_graph": (
+        "dispatch_content_subagent_task",
+        "run_version_analysis_subgraph",
+    ),
+    "invoke_version_subagent_graph": (
+        "run_version_analysis_subgraph",
+        "sync_version_task_status",
+    ),
+    "invoke_evidence_subagent_graph": (
+        "dispatch_evidence_subagent_task",
+        "run_context_compact_after_evidence",
+    ),
+}
+
+# Team Orchestration 分派链中的节点集合，用 Task 类型消歧后回到对应顶层包装节点。
+RECOVERY_ORCHESTRATION_DISPATCH_NODES = frozenset(
+    {
+        "select_task_skills",
+        "load_task_skills",
+        "bind_task_skills",
+        "validate_subagent_payload",
+        "create_assignment_message",
+        "invoke_content_subagent_graph",
+        "invoke_version_subagent_graph",
+        "invoke_evidence_subagent_graph",
+        "validate_team_message",
+        "fallback_to_coordinator",
+        "build_fallback_result_message",
+        "merge_subagent_artifacts",
+        "append_task_output_refs",
+        "release_task_skills",
+    }
+)
+
+# Team Orchestration 分派 Task 类型到顶层包装节点的固定映射。
+RECOVERY_ORCHESTRATION_TASK_NODES = {
+    "inventory": "dispatch_content_subagent_task",
+    "version_analysis": "run_version_analysis_subgraph",
+    "evidence": "dispatch_evidence_subagent_task",
+}
+
 # 允许在顶层条件边重新执行的节点集合。
 RECOVERY_RETRY_NODES = frozenset(RECOVERY_NODE_TRANSITIONS)
 
@@ -483,13 +526,11 @@ def resolve_recovery_targets(
     if node_name in RECOVERY_NODE_TRANSITIONS:
         return node_name, RECOVERY_NODE_TRANSITIONS[node_name]
 
-    stage_node = RECOVERY_STAGE_NODES.get(str(error.get("stage", "")))
-    if (
-        error.get("stage") != "team_orchestration"
-        and stage_node in RECOVERY_NODE_TRANSITIONS
-    ):
-        return stage_node, RECOVERY_NODE_TRANSITIONS[stage_node]
+    orchestration_transition = RECOVERY_ORCHESTRATION_NODE_TRANSITIONS.get(node_name)
+    if orchestration_transition is not None:
+        return orchestration_transition
 
+    task = None
     if state is not None and error.get("task_id") is not None:
         task = next(
             (
@@ -499,10 +540,28 @@ def resolve_recovery_targets(
             ),
             None,
         )
-        if task is not None:
-            task_node = RECOVERY_TASK_NODES.get(str(task.get("task_type", "")))
-            if task_node in RECOVERY_NODE_TRANSITIONS:
-                return task_node, RECOVERY_NODE_TRANSITIONS[task_node]
+
+    if (
+        task is not None
+        and node_name in RECOVERY_ORCHESTRATION_DISPATCH_NODES
+    ):
+        task_node = RECOVERY_ORCHESTRATION_TASK_NODES.get(
+            str(task.get("task_type", ""))
+        )
+        if task_node in RECOVERY_NODE_TRANSITIONS:
+            return task_node, RECOVERY_NODE_TRANSITIONS[task_node]
+
+    stage_node = RECOVERY_STAGE_NODES.get(str(error.get("stage", "")))
+    if (
+        error.get("stage") != "team_orchestration"
+        and stage_node in RECOVERY_NODE_TRANSITIONS
+    ):
+        return stage_node, RECOVERY_NODE_TRANSITIONS[stage_node]
+
+    if task is not None:
+        task_node = RECOVERY_TASK_NODES.get(str(task.get("task_type", "")))
+        if task_node in RECOVERY_NODE_TRANSITIONS:
+            return task_node, RECOVERY_NODE_TRANSITIONS[task_node]
 
     if stage_node in RECOVERY_NODE_TRANSITIONS:
         return stage_node, RECOVERY_NODE_TRANSITIONS[stage_node]

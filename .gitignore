@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.6.5 Task、人工恢复、CLI 提示、恢复路由、幂等执行和数据库快照含运行信息
+# 0.7.0 Task、故障注入、人工恢复、幂等重放和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -132,6 +132,10 @@ subgraph_error*.json
 error_context*.json
 recovery_registration*.json
 fallback_registration*.json
+replay_snapshot*.json
+state_reference*.json
+release_validation*.json
+v060_compatibility*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/
