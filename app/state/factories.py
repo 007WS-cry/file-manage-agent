@@ -802,7 +802,7 @@ def create_application_database_state(
     context_compact: ContextCompactState | None = None,
     checkpoint_path: str | Path | None = None,
 ) -> ApplicationDatabaseState:
-    """创建与 Checkpointer 隔离、并供五张应用表共同使用的数据库状态。
+    """创建与 Checkpointer 隔离、并供七张应用表共同使用的数据库状态。
 
     Memory 或 Context Summary 已启用时会自动启用本状态，并要求三者使用同一个
     SQLite 文件。只启用运行历史或工具审计时，可以单独传入
@@ -934,7 +934,7 @@ def create_initial_state(
         skill_registry_path: 可选受控 Skill 注册表路径；省略时使用项目默认资源。
         memory_config: 可选短期与长期 Memory 配置；省略时不访问应用数据库。
         context_compact_config: 可选 Context Compact 阈值、预览与持久化配置。
-        application_database_config: 可选运行历史、工具审计与人工选择数据库配置。
+        application_database_config: 可选七表应用数据库、日志与锁等待配置。
         recovery_config: 可选错误分类、有限重试、退避、降级和人工恢复策略。
         checkpoint_path: 可选 SQLite Checkpointer 路径，用于与应用数据库隔离。
         thread_id: 可选 Checkpointer 线程 ID；非 CLI 调用可在初始化时回退为 run_id。

@@ -16,6 +16,7 @@ def create_empty_governance_state(
     *,
     prompt_config: Mapping[str, object] | None = None,
     hook_config: Mapping[str, object] | None = None,
+    recovery_config: Mapping[str, object] | None = None,
 ) -> dict[str, Any]:
     """创建仅包含空输入目录的生命周期集成测试状态。
 
@@ -23,6 +24,7 @@ def create_empty_governance_state(
         tmp_path: pytest 为当前测试提供的隔离临时目录。
         prompt_config: 可选 System Prompt 配置。
         hook_config: 可选生命周期 Hook 配置。
+        recovery_config: 可选恢复策略；旧失败路径测试可显式关闭恢复。
 
     Returns:
         可直接提交给顶层文件治理图的完整初始状态。
@@ -49,6 +51,7 @@ def create_empty_governance_state(
         },
         prompt_config=prompt_config,
         hook_config=hook_config,
+        recovery_config=recovery_config,
     )
 
 
@@ -148,6 +151,7 @@ def test_prompt_load_failure_stops_before_inventory_and_generates_report(
             "enabled": True,
             "source_path": str(tmp_path / "missing_prompt.md"),
         },
+        recovery_config={"enabled": False},
     )
 
     result = invoke_lifecycle_graph(state, thread_id="prompt-load-failure")
@@ -172,6 +176,7 @@ def test_blocking_before_run_hook_stops_business_graph(
             "before_run": ["unregistered_before_hook"],
             "default_failure_policy": "block",
         },
+        recovery_config={"enabled": False},
     )
 
     result = invoke_lifecycle_graph(state, thread_id="blocking-before-hook")
@@ -221,6 +226,7 @@ def test_blocking_after_run_hook_generates_lifecycle_failure_report(
             "after_run": ["unregistered_after_hook"],
             "default_failure_policy": "block",
         },
+        recovery_config={"enabled": False},
     )
 
     result = invoke_lifecycle_graph(state, thread_id="blocking-after-hook")

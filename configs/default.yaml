@@ -177,7 +177,7 @@ application_database:
   # 默认关闭以兼容 0.5.0；Memory 或 Context Summary 启用时会自动接通同一数据库。
   enabled: false
 
-  # 0.6.0 已接通运行历史、Memory、Context Summary、工具审计和人工选择五张表。
+  # 七张应用表保存运行、Memory、摘要、审计、人工选择、错误恢复和节点执行事实。
   backend: sqlite
 
   # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。
@@ -193,7 +193,7 @@ application_database:
   timeout_seconds: 30.0
 
 recovery:
-  # 0.6.1 只建立恢复状态和确定性策略；Error Recovery 子图将在后续批次接入。
+  # 0.6.3 已由第七个 Error Recovery 子图消费；关闭时异常直接进入失败报告。
   enabled: true
 
   # 未单独配置错误类别时使用保守策略：不自动重试、不静默降级、允许人工处理。

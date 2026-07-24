@@ -1,14 +1,13 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.2` 是从 `0.6.0`
-演进到 `0.7.0` Error Recovery 的第二批，新增错误恢复和节点幂等执行两张表、
-短事务 Repository、可逆迁移及旧 checkpoint 重放保护；本批尚未把 Recovery 子图
-接入主流程。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.3` 是从 `0.6.0`
+演进到 `0.7.0` Error Recovery 的第三批，新增第七个恢复子图、顶层失败路由、
+子图边界未捕获异常入口、失败阶段安全续跑和成功节点结果复用。
 `0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
 和应用数据库发布收口。
 `governance_runs`、`memory_items`、`context_summaries`、`tool_call_audits`、
-`human_reviews` 五张表已经全部接线；`error_recovery_records` 和
-`node_execution_records` 已提供持久化基础，同时继续保证模型失败或上下文压缩
+`human_reviews` 五张基础表已经全部接线；`error_recovery_records` 和
+`node_execution_records` 已接入恢复执行，同时继续保证模型失败或上下文压缩
 不会改变版本关系、证据、推荐和人工选择。Content、Version、Evidence 可分别路由 Claude、
 Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中转站。
 当前具备：
@@ -22,6 +21,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 进程内或 SQLite LangGraph checkpoint；
 - 独立 SQLAlchemy 应用数据库、七表 ORM/迁移和 Repository 数据访问边界；
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
+- 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
+- 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
+- 输入摘要一致、结果摘要校验通过时复用成功节点的受控状态更新产物；
 - 治理运行生命周期、脱敏工具审计和人工选择的幂等持久化；
 - 大型工具输出只保存受控产物引用、固定摘要和字节数；
 - 当前运行短期阶段摘要、跨运行长期 Memory 召回和幂等持久化；
@@ -80,8 +82,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 0.2.0、0.3.0、0.4.0 参照路径及 0.5.0 状态升级兼容测试；
 - 不持久化 API Key、私有模型 Prompt 或完整解析正文的 SQLite checkpoint 边界。
 
-四个子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
-Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Python 接口
+四个业务子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
+Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为第七个
+编排子图统一承接失败出口。当前版本提供 Python 接口
 和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
@@ -97,8 +100,9 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 同步后及 Evidence 解释分派后调用 Context Compact，不改变任何治理决策字段；
 `0.6.0` 接通运行历史、工具审计和人工选择，补齐 0.5.0 兼容及组合发布验收；
 `0.6.1` 只建立 Error Recovery 状态和策略基础；`0.6.2` 增加两张恢复持久化表、
-短事务 Repository 和第二个可逆迁移，但仍不改变六个既有子图的正常路径、错误路由、
-治理结论或人工主版本确认协议。
+短事务 Repository 和第二个可逆迁移；`0.6.3` 接入第七个恢复子图，把既有
+direct-failure 出口统一改到 Recovery，并在不改变正常治理结论和人工主版本确认
+协议的前提下提供有限重试、安全降级、恢复型人工输入和结果复用。
 
 ## 安全边界
 
@@ -129,6 +133,9 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
   JSON、YAML、LangGraph 状态、checkpoint、日志、Team Message 或调用审计。
 - 应用数据库与 LangGraph checkpoint 必须使用不同 SQLite 文件；数据库 Session
   只在单次事务中使用，Repository 不得自行 commit 或跨线程共享 Session。
+- 恢复跳转只能来自固定节点白名单；节点错误处理器只建立结构化错误并进入 Recovery，
+  不得直接选择业务降级。
+- 节点结果只在幂等键和输入摘要均一致、受控产物路径合法且结果摘要校验通过时复用。
 - 长期 Memory 只允许固定模板摘要及版本组、文件、证据记录 ID 和计数白名单；
   文档正文、API Key、完整模型 Prompt、审核自由文本、收件人和原始证据引用不得
   写入应用数据库。
@@ -168,11 +175,11 @@ file-manage-agent/
 │   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
-│   ├── services/              # 标准化、版本图、推荐、Memory、压缩和恢复策略
+│   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
 │   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
-│   ├── graphs/                # 四业务图、Context Compact、团队图与顶层治理图
+│   ├── graphs/                # 四业务图、Context Compact、团队图、恢复图与顶层图
 │   └── entrypoints/           # 最小 CLI
 ├── alembic/                   # 应用数据库迁移环境和版本脚本
 ├── alembic.ini                # 默认应用数据库迁移配置
@@ -200,6 +207,7 @@ file-manage-agent/
 ├── docs/release-0.6.0-skills-memory-context.md # 0.6.0 正式发布说明
 ├── docs/version-0.6.1-recovery-state-policy.md # 0.7.0 第一批恢复状态与策略
 ├── docs/version-0.6.2-recovery-persistence.md # 0.7.0 第二批恢复与幂等持久化
+├── docs/version-0.6.3-error-recovery-graph.md # 0.7.0 第三批恢复子图与顶层路由
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -886,6 +894,26 @@ state = create_initial_state(
 后续接入约束见
 [0.6.2 恢复与幂等持久化说明](docs/version-0.6.2-recovery-persistence.md)。
 
+## 0.6.3 Error Recovery 子图与顶层路由
+
+本版本在前两批协议和持久化基础上构建第七个 Error Recovery 子图，并把顶层图的
+direct-failure 分支统一改到恢复入口：
+
+- 子图依次选择待处理错误、检查可复用结果、按策略决定动作并收口恢复结果；
+- `error_handler` 只捕获六个子图包装节点未处理的异常，建立脱敏错误和失败执行记录，
+  再用 `Command` 进入 Recovery，不直接决定重试或降级；
+- `resume_failed_stage()` 只允许回到固定失败节点，`resume_after_failed_stage()` 只
+  允许进入该阶段预先声明的正常后继节点；
+- 自动重试受分类策略和最大次数约束，确定性退避值进入状态但不持有数据库事务；
+- 无法自动恢复时可采用固定安全降级、发起独立 `error_recovery` 人工中断或终止；
+- 成功节点把最小状态更新写入受控中间产物；再次执行时只有幂等键、输入摘要、
+  结果摘要和产物路径全部校验通过才会复用；
+- 每次恢复错误或节点执行持久化都独立打开并关闭短事务，SQLAlchemy `Session`
+  不跨子图调用、条件边或 `interrupt()` 存活。
+
+完整流程、路由白名单和安全边界见
+[0.6.3 Error Recovery 子图说明](docs/version-0.6.3-error-recovery-graph.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1253,6 +1281,8 @@ python -m compileall -q app tests
   元数据一致性；
 - 错误恢复跨运行隔离、重试次数倒退拒绝、节点输入摘要不可变和结果复用查询；
 - 模拟相邻图节点使用不同 Session，且每个上下文退出后不保留活动事务；
+- Error Recovery 子图的有限重试、固定降级、独立人工中断和终止分支；
+- 顶层子图未捕获异常进入 Recovery、成功后回到声明后继及结果复用不重复执行；
 - Memory 策略的长正文/凭据拒绝、有界历史偏好和自由文本隔离；
 - 释放并重建数据库连接后的长期 Memory 召回；
 - 应用数据库原始字节不包含文档长正文、API Key 或完整模型 Prompt；
@@ -1278,22 +1308,22 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.6.2 -t file-manage-agent:0.6.2 .
+docker build --build-arg APP_VERSION=0.6.3 -t file-manage-agent:0.6.3 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.6.2 \
+  --build-arg APP_VERSION=0.6.3 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.6.2-mainstream .
+  -t file-manage-agent:0.6.3-mainstream .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.6.2
+docker run --rm file-manage-agent:0.6.3
 ```
 
 容器首次使用应用数据库时，可在同一个可写产物卷中执行迁移。镜像内默认通过
@@ -1304,7 +1334,7 @@ docker run --rm file-manage-agent:0.6.2
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --entrypoint python \
-  file-manage-agent:0.6.2 \
+  file-manage-agent:0.6.3 \
   -m alembic upgrade head
 ```
 
@@ -1320,7 +1350,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.6.2 \
+  file-manage-agent:0.6.3 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1333,7 +1363,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.6.2 \
+  file-manage-agent:0.6.3 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -1344,5 +1374,5 @@ docker run --rm \
 - PostgreSQL 等生产级 Checkpointer；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
-- Error Recovery 子图、跨节点自动恢复、多进程 Worker、邮件 MCP 证据和 Worktree；
+- 多进程 Worker 的抢占锁和崩溃后任务领取、邮件 MCP 证据和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

@@ -77,7 +77,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--application-database-path",
         type=Path,
-        help="启用并覆盖五张应用表共用的 SQLite 数据库路径。",
+        help="启用并覆盖七张应用表共用的 SQLite 数据库路径。",
     )
 
     resume_parser = subparsers.add_parser(

@@ -4,6 +4,10 @@ from typing import Literal
 
 from langgraph.types import Send
 
+from app.services.recovery_execution import (
+    RECOVERY_RESUME_AFTER_NODES,
+    RECOVERY_RETRY_NODES,
+)
 from app.services.task_system import TASK_DAG_TEMPLATE, build_task_id, validate_task_dag
 from app.state.models import (
     ContentSubagentGraphState,
@@ -12,6 +16,7 @@ from app.state.models import (
     EvidenceSubagentGraphState,
     FileGovernanceState,
     InventoryGraphState,
+    RecoveryGraphState,
     TeamOrchestrationGraphState,
     VersionAnalysisGraphState,
     VersionSubagentGraphState,
@@ -32,11 +37,108 @@ def route_context_compaction(
         计划明确要求压缩时返回 ``compact``，否则返回 ``skip``。
     """
     plan = state.get("plan")
-    return (
-        "compact"
-        if plan is not None and plan.get("should_compact") is True
-        else "skip"
-    )
+    return "compact" if plan is not None and plan.get("should_compact") is True else "skip"
+
+
+def route_recovery_reuse_result(
+    state: RecoveryGraphState,
+) -> Literal["reused", "decide", "abort"]:
+    """根据成功节点执行检查结果选择复用、策略判断或安全终止。
+
+    Args:
+        state: 已执行 ``inspect_reusable_execution`` 的恢复子图状态。
+
+    Returns:
+        已找到可复用结果时返回 ``reused``；目标非法时返回 ``abort``；
+        其余情况返回 ``decide``。
+    """
+    action = state["recovery"].get("action")
+    if action == "reuse_result":
+        return "reused"
+    if action == "abort":
+        return "abort"
+    return "decide"
+
+
+def route_recovery_action(
+    state: RecoveryGraphState,
+) -> Literal["retry", "fallback", "wait_human", "abort"]:
+    """把确定性恢复策略动作路由到对应恢复节点。
+
+    Args:
+        state: 已执行 ``decide_recovery_action`` 的恢复子图状态。
+
+    Returns:
+        retry、fallback、wait_human 或 abort 中的固定分支。
+    """
+    action = state["recovery"].get("action")
+    if action in {"retry", "fallback", "wait_human"}:
+        return action
+    return "abort"
+
+
+def route_recovery_human_action(
+    state: RecoveryGraphState,
+) -> Literal["retry", "fallback", "abort"]:
+    """根据恢复型人工输入选择重试、安全跳过或终止。
+
+    Args:
+        state: 已校验并应用人工恢复值的恢复子图状态。
+
+    Returns:
+        retry、fallback 或 abort 中的固定分支。
+    """
+    action = state["recovery"]["human"].get("selected_action")
+    if action in {"retry", "provide_path"}:
+        return "retry"
+    if action == "skip_file":
+        return "fallback"
+    return "abort"
+
+
+def resume_failed_stage(state: FileGovernanceState) -> str:
+    """在 Error Recovery 结束后选择重试节点或第二段续跑路由。
+
+    Args:
+        state: 已合并第七个子图输出的顶层治理状态。
+
+    Returns:
+        白名单内的失败节点、续跑选择器或失败报告节点。
+    """
+    recovery = state.get("recovery", {})
+    action = recovery.get("action")
+    retry_node = recovery.get("resume_node")
+    if action == "retry" and retry_node in RECOVERY_RETRY_NODES:
+        return str(retry_node)
+    if action in {
+        "reuse_result",
+        "skip_file",
+        "fallback",
+        "continue_partial",
+    }:
+        return "select_resume_after_failed_stage"
+    if action == "abort" and retry_node == "execute_after_run_hooks":
+        return "generate_lifecycle_failure_report"
+    return "generate_failure_report"
+
+
+def resume_after_failed_stage(state: FileGovernanceState) -> str:
+    """在结果复用或安全降级后选择固定业务后继节点。
+
+    Args:
+        state: 已通过续跑选择器建立稳定 checkpoint 的顶层状态。
+
+    Returns:
+        白名单内的正常后继节点；目标缺失或非法时返回失败报告。
+    """
+    recovery = state.get("recovery", {})
+    resume_after_node = recovery.get("resume_after_node")
+    if (
+        recovery.get("action") in {"reuse_result", "skip_file", "fallback", "continue_partial"}
+        and resume_after_node in RECOVERY_RESUME_AFTER_NODES
+    ):
+        return str(resume_after_node)
+    return "generate_failure_report"
 
 
 def route_before_run_hooks_result(
@@ -202,9 +304,7 @@ def route_skill_preparation_result(
         "load_task_skills",
         "bind_task_skills",
     }
-    has_error = any(
-        error.get("node_name") in skill_nodes for error in state.get("errors", [])
-    )
+    has_error = any(error.get("node_name") in skill_nodes for error in state.get("errors", []))
     selection = state.get("skill_selection")
     context = state.get("skill_context", [])
     if has_error or selection is None or not context:
@@ -348,8 +448,7 @@ def has_valid_version_subagent_summary(
     matching_calls = [
         call
         for call in state.get("llm_calls", [])
-        if call.get("task_id") == request["task_id"]
-        and call.get("agent_id") == "version-subagent"
+        if call.get("task_id") == request["task_id"] and call.get("agent_id") == "version-subagent"
     ]
     if not matching_calls:
         return "deterministic"
@@ -434,8 +533,7 @@ def route_team_initialization_result(
         团队合法时返回 ``valid``；初始化产生致命错误时返回 ``invalid``。
     """
     has_error = any(
-        error.get("node_name") == "initialize_fixed_agent_team"
-        and error.get("fatal") is True
+        error.get("node_name") == "initialize_fixed_agent_team" and error.get("fatal") is True
         for error in state.get("errors", [])
     )
     return "invalid" if has_error else "valid"
@@ -474,8 +572,7 @@ def route_subagent_payload_validation(
         当前载荷合法时返回 ``assign``，存在校验错误时返回 ``fallback``。
     """
     has_error = any(
-        error.get("node_name") == "validate_subagent_payload"
-        for error in state.get("errors", [])
+        error.get("node_name") == "validate_subagent_payload" for error in state.get("errors", [])
     )
     return "fallback" if has_error else "assign"
 
@@ -493,8 +590,7 @@ def select_subagent(
         不完整时返回 ``fallback``。
     """
     if any(
-        error.get("node_name") == "create_assignment_message"
-        for error in state.get("errors", [])
+        error.get("node_name") == "create_assignment_message" for error in state.get("errors", [])
     ):
         return "fallback"
     request = state.get("dispatch_request")
@@ -521,8 +617,7 @@ def route_team_message_validation(
         当前响应合法且具有结构化结果时返回 ``merge``，否则返回 ``fallback``。
     """
     has_error = any(
-        error.get("node_name") == "validate_team_message"
-        for error in state.get("errors", [])
+        error.get("node_name") == "validate_team_message" for error in state.get("errors", [])
     )
     if has_error or state.get("dispatch_result") is None:
         return "fallback"
@@ -530,9 +625,7 @@ def route_team_message_validation(
 
 
 def route_subagent_input_validation(
-    state: ContentSubagentGraphState
-    | VersionSubagentGraphState
-    | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
 ) -> Literal["valid", "invalid"]:
     """根据三个固定 Subagent 的输入协议校验结果选择 Prompt 或错误消息。
 
@@ -554,9 +647,7 @@ def route_subagent_input_validation(
 
 
 def route_subagent_prompt_validation(
-    state: ContentSubagentGraphState
-    | VersionSubagentGraphState
-    | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
 ) -> Literal["invoke", "error"]:
     """根据最小 Prompt 和固定 before-model 安全检查结果决定是否调用模型。
 
@@ -580,9 +671,7 @@ def route_subagent_prompt_validation(
 
 
 def route_subagent_llm_result(
-    state: ContentSubagentGraphState
-    | VersionSubagentGraphState
-    | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
 ) -> Literal["validate", "fallback", "error"]:
     """根据结构化模型结果和回退开关选择输出校验、确定性回退或错误消息。
 
@@ -601,9 +690,7 @@ def route_subagent_llm_result(
 
 
 def route_subagent_output_validation(
-    state: ContentSubagentGraphState
-    | VersionSubagentGraphState
-    | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
 ) -> Literal["persist", "fallback", "error"]:
     """根据输出 Schema 和引用白名单校验结果选择固化、回退或错误消息。
 

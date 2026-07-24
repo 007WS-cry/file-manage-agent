@@ -193,7 +193,7 @@ def test_business_failure_marks_only_origin_failed_and_blocks_downstream(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
-    """业务子图失败时只标记对应 Task failed，下游应阻断跳过且报告仍完成。"""
+    """业务子图失败降级后应保留部分结果，并阻断依赖该 Task 的下游。"""
     governance_module = importlib.import_module("app.graphs.file_governance")
 
     def fail_version_analysis(state: FileGovernanceState) -> dict:
@@ -234,5 +234,8 @@ def test_business_failure_marks_only_origin_failed_and_blocks_downstream(
     assert result["todos"][1]["status"] == "blocked"
     assert result["todos"][2]["status"] == "blocked"
     assert result["todos"][3]["status"] == "completed"
-    assert result["run"]["status"] == "failed"
-    assert result["report"]["summary"] == "文件版本治理未能安全完成。"
+    assert result["run"]["status"] == "partial"
+    assert any(
+        error["status"] == "fallback_applied" and error["fallback"] == "partial_result"
+        for error in result["errors"]
+    )
