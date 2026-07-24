@@ -30,6 +30,7 @@ from app.state.models import (
     VersionSubagentInput,
     VersionSubagentOutput,
 )
+from app.utils.error_context import copy_error_context, create_error_context
 
 """本模块转换顶层、业务及团队编排状态，并隔离队列和单次分派私有字段。"""
 
@@ -141,6 +142,10 @@ def file_governance_to_context_compact_state(
         只包含运行、工作空间、Prompt、文档和压缩私有字段的子图状态。
     """
     return ContextCompactGraphState(
+        error_context=create_error_context(
+            state,
+            task_type=("inventory" if stage == "after_inventory" else "evidence"),
+        ),
         run=dict(state["run"]),
         workspace=dict(state["workspace"]),
         prompt=copy_prompt_state(state["prompt"]),
@@ -187,7 +192,8 @@ def file_governance_to_team_orchestration_state(
     """把顶层治理状态转换为 Team Orchestration 子图输入。
 
     顶层运行信息、Task 和 Todo 按值复制。``task_update`` 只作为本次子图调用的
-    私有命令传入；顶层已有业务错误不进入子图，避免干扰 DAG 校验路由。
+    私有命令传入；仅同一 Task 的错误恢复进度进入子图，供重试保持计数，
+    其他历史业务错误仍被隔离，避免干扰 DAG 校验路由。
 
     Args:
         state: 包含运行信息和可选已有 Task、Todo 的顶层治理状态。
@@ -195,10 +201,20 @@ def file_governance_to_team_orchestration_state(
         dispatch_request: 本次 Team Orchestration 调用使用的可选固定 Subagent 请求。
 
     Returns:
-        已隔离顶层业务错误且包含独立数据副本的团队编排子图状态。
+        已隔离无关历史错误且包含独立数据副本的团队编排子图状态。
     """
     registry = state.get("skill_registry", create_pending_skill_registry())
+    context_task_id = None
+    if task_update is not None:
+        context_task_id = str(task_update["task_id"])
+    elif dispatch_request is not None:
+        context_task_id = str(dispatch_request["task_id"])
     return TeamOrchestrationGraphState(
+        error_context=create_error_context(
+            state,
+            task_type="inventory" if context_task_id is None else None,
+            task_id=context_task_id,
+        ),
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
@@ -212,7 +228,12 @@ def file_governance_to_team_orchestration_state(
         todos=[dict(todo) for todo in state.get("todos", [])],
         team_messages=[dict(message) for message in state.get("team_messages", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
-        errors=[],
+        errors=[
+            dict(error)
+            for error in state.get("errors", [])
+            if context_task_id is not None
+            and error.get("task_id") == context_task_id
+        ],
     )
 
 
@@ -258,6 +279,7 @@ def file_governance_to_inventory_state(
         所有 Inventory 私有字段均已初始化的子图状态。
     """
     return InventoryGraphState(
+        error_context=create_error_context(state, task_type="inventory"),
         request=dict(state["request"]),
         workspace=dict(state["workspace"]),
         discovered_paths=[],
@@ -309,6 +331,10 @@ def file_governance_to_version_analysis_state(
         所有版本分析私有字段均已初始化的子图状态。
     """
     return VersionAnalysisGraphState(
+        error_context=create_error_context(
+            state,
+            task_type="version_analysis",
+        ),
         run=dict(state["run"]),
         request=dict(state["request"]),
         llm=dict(state["llm"]),
@@ -389,6 +415,7 @@ def version_analysis_to_team_orchestration_state(
         包含真实 Task DAG、固定团队和审计历史的独立编排子图状态。
     """
     return TeamOrchestrationGraphState(
+        error_context=copy_error_context(state["error_context"]),
         run=dict(state["run"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
@@ -402,7 +429,11 @@ def version_analysis_to_team_orchestration_state(
         todos=[dict(todo) for todo in state.get("todos", [])],
         team_messages=[dict(message) for message in state.get("team_messages", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
-        errors=[],
+        errors=[
+            dict(error)
+            for error in state.get("errors", [])
+            if error.get("task_id") == dispatch_request["task_id"]
+        ],
     )
 
 
@@ -448,6 +479,7 @@ def file_governance_to_evidence_state(
         所有 Evidence 私有执行字段均已初始化的子图状态。
     """
     return EvidenceGraphState(
+        error_context=create_error_context(state, task_type="evidence"),
         run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),
@@ -500,6 +532,10 @@ def file_governance_to_recommendation_state(
         候选集合和推荐结果均已清空的 Recommendation 子图状态。
     """
     return RecommendationGraphState(
+        error_context=create_error_context(
+            state,
+            task_type="recommendation",
+        ),
         run=dict(state["run"]),
         request=dict(state["request"]),
         files=list(state.get("files", [])),

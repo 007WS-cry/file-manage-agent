@@ -6,6 +6,7 @@ from app.services.reporting import (
     escape_markdown_cell,
 )
 from app.state.models import FileGovernanceState
+from app.utils.error_context import is_error_unresolved
 
 """本模块实现失败、无数据、版本摘要、证据治理及生命周期收口报告节点。"""
 
@@ -283,7 +284,7 @@ def generate_lifecycle_failure_report(state: FileGovernanceState) -> dict:
     lifecycle_errors = [
         error
         for error in state.get("errors", [])
-        if error["fatal"]
+        if is_error_unresolved(error)
         and error["category"] == "hook"
         and error["stage"] in {"after_run", "after_run_hooks"}
     ]

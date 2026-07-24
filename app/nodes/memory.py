@@ -17,7 +17,7 @@ from app.state.models import (
     RecommendationGraphState,
 )
 from app.storage.memory_repository import MemoryRepository
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 
 """本模块只定义在治理主图或业务子图中注册的 Memory 召回、应用、捕获和持久化节点。"""
 
@@ -44,7 +44,8 @@ def recall_long_term_memory(state: FileGovernanceState) -> dict:
         return {
             "memory": memory,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="memory_recall",
                     node_name="recall_long_term_memory",
                     category="memory",
@@ -74,7 +75,8 @@ def recall_long_term_memory(state: FileGovernanceState) -> dict:
         return {
             "memory": memory,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="memory_recall",
                     node_name="recall_long_term_memory",
                     category="memory",
@@ -191,7 +193,8 @@ def persist_long_term_memory(state: FileGovernanceState) -> dict:
         return {
             "memory": memory,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="memory_persist",
                     node_name="persist_long_term_memory",
                     category="memory",
@@ -212,7 +215,8 @@ def persist_long_term_memory(state: FileGovernanceState) -> dict:
         return {
             "memory": memory,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="memory_persist",
                     node_name="persist_long_term_memory",
                     category="memory",
@@ -250,7 +254,8 @@ def persist_long_term_memory(state: FileGovernanceState) -> dict:
         return {
             "memory": memory,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="memory_persist",
                     node_name="persist_long_term_memory",
                     category="memory",

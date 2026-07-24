@@ -258,8 +258,13 @@ def test_invalid_delivery_log_is_nonfatal_and_reaches_recommendation(
     assert len(result["decisions"]) == 1
     assert any(error["stage"] == "evidence" and not error["fatal"] for error in result["errors"])
     task_statuses = {task["task_type"]: task["status"] for task in result["tasks"]}
-    assert task_statuses["evidence"] == "completed"
+    assert task_statuses["evidence"] == "partial"
     assert task_statuses["report"] == "completed"
+    assert any(
+        degradation["stage"] == "evidence"
+        and degradation["action"] == "partial_result"
+        for degradation in result["degradations"]
+    )
     assert "## 运行警告" in result["report"]["report_markdown"]
 
 

@@ -224,12 +224,12 @@ def test_business_failure_marks_only_origin_failed_and_blocks_downstream(
     )
 
     assert task_by_type(result, "inventory")["status"] == "completed"
-    assert task_by_type(result, "version_analysis")["status"] == "failed"
+    assert task_by_type(result, "version_analysis")["status"] == "partial"
     for task_type in ("evidence", "recommendation", "human_review"):
         task = task_by_type(result, task_type)
         assert task["status"] == "skipped"
         assert task["error"] is not None
-    assert sum(task["status"] == "failed" for task in result["tasks"]) == 1
+    assert sum(task["status"] == "failed" for task in result["tasks"]) == 0
     assert task_by_type(result, "report")["status"] == "completed"
     assert result["todos"][1]["status"] == "blocked"
     assert result["todos"][2]["status"] == "blocked"

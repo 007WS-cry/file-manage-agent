@@ -18,7 +18,7 @@ from app.storage.database import (
 )
 from app.storage.orm_models import ContextSummaryModel
 from app.storage.repositories import create_repository_bundle
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 
 """本模块只定义独立 Context Compact 子图显式注册的估算、压缩和持久化节点。"""
 
@@ -49,8 +49,9 @@ def estimate_context_tokens(state: ContextCompactGraphState) -> dict:
         return {
             "context_compact": context_compact,
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="estimate_context_tokens",
                     category="context",
                     message="上下文 Token 估算失败，已跳过本次压缩。",
@@ -76,8 +77,9 @@ def compact_context(state: ContextCompactGraphState) -> dict:
     if plan is None:
         return {
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="compact_context",
                     category="context",
                     message="Context Compact 缺少压缩计划，已保留原上下文。",
@@ -117,8 +119,9 @@ def compact_context(state: ContextCompactGraphState) -> dict:
         return {
             "context_compact": context_compact,
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="compact_context",
                     category="context",
                     message="上下文压缩执行失败，已保留当前治理流程。",
@@ -171,8 +174,9 @@ def persist_context_compaction_artifact(
             "summary_draft": copy_context_summary(summary),
             "compaction_payload": None,
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="persist_context_compaction_artifact",
                     category="context",
                     message="Context Compact 产物写入失败，完整内容仍可由 content_ref 重建。",
@@ -203,8 +207,9 @@ def persist_context_summary(state: ContextCompactGraphState) -> dict:
         return {
             "context_compact": context_compact,
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="persist_context_summary",
                     category="context",
                     message="Context Summary 草稿不存在，已跳过持久化。",
@@ -227,8 +232,9 @@ def persist_context_summary(state: ContextCompactGraphState) -> dict:
             "context_compact": result_context,
             "summary_draft": None,
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="persist_context_summary",
                     category="context",
                     message="Context Summary 数据库路径未配置，已跳过持久化。",
@@ -280,8 +286,9 @@ def persist_context_summary(state: ContextCompactGraphState) -> dict:
             "context_compact": result_context,
             "summary_draft": None,
             "errors": [
-                create_error_record(
-                    stage="context_compact",
+                create_node_error(
+                    state,
+                    stage=f"context_compact_{state['stage']}",
                     node_name="persist_context_summary",
                     category="context",
                     message="Context Summary 持久化失败，治理流程继续执行。",

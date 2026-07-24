@@ -15,8 +15,8 @@ from app.state.models import (
     PdfMatchWorkerState,
 )
 from app.tools.delivery_log import load_local_delivery_log as load_local_delivery_log_tool
+from app.utils.error_context import create_node_error
 from app.utils.evidence import create_pdf_match_job_id
-from app.utils.runtime import create_error_record
 
 """本模块实现独立 Evidence 子图的 PDF 来源与本地发送证据处理节点。"""
 
@@ -65,7 +65,8 @@ def create_pdf_match_jobs(state: EvidenceGraphState) -> dict:
         for file_id in group["file_ids"]:
             if file_id not in file_by_id:
                 errors.append(
-                    create_error_record(
+                    create_node_error(
+                        state,
                         stage="evidence",
                         node_name="create_pdf_match_jobs",
                         category="validation",
@@ -82,7 +83,8 @@ def create_pdf_match_jobs(state: EvidenceGraphState) -> dict:
         group_ids = groups_by_file.get(pdf_file_id, [])
         if len(group_ids) != 1:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence",
                     node_name="create_pdf_match_jobs",
                     category="validation",
@@ -164,7 +166,8 @@ def match_pdf_to_source_version(state: PdfMatchWorkerState) -> dict:
         return {
             "pdf_match_jobs": [job],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence",
                     node_name="match_pdf_to_source_version",
                     category="evidence",
@@ -206,7 +209,8 @@ def join_pdf_matches(state: EvidenceGraphState) -> dict:
         return {}
     return {
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="evidence",
                 node_name="join_pdf_matches",
                 category="validation",
@@ -239,7 +243,8 @@ def load_local_delivery_log(state: EvidenceGraphState) -> dict:
         return {
             "delivery_log_entries": [],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence",
                     node_name="load_local_delivery_log",
                     category="evidence",
@@ -276,7 +281,8 @@ def match_delivery_to_version(state: EvidenceGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as exc:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence",
                     node_name="match_delivery_to_version",
                     category="validation",
@@ -312,7 +318,8 @@ def merge_external_evidence(state: EvidenceGraphState) -> dict:
         return {}
     return {
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="evidence",
                 node_name="merge_external_evidence",
                 category="validation",
@@ -398,7 +405,8 @@ def validate_evidence_confidence(state: EvidenceGraphState) -> dict:
         return {}
     return {
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="evidence",
                 node_name="validate_evidence_confidence",
                 category="validation",

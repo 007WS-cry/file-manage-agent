@@ -26,7 +26,7 @@ from app.services.recommendation import (
     select_recommended_file as select_recommended_file_service,
 )
 from app.state.models import DecisionRecord, RecommendationCandidateSet, RecommendationGraphState
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 
 """本模块实现独立 Recommendation 子图的候选、证据、选择与校验节点。"""
 
@@ -57,7 +57,8 @@ def find_editable_leaf_versions(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="find_editable_leaf_versions",
                     category="validation",
@@ -97,7 +98,8 @@ def score_version_candidates(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="score_version_candidates",
                     category="validation",
@@ -129,7 +131,8 @@ def apply_delivery_rules(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="apply_delivery_rules",
                     category="validation",
@@ -161,7 +164,8 @@ def apply_pdf_source_rules(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="apply_pdf_source_rules",
                     category="validation",
@@ -209,7 +213,8 @@ def select_main_versions(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="select_main_versions",
                     category="validation",
@@ -248,7 +253,8 @@ def explain_recommendations(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="explain_recommendations",
                     category="validation",
@@ -285,7 +291,8 @@ def calculate_decision_confidence(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="calculate_decision_confidence",
                     category="validation",
@@ -326,7 +333,8 @@ def preserve_complete_version_chains(state: RecommendationGraphState) -> dict:
             )
         except (KeyError, TypeError, ValueError) as exc:
             errors.append(
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="recommendation",
                     node_name="preserve_complete_version_chains",
                     category="validation",
@@ -443,7 +451,8 @@ def validate_recommendation_results(state: RecommendationGraphState) -> dict:
         return {}
     return {
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="recommendation",
                 node_name="validate_recommendation_results",
                 category="validation",

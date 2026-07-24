@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Literal, cast
+from collections.abc import Mapping, Sequence
+from typing import Any, Literal, cast
 
 from app.state.factories import (
     DEFAULT_MAX_PARALLEL_AGENTS,
@@ -16,7 +16,8 @@ from app.state.models import (
     TeamOrchestrationGraphState,
     TeamState,
 )
-from app.utils.runtime import create_error_record, utc_now_iso
+from app.utils.error_context import create_node_error
+from app.utils.runtime import utc_now_iso
 
 """本模块提供 Team Orchestration 节点使用的状态转换与错误收敛辅助能力。"""
 
@@ -51,26 +52,34 @@ ALLOWED_SKILL_IDS_BY_ROLE: dict[str, frozenset[str]] = {
 }
 
 
-def create_orchestration_error(node_name: str, error: Exception) -> ErrorRecord:
+def create_orchestration_error(
+    state: Mapping[str, Any],
+    node_name: str,
+    error: Exception,
+) -> ErrorRecord:
     """把 Team Orchestration 节点异常转换为结构化致命校验错误。
 
     Args:
+        state: 当前 Team Orchestration 子图状态，用于绑定运行、任务和节点执行标识。
         node_name: 产生异常的节点函数名称。
         error: 已捕获且不会继续向 LangGraph 外传播的异常。
 
     Returns:
         可由顶层和子图 ``errors`` reducer 合并的结构化错误。
     """
-    return create_error_record(
+    return create_node_error(
+        state,
         stage="team_orchestration",
         node_name=node_name,
         category="validation",
         message=str(error),
+        exception=error,
         fatal=True,
     )
 
 
 def create_dispatch_error(
+    state: Mapping[str, Any],
     node_name: str,
     error: Exception,
     *,
@@ -79,6 +88,7 @@ def create_dispatch_error(
     """把 Subagent 分派异常转换为不包含输入正文的结构化编排错误。
 
     Args:
+        state: 当前 Team Orchestration 子图状态，用于绑定运行、任务和节点执行标识。
         node_name: 捕获分派异常的 LangGraph 节点函数名称。
         error: 协议校验、角色选择或子图调用产生的异常。
         fatal: 是否阻断整个治理运行；协调者可回退的错误默认为 False。
@@ -87,11 +97,13 @@ def create_dispatch_error(
         可由 ``errors`` reducer 合并的 Team Orchestration 错误记录。
     """
     message = str(error).strip() or type(error).__name__
-    return create_error_record(
+    return create_node_error(
+        state,
         stage="team_orchestration",
         node_name=node_name,
         category="protocol",
         message=message[:1_000],
+        exception=error,
         fatal=fatal,
     )
 

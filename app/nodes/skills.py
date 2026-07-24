@@ -23,7 +23,7 @@ from app.state.models import (
     TeamOrchestrationGraphState,
     TeamState,
 )
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 
 """本模块只定义顶层图和 Team Orchestration 图中显式注册的 Skill 生命周期节点。"""
 
@@ -51,10 +51,11 @@ def load_skill_registry(state: FileGovernanceState) -> dict:
         return {
             "skill_registry": failed_registry,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="skills",
                     node_name="load_skill_registry",
-                    category="validation",
+                    category="skill",
                     message=str(error),
                     fatal=True,
                 )
@@ -98,10 +99,11 @@ def select_task_skills(state: TeamOrchestrationGraphState) -> dict:
             "skill_selection": None,
             "skill_context": [],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="team_orchestration",
                     node_name="select_task_skills",
-                    category="validation",
+                    category="skill",
                     message=str(error),
                     fatal=False,
                 )
@@ -129,10 +131,11 @@ def load_task_skills(state: TeamOrchestrationGraphState) -> dict:
         return {
             "skill_context": [],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="team_orchestration",
                     node_name="load_task_skills",
-                    category="validation",
+                    category="skill",
                     message=str(error),
                     fatal=False,
                 )
@@ -181,10 +184,11 @@ def bind_task_skills(state: TeamOrchestrationGraphState) -> dict:
         return {
             "skill_context": [],
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="team_orchestration",
                     node_name="bind_task_skills",
-                    category="validation",
+                    category="skill",
                     message=str(error),
                     fatal=False,
                 )

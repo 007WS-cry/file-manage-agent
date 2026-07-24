@@ -92,7 +92,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.6.3 Task、Memory、恢复路由、幂等执行和数据库快照只在运行时生成
+# 0.6.4 Task、统一错误上下文、恢复路由、幂等执行和数据库快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -156,6 +156,9 @@ recovery_graph*.json
 recovery_resume*.json
 recovery_result*.json
 subgraph_error*.json
+error_context*.json
+recovery_registration*.json
+fallback_registration*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

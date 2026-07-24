@@ -7,6 +7,9 @@ from typing import Any, cast
 from langgraph.types import interrupt
 
 from app.services.recovery_execution import (
+    attach_error_execution_context,
+    materialize_error_node_execution,
+    persist_node_execution,
     persist_recovery_error,
     resolve_recovery_targets,
 )
@@ -23,6 +26,7 @@ from app.state.models import (
     FileGovernanceState,
     RecoveryGraphState,
 )
+from app.utils.error_context import is_error_unresolved
 from app.utils.runtime import paths_overlap, utc_now_iso
 
 """本模块只定义 Error Recovery 子图和顶层恢复续跑选择器明确注册的节点函数。"""
@@ -61,8 +65,12 @@ def select_recovery_error(state: RecoveryGraphState) -> dict:
             (
                 error
                 for error in reversed(state.get("errors", []))
-                if error.get("fatal") is True
-                or error.get("status") in {"pending", "retrying", "waiting_human", "failed"}
+                if is_error_unresolved(error)
+                or (
+                    error.get("status")
+                    in {"pending", "retrying", "waiting_human", "failed"}
+                    and error.get("status") not in {"recovered", "fallback_applied"}
+                )
             ),
             None,
         )
@@ -79,6 +87,11 @@ def select_recovery_error(state: RecoveryGraphState) -> dict:
     retry_node, resume_after_node = resolve_recovery_targets(
         normalized_error,
         state,
+    )
+    normalized_error = attach_error_execution_context(
+        state,
+        normalized_error,
+        recovery_node=retry_node,
     )
     if retry_node is None or resume_after_node is None:
         normalized_error["status"] = "failed"
@@ -108,6 +121,15 @@ def select_recovery_error(state: RecoveryGraphState) -> dict:
         "recovery": recovery,
         "errors": [*state.get("errors", []), normalized_error],
     }
+    error_execution = materialize_error_node_execution(
+        working_state,
+        normalized_error,
+    )
+    working_state["node_executions"] = [
+        *state.get("node_executions", []),
+        error_execution,
+    ]
+    persist_node_execution(working_state, error_execution)
     persist_recovery_error(
         working_state,
         normalized_error,
@@ -116,6 +138,7 @@ def select_recovery_error(state: RecoveryGraphState) -> dict:
     return {
         "run": run,
         "errors": [normalized_error],
+        "node_executions": [error_execution],
         "recovery": recovery,
     }
 
@@ -392,6 +415,51 @@ def apply_recovery_fallback(state: RecoveryGraphState) -> dict:
             "recovered_at": created_at,
         },
     )
+    cohort_errors: list[ErrorRecord] = [fallback_error]
+    cohort_degradations: list[DegradationRecord] = [degradation]
+    for related_error in state.get("errors", []):
+        if related_error.get("id") == error.get("id"):
+            continue
+        if related_error.get("task_id") != error.get("task_id"):
+            continue
+        if related_error.get("fallback") != fallback:
+            continue
+        if related_error.get("status") in {"recovered", "fallback_applied"}:
+            continue
+        related_error_id = str(related_error["id"])
+        cohort_errors.append(
+            cast(
+                ErrorRecord,
+                {
+                    **dict(related_error),
+                    "status": "fallback_applied",
+                    "fatal": False,
+                    "recovered_at": created_at,
+                },
+            )
+        )
+        related_degradation_id = (
+            "degradation-"
+            + hashlib.sha256(
+                f"{state['run']['run_id']}\x1f{related_error_id}\x1f{fallback}".encode()
+            ).hexdigest()
+        )
+        cohort_degradations.append(
+            DegradationRecord(
+                id=related_degradation_id,
+                error_id=related_error_id,
+                stage=str(related_error["stage"]),
+                action=cast(Any, fallback),
+                summary=f"恢复流程已应用安全降级：{fallback}。",
+                affected_file_ids=(
+                    [str(related_error["related_file_id"])]
+                    if related_error.get("related_file_id") is not None
+                    else []
+                ),
+                impact="同一 Task 的关联错误已统一收敛，最终报告将标记为部分完成。",
+                created_at=created_at,
+            )
+        )
     tasks = []
     for task in state.get("tasks", []):
         if task.get("task_id") != error.get("task_id"):
@@ -411,11 +479,19 @@ def apply_recovery_fallback(state: RecoveryGraphState) -> dict:
         if fallback == "skip_file"
         else ("continue_partial" if fallback == "partial_result" else "fallback")
     )
+    cohort_error_ids = {item["id"] for item in cohort_errors}
     recovery["degradation_ids"] = list(
-        dict.fromkeys([*recovery["degradation_ids"], degradation_id])
+        dict.fromkeys(
+            [
+                *recovery["degradation_ids"],
+                *(item["id"] for item in cohort_degradations),
+            ]
+        )
     )
     recovery["pending_error_ids"] = [
-        error_id for error_id in recovery["pending_error_ids"] if error_id != error["id"]
+        error_id
+        for error_id in recovery["pending_error_ids"]
+        if error_id not in cohort_error_ids
     ]
     recovery["last_policy_reason"] = f"已应用固定安全降级 {fallback}。"
     run = dict(state["run"])
@@ -424,18 +500,31 @@ def apply_recovery_fallback(state: RecoveryGraphState) -> dict:
         **state,
         "run": run,
         "recovery": recovery,
-        "errors": [*state.get("errors", []), fallback_error],
+        "errors": [*state.get("errors", []), *cohort_errors],
     }
-    persist_recovery_error(
-        working_state,
-        fallback_error,
-        action=recovery["action"],
-    )
+    cohort_executions = []
+    for cohort_error in cohort_errors:
+        cohort_execution = materialize_error_node_execution(
+            working_state,
+            cohort_error,
+        )
+        cohort_executions.append(cohort_execution)
+        working_state["node_executions"] = [
+            *working_state.get("node_executions", []),
+            cohort_execution,
+        ]
+        persist_node_execution(working_state, cohort_execution)
+        persist_recovery_error(
+            working_state,
+            cohort_error,
+            action=recovery["action"],
+        )
     return {
         "run": run,
         "tasks": tasks,
-        "errors": [fallback_error],
-        "degradations": [degradation],
+        "errors": cohort_errors,
+        "degradations": cohort_degradations,
+        "node_executions": cohort_executions,
         "recovery": recovery,
     }
 

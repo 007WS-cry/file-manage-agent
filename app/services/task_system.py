@@ -162,6 +162,38 @@ def build_task_execution_id(run_id: str, task_type: str) -> str:
     return f"{build_task_id(run_id, task_type)}:execution"
 
 
+def resolve_error_task(
+    tasks: Sequence[TaskItem],
+    *,
+    task_id: str | None = None,
+    task_type: str | None = None,
+) -> TaskItem | None:
+    """按显式 ID 或固定类型查找错误所属 Task，并返回与输入解耦的副本。
+
+    Args:
+        tasks: 当前运行的固定 Task DAG。
+        task_id: 可选的精确 Task ID，存在时优先匹配。
+        task_type: 可选的固定 Task 类型，仅在精确 ID 未命中时使用。
+
+    Returns:
+        命中的 Task 副本；两个条件均未命中时返回 None。
+    """
+    if task_id is not None:
+        matched = next(
+            (task for task in tasks if task.get("task_id") == task_id),
+            None,
+        )
+        if matched is not None:
+            return cast(TaskItem, dict(matched))
+    if task_type is None:
+        return None
+    matched = next(
+        (task for task in tasks if task.get("task_type") == task_type),
+        None,
+    )
+    return cast(TaskItem, dict(matched)) if matched is not None else None
+
+
 def _index_tasks(tasks: Sequence[TaskItem]) -> dict[str, TaskItem]:
     """按照 task_id 建立索引，并拒绝空 ID 和重复 Task。
 

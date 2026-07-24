@@ -31,6 +31,11 @@ from app.storage.database import (
     open_application_session,
 )
 from app.storage.repositories import create_repository_bundle
+from app.utils.error_context import (
+    create_error_context,
+    create_node_error,
+    create_node_execution_id,
+)
 from app.utils.runtime import create_error_record, utc_now_iso
 
 """本模块实现恢复目标白名单、子图幂等执行、结果产物复用及短事务恢复持久化。"""
@@ -42,6 +47,7 @@ RECOVERY_NODE_TRANSITIONS = {
     "validate_request": "load_system_prompt",
     "load_system_prompt": "load_skill_registry",
     "load_skill_registry": "recall_long_term_memory",
+    "recall_long_term_memory": "plan_run_tasks",
     "plan_run_tasks": "run_inventory_subgraph",
     "run_inventory_subgraph": "sync_inventory_task_status",
     "sync_inventory_task_status": "run_context_compact_after_inventory",
@@ -56,6 +62,7 @@ RECOVERY_NODE_TRANSITIONS = {
     "run_recommendation_subgraph": "sync_recommendation_task_status",
     "sync_recommendation_task_status": "generate_governance_report",
     "sync_human_review_task_status": "generate_governance_report",
+    "persist_long_term_memory": "execute_after_run_hooks",
     "execute_after_run_hooks": "finalize_run",
 }
 
@@ -66,14 +73,19 @@ RECOVERY_STAGE_NODES = {
     "request_validation": "validate_request",
     "system_prompt": "load_system_prompt",
     "skills": "load_skill_registry",
+    "memory_recall": "recall_long_term_memory",
+    "memory_persist": "persist_long_term_memory",
     "team_orchestration": "plan_run_tasks",
     "inventory": "run_inventory_subgraph",
     "inventory_subgraph": "run_inventory_subgraph",
+    "content_subagent": "dispatch_content_subagent_task",
     "context_compact_after_inventory": "run_context_compact_after_inventory",
     "version_analysis": "run_version_analysis_subgraph",
     "version_analysis_subgraph": "run_version_analysis_subgraph",
+    "version_subagent": "run_version_analysis_subgraph",
     "evidence": "run_evidence_subgraph",
     "evidence_subgraph": "run_evidence_subgraph",
+    "evidence_subagent": "dispatch_evidence_subagent_task",
     "context_compact_after_evidence": "run_context_compact_after_evidence",
     "recommendation": "run_recommendation_subgraph",
     "recommendation_subgraph": "run_recommendation_subgraph",
@@ -101,11 +113,13 @@ RECOVERY_RESUME_AFTER_NODES = frozenset(RECOVERY_NODE_TRANSITIONS.values())
 # 业务子图包装节点对应的 Task 类型，用于生成稳定执行身份。
 RECOVERABLE_NODE_TASK_TYPES = {
     "run_inventory_subgraph": "inventory",
-    "run_context_compact_after_inventory": None,
+    "run_context_compact_after_inventory": "inventory",
     "run_version_analysis_subgraph": "version_analysis",
     "run_evidence_subgraph": "evidence",
-    "run_context_compact_after_evidence": None,
+    "run_context_compact_after_evidence": "evidence",
     "run_recommendation_subgraph": "recommendation",
+    "recall_long_term_memory": "inventory",
+    "persist_long_term_memory": "report",
 }
 
 # 计算子图输入摘要时允许读取的顶层状态字段。
@@ -469,6 +483,13 @@ def resolve_recovery_targets(
     if node_name in RECOVERY_NODE_TRANSITIONS:
         return node_name, RECOVERY_NODE_TRANSITIONS[node_name]
 
+    stage_node = RECOVERY_STAGE_NODES.get(str(error.get("stage", "")))
+    if (
+        error.get("stage") != "team_orchestration"
+        and stage_node in RECOVERY_NODE_TRANSITIONS
+    ):
+        return stage_node, RECOVERY_NODE_TRANSITIONS[stage_node]
+
     if state is not None and error.get("task_id") is not None:
         task = next(
             (
@@ -483,7 +504,6 @@ def resolve_recovery_targets(
             if task_node in RECOVERY_NODE_TRANSITIONS:
                 return task_node, RECOVERY_NODE_TRANSITIONS[task_node]
 
-    stage_node = RECOVERY_STAGE_NODES.get(str(error.get("stage", "")))
     if stage_node in RECOVERY_NODE_TRANSITIONS:
         return stage_node, RECOVERY_NODE_TRANSITIONS[stage_node]
     return None, None
@@ -542,6 +562,132 @@ def _build_execution_record(
             "last_error_id": last_error_id,
             "started_at": started_at,
             "finished_at": finished_at,
+        },
+    )
+
+
+def materialize_error_node_execution(
+    state: Mapping[str, Any],
+    error: Mapping[str, Any],
+) -> NodeExecutionRecord:
+    """为业务节点捕获的错误建立可持久化、可审计的失败执行记录。
+
+    Args:
+        state: 包含运行、Task DAG 和既有节点执行记录的顶层或恢复图状态。
+        error: 已补齐 task_id 与 node_execution_id 的统一错误记录。
+
+    Returns:
+        与错误节点执行 ID 一致的既有记录副本，或新构造的失败记录。
+
+    Raises:
+        ValueError: 错误缺少运行、节点执行或节点名称等必要身份字段时抛出。
+    """
+    execution_id = str(error.get("node_execution_id") or "").strip()
+    run_id = str(state.get("run", {}).get("run_id") or "").strip()
+    node_name = str(error.get("node_name") or "").strip()
+    if not execution_id or not run_id or not node_name:
+        raise ValueError("错误节点执行记录缺少 node_execution_id、run_id 或 node_name")
+    existing = next(
+        (
+            execution
+            for execution in state.get("node_executions", [])
+            if execution.get("id") == execution_id
+        ),
+        None,
+    )
+    if existing is not None:
+        if existing.get("status") in {"succeeded", "reused"}:
+            return _copy_node_execution(existing)
+        copied = _copy_node_execution(existing, status="failed")
+        copied["attempt_count"] = max(
+            int(copied.get("attempt_count", 0)),
+            int(error.get("retry_count", 0)) + 1,
+        )
+        copied["last_error_id"] = str(error.get("id") or "") or None
+        copied["finished_at"] = utc_now_iso()
+        return copied
+
+    task_id = str(error.get("task_id") or "").strip() or None
+    task = next(
+        (
+            item
+            for item in state.get("tasks", [])
+            if task_id is not None and item.get("task_id") == task_id
+        ),
+        None,
+    )
+    created_at = str(error.get("created_at") or utc_now_iso())
+    return cast(
+        NodeExecutionRecord,
+        {
+            "id": execution_id,
+            "task_execution_id": (
+                str(task["execution_id"]) if task is not None else None
+            ),
+            "run_id": run_id,
+            "task_id": task_id,
+            "stage": str(error.get("stage") or "unknown"),
+            "node_name": node_name,
+            "input_digest": _stable_digest(
+                {
+                    "run_id": run_id,
+                    "task_id": task_id,
+                    "stage": error.get("stage"),
+                    "node_name": node_name,
+                }
+            ),
+            "status": "failed",
+            "attempt_count": max(1, int(error.get("retry_count", 0)) + 1),
+            "state_update_ref": None,
+            "result_refs": [],
+            "result_digest": None,
+            "last_error_id": str(error.get("id") or "") or None,
+            "started_at": created_at,
+            "finished_at": utc_now_iso(),
+        },
+    )
+
+
+def attach_error_execution_context(
+    state: Mapping[str, Any],
+    error: Mapping[str, Any],
+    *,
+    recovery_node: str | None,
+) -> ErrorRecord:
+    """为旧版或边界错误补齐 Task 与节点执行身份，同时保留原错误 ID。
+
+    Args:
+        state: 包含运行、恢复策略和可选 Task DAG 的顶层或恢复图状态。
+        error: 已应用当前 Recovery Policy 的错误记录。
+        recovery_node: 根据白名单解析出的顶层恢复节点。
+
+    Returns:
+        task_id 与 node_execution_id 均为非空字符串的错误副本。
+    """
+    task_type = (
+        RECOVERABLE_NODE_TASK_TYPES.get(recovery_node)
+        if recovery_node is not None
+        else None
+    )
+    context = create_error_context(
+        state,
+        task_type=task_type,
+        task_id=(
+            str(error["task_id"])
+            if error.get("task_id") is not None
+            else None
+        ),
+    )
+    node_name = str(error.get("node_name") or recovery_node or "unknown")
+    return cast(
+        ErrorRecord,
+        {
+            **dict(error),
+            "task_id": str(error.get("task_id") or context["task_id"]),
+            "node_execution_id": str(
+                error.get("node_execution_id")
+                or create_node_execution_id(context, node_name)
+            ),
         },
     )
 
@@ -660,6 +806,70 @@ def _mark_active_error_recovered(
     return [recovered_error], dict(recovery)
 
 
+def _state_update_contains_active_error(
+    state: Mapping[str, Any],
+    state_update: Mapping[str, Any],
+) -> bool:
+    """判断重试结果是否再次返回当前恢复错误。
+
+    Args:
+        state: 进入重试包装节点前的顶层状态。
+        state_update: 本次业务子图返回的公开状态更新。
+
+    Returns:
+        更新中仍包含同一错误 ID 且尚未进入恢复终态时返回 True。
+    """
+    recovery = state.get("recovery", {})
+    error_id = recovery.get("current_error_id")
+    if recovery.get("action") != "retry" or error_id is None:
+        return False
+    previous_error = next(
+        (
+            error
+            for error in state.get("errors", [])
+            if error.get("id") == error_id
+        ),
+        None,
+    )
+    if previous_error is None:
+        return False
+    for error in state_update.get("errors", []):
+        if error.get("id") != error_id:
+            continue
+        if error.get("status") in {"recovered", "fallback_applied"}:
+            continue
+        return any(
+            error.get(field_name) != previous_error.get(field_name)
+            for field_name in ("status", "fatal", "retry_count", "exception_type", "message")
+        )
+    return False
+
+
+def _reusable_execution_contains_active_error(
+    state: Mapping[str, Any],
+    execution: Mapping[str, Any],
+) -> bool:
+    """判断成功执行产物是否仍包含当前等待重试的错误。
+
+    Args:
+        state: 准备重试业务包装节点的顶层状态。
+        execution: 输入摘要一致且表面状态为成功的既有执行记录。
+
+    Returns:
+        产物仍携带当前未解决错误时返回 True，此时必须重新执行而不能复用。
+    """
+    recovery = state.get("recovery", {})
+    error_id = recovery.get("current_error_id")
+    if recovery.get("action") != "retry" or error_id is None:
+        return False
+    state_update = _load_reusable_state_update(state, execution)
+    return any(
+        error.get("id") == error_id
+        and error.get("status") not in {"recovered", "fallback_applied"}
+        for error in state_update.get("errors", [])
+    )
+
+
 def execute_recoverable_subgraph(
     state: FileGovernanceState,
     *,
@@ -700,13 +910,18 @@ def execute_recoverable_subgraph(
         existing is not None
         and existing["input_digest"] == input_digest
         and existing["status"] in {"succeeded", "reused"}
+        and not _reusable_execution_contains_active_error(state, existing)
     ):
         state_update = _load_reusable_state_update(state, existing)
         reused = _copy_node_execution(existing, status="reused")
         reused["finished_at"] = utc_now_iso()
         persist_node_execution(state, reused)
         state_update["node_executions"] = [reused]
-        recovered = _mark_active_error_recovered(state)
+        recovered = (
+            None
+            if _state_update_contains_active_error(state, state_update)
+            else _mark_active_error_recovered(state)
+        )
         if recovered is not None:
             error_updates, recovery_update = recovered
             state_update["errors"] = [
@@ -765,7 +980,11 @@ def execute_recoverable_subgraph(
     persist_node_execution(state, succeeded)
     state_update["node_executions"] = [succeeded]
 
-    recovered = _mark_active_error_recovered(state)
+    recovered = (
+        None
+        if _state_update_contains_active_error(state, state_update)
+        else _mark_active_error_recovered(state)
+    )
     if recovered is not None:
         error_updates, recovery_update = recovered
         state_update["errors"] = [
@@ -833,16 +1052,16 @@ def capture_subgraph_exception(
             state["recovery"]["policy"],
             category,
         )
+        boundary_context = create_error_context(
+            state,
+            task_type=RECOVERABLE_NODE_TASK_TYPES.get(node_name),
+        )
         raw_error = create_error_record(
             stage=node_name.removeprefix("run_").removesuffix("_subgraph"),
             node_name=node_name,
             category=cast(Any, category),
             message=f"{node_name} 子图边界捕获到未处理异常。",
-            task_id=(
-                str(_task_for_node(state, node_name)["task_id"])
-                if _task_for_node(state, node_name) is not None
-                else None
-            ),
+            task_id=boundary_context["task_id"],
             node_execution_id=idempotency_key,
             exception_type=type(error.error).__name__,
             retryable=category_policy["retryable"],
@@ -921,13 +1140,13 @@ def capture_subgraph_exception(
         )
     except Exception:
         fallback_error = apply_recovery_policy_to_error(
-            create_error_record(
+            create_node_error(
+                state,
                 stage="error_recovery",
                 node_name=node_name,
                 category="unknown",
                 message="子图异常入口无法建立完整幂等上下文。",
-                exception_type=type(error.error).__name__,
-                status="pending",
+                exception=error.error,
                 fatal=True,
             ),
             state["recovery"]["policy"],

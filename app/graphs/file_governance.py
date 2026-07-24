@@ -13,6 +13,7 @@ from app.graphs.routers import (
     route_before_run_hooks_result,
     route_evidence_result,
     route_failure_report_task_sync,
+    route_recoverable_node_result,
     route_skill_registry_result,
     route_system_prompt_result,
     route_team_orchestration_result,
@@ -104,7 +105,6 @@ def build_file_governance_graph(
         "run_context_compact_after_inventory",
         run_context_compact_after_inventory,
         error_handler=capture_subgraph_exception,
-        destinations=("run_error_recovery_subgraph",),
     )
     builder.add_node("dispatch_content_subagent_task", dispatch_content_subagent_task)
     builder.add_node(
@@ -126,7 +126,6 @@ def build_file_governance_graph(
         "run_context_compact_after_evidence",
         run_context_compact_after_evidence,
         error_handler=capture_subgraph_exception,
-        destinations=("run_error_recovery_subgraph",),
     )
     builder.add_node(
         "run_recommendation_subgraph",
@@ -184,7 +183,14 @@ def build_file_governance_graph(
             "failure": "run_error_recovery_subgraph",
         },
     )
-    builder.add_edge("recall_long_term_memory", "plan_run_tasks")
+    builder.add_conditional_edges(
+        "recall_long_term_memory",
+        route_recoverable_node_result,
+        {
+            "continue": "plan_run_tasks",
+            "recovery": "run_error_recovery_subgraph",
+        },
+    )
     builder.add_conditional_edges(
         "plan_run_tasks",
         route_team_orchestration_result,
@@ -203,9 +209,13 @@ def build_file_governance_graph(
             "failure": "run_error_recovery_subgraph",
         },
     )
-    builder.add_edge(
+    builder.add_conditional_edges(
         "run_context_compact_after_inventory",
-        "dispatch_content_subagent_task",
+        route_recoverable_node_result,
+        {
+            "continue": "dispatch_content_subagent_task",
+            "recovery": "run_error_recovery_subgraph",
+        },
     )
     builder.add_conditional_edges(
         "dispatch_content_subagent_task",
@@ -241,9 +251,13 @@ def build_file_governance_graph(
             "failure": "run_error_recovery_subgraph",
         },
     )
-    builder.add_edge(
+    builder.add_conditional_edges(
         "run_context_compact_after_evidence",
-        "run_recommendation_subgraph",
+        route_recoverable_node_result,
+        {
+            "continue": "run_recommendation_subgraph",
+            "recovery": "run_error_recovery_subgraph",
+        },
     )
     builder.add_edge("run_recommendation_subgraph", "sync_recommendation_task_status")
     builder.add_conditional_edges(
@@ -299,7 +313,14 @@ def build_file_governance_graph(
     builder.add_edge("generate_no_data_report", "sync_report_task_status")
     builder.add_edge("generate_governance_report", "sync_report_task_status")
     builder.add_edge("sync_report_task_status", "persist_long_term_memory")
-    builder.add_edge("persist_long_term_memory", "execute_after_run_hooks")
+    builder.add_conditional_edges(
+        "persist_long_term_memory",
+        route_recoverable_node_result,
+        {
+            "continue": "execute_after_run_hooks",
+            "recovery": "run_error_recovery_subgraph",
+        },
+    )
     builder.add_conditional_edges(
         "execute_after_run_hooks",
         route_after_run_hooks_result,

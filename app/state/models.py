@@ -686,6 +686,22 @@ class RecoveryPolicyState(TypedDict):
     # 错误类别名称到完整恢复策略的映射。
 
 
+class ErrorContextState(TypedDict):
+    """业务子图和工具创建统一恢复错误时使用的最小执行上下文。"""
+
+    run_id: str
+    # 当前治理运行 ID；独立子图测试使用稳定 standalone 标识。
+
+    task_id: str
+    # 错误归属的真实或兼容 Task ID，不允许为空。
+
+    task_execution_id: str
+    # 同一逻辑 Task 在有限重试期间保持稳定的执行 ID。
+
+    policy: RecoveryPolicyState
+    # 当前运行完整的 Recovery Policy 快照。
+
+
 class RecoveryHumanState(TypedDict):
     """恢复型人工确认的待处理请求和用户响应状态。"""
 
@@ -1106,6 +1122,9 @@ class ContextCompactionPlanState(TypedDict):
 
 class ContextCompactGraphState(TypedDict):
     """独立 Context Compact 子图使用的输入、计划、临时载荷和输出状态。"""
+
+    error_context: ErrorContextState
+    # Context Compact 节点创建统一恢复错误所需的 Task 和策略上下文。
 
     run: RunState
     # 当前治理运行信息，用于生成稳定摘要和产物 ID。
@@ -1747,6 +1766,9 @@ class EvidenceSubagentOutput(BaseModel):
 class ContentSubagentGraphState(TypedDict):
     """Content Subagent 内部子图状态。"""
 
+    error_context: ErrorContextState
+    # Content 节点创建统一恢复错误所需的 Task 和策略上下文。
+
     input: ContentSubagentInput
     # 已经过 Team Protocol 校验的最小输入。
 
@@ -1787,6 +1809,9 @@ class ContentSubagentGraphState(TypedDict):
 class VersionSubagentGraphState(TypedDict):
     """Version Subagent 内部子图状态。"""
 
+    error_context: ErrorContextState
+    # Version 节点创建统一恢复错误所需的 Task 和策略上下文。
+
     input: VersionSubagentInput
     # 已经过 Team Protocol 校验的版本差异输入。
 
@@ -1826,6 +1851,9 @@ class VersionSubagentGraphState(TypedDict):
 
 class EvidenceSubagentGraphState(TypedDict):
     """Evidence Subagent 内部子图状态。"""
+
+    error_context: ErrorContextState
+    # Evidence 节点创建统一恢复错误所需的 Task 和策略上下文。
 
     input: EvidenceSubagentInput
     # 已经过 Team Protocol 校验的证据摘要输入。
@@ -1987,6 +2015,9 @@ class FileGovernanceState(TypedDict):
 class TeamOrchestrationGraphState(TypedDict):
     """团队编排子图使用的 Task、Todo、固定 Team 和分派协议状态。"""
 
+    error_context: ErrorContextState
+    # 团队节点创建统一恢复错误所需的 Task 和策略上下文。
+
     run: RunState
     # 当前顶层治理运行信息，用于生成稳定 Task ID。
 
@@ -2048,6 +2079,9 @@ class TeamOrchestrationGraphState(TypedDict):
 class InventoryGraphState(TypedDict):
     """文件发现与内容提取子图使用的状态。"""
 
+    error_context: ErrorContextState
+    # Inventory 节点创建统一恢复错误所需的 Task 和策略上下文。
+
     request: RequestState
     # 文件扫描范围、扩展名和数量限制。
 
@@ -2084,6 +2118,9 @@ class InventoryGraphState(TypedDict):
 
 class VersionAnalysisGraphState(TypedDict):
     """版本分组、比较、建链和当前推荐子图使用的状态。"""
+
+    error_context: ErrorContextState
+    # Version Analysis 节点创建统一恢复错误所需的 Task 和策略上下文。
 
     run: RunState
     # 当前顶层治理运行信息，用于构造真实 Version Analysis Task ID。
@@ -2167,6 +2204,9 @@ class VersionAnalysisGraphState(TypedDict):
 class EvidenceGraphState(TypedDict):
     """PDF 来源与本地发送记录匹配子图使用的状态。"""
 
+    error_context: ErrorContextState
+    # Evidence 节点创建统一恢复错误所需的 Task 和策略上下文。
+
     run: RunState
     # 当前治理运行 ID，供证据 Memory 建立安全来源关联。
 
@@ -2206,6 +2246,9 @@ class EvidenceGraphState(TypedDict):
 
 class RecommendationGraphState(TypedDict):
     """结合版本关系和外部证据推荐各版本组主版本的子图状态。"""
+
+    error_context: ErrorContextState
+    # Recommendation 节点创建统一恢复错误所需的 Task 和策略上下文。
 
     run: RunState
     # 当前治理运行 ID，供推荐 Memory 建立安全来源关联。
