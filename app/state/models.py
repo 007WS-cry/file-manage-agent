@@ -814,10 +814,10 @@ class ReportState(TypedDict):
     # 报告生成时间。
 
     degradation_ids: list[str]
-    # 本次报告引用的安全降级记录 ID，正文展示将在后续恢复批次接入。
+    # 本次报告“降级项”章节引用的安全降级记录 ID。
 
     recovered_error_ids: list[str]
-    # 本次报告引用的已恢复或已应用降级错误 ID。
+    # 本次报告“已恢复错误”章节引用的已恢复或已应用降级错误 ID。
 
 
 class PdfMatchJob(TypedDict):

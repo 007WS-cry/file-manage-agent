@@ -193,7 +193,7 @@ application_database:
   timeout_seconds: 30.0
 
 recovery:
-  # 0.6.4 已由六个业务子图和第七个 Error Recovery 子图统一消费；关闭时保留兼容失败语义。
+  # 0.6.5 已接入恢复型人工确认、CLI 提示和部分报告；关闭时保留兼容失败语义。
   enabled: true
 
   # 未单独配置错误类别时使用保守策略：不自动重试、不静默降级、允许人工处理。

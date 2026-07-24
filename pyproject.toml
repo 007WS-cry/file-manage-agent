@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.6.4"
-description = "支持六个业务子图统一错误治理、恢复进度继承、顶层安全续跑、节点结果复用和七表数据库审计的 LangGraph 文件版本治理 Agent"
+version = "0.6.5"
+description = "支持恢复型人工确认、分类型 CLI 提示、部分成功报告及恢复与降级审计的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

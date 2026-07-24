@@ -47,9 +47,11 @@ checkpoints
 database
 .langgraph
 
-# 人工审核响应只在恢复运行时单独只读挂载
+# 主版本审核与错误恢复响应只在恢复运行时单独只读挂载
 review_response.json
 review_response*.json
+recovery_response.json
+recovery_response*.json
 
 # 本地 Docker 手工测试请求通过只读挂载提供，不进入镜像构建上下文
 docker_request.json
@@ -92,7 +94,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.6.4 Task、统一错误上下文、恢复路由、幂等执行和数据库快照只在运行时生成
+# 0.6.5 Task、人工恢复、CLI 提示、恢复路由、幂等执行和数据库快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
