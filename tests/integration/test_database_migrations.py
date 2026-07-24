@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 from alembic.config import Config
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.exc import IntegrityError
 
 from alembic import command
 from app.storage.database import build_application_database_url
@@ -15,14 +16,23 @@ from app.storage.database import build_application_database_url
 # 当前仓库根目录，用于定位 alembic.ini 和迁移脚本。
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# 首个应用数据库迁移应创建的五张业务表。
-APPLICATION_TABLES = {
+# 首个应用数据库迁移创建的五张基础业务表。
+BASE_APPLICATION_TABLES = {
     "context_summaries",
     "governance_runs",
     "human_reviews",
     "memory_items",
     "tool_call_audits",
 }
+
+# 0.6.2 第二个迁移新增的错误恢复和节点幂等执行表。
+RECOVERY_APPLICATION_TABLES = {
+    "error_recovery_records",
+    "node_execution_records",
+}
+
+# 当前迁移 head 应包含的七张应用表。
+APPLICATION_TABLES = BASE_APPLICATION_TABLES | RECOVERY_APPLICATION_TABLES
 
 
 def create_alembic_config(database_path: Path) -> Config:
@@ -41,9 +51,7 @@ def create_alembic_config(database_path: Path) -> Config:
     )
     config.set_main_option(
         "sqlalchemy.url",
-        build_application_database_url(database_path).render_as_string(
-            hide_password=False
-        ),
+        build_application_database_url(database_path).render_as_string(hide_password=False),
     )
     return config
 
@@ -65,7 +73,7 @@ def read_table_names(database_path: Path) -> set[str]:
 
 
 def test_upgrade_creates_parent_tables_and_matches_metadata(tmp_path: Path) -> None:
-    """upgrade head 应自动创建父目录和五张表，且 ORM 元数据不存在新差异。"""
+    """upgrade head 应自动创建父目录和七张表，且 ORM 元数据不存在新差异。"""
     database_path = tmp_path / "nested" / "application.sqlite3"
     config = create_alembic_config(database_path)
 
@@ -77,7 +85,7 @@ def test_upgrade_creates_parent_tables_and_matches_metadata(tmp_path: Path) -> N
 
 
 def test_downgrade_and_reupgrade_are_reversible(tmp_path: Path) -> None:
-    """首个迁移应能回退到 base，并能再次升级到相同表结构。"""
+    """完整迁移链应能回退到 base，并能再次升级到相同七表结构。"""
     database_path = tmp_path / "application.sqlite3"
     config = create_alembic_config(database_path)
 
@@ -89,6 +97,60 @@ def test_downgrade_and_reupgrade_are_reversible(tmp_path: Path) -> None:
     command.upgrade(config, "head")
 
     assert APPLICATION_TABLES <= read_table_names(database_path)
+
+
+def test_recovery_migration_downgrades_without_removing_base_tables(
+    tmp_path: Path,
+) -> None:
+    """0002 回退应只删除恢复表，并保留 0001 的五张基础表。"""
+    database_path = tmp_path / "application.sqlite3"
+    config = create_alembic_config(database_path)
+
+    command.upgrade(config, "head")
+    command.downgrade(config, "0001_application_tables")
+
+    table_names = read_table_names(database_path)
+    assert BASE_APPLICATION_TABLES <= table_names
+    assert RECOVERY_APPLICATION_TABLES.isdisjoint(table_names)
+
+    command.upgrade(config, "head")
+
+    assert APPLICATION_TABLES <= read_table_names(database_path)
+    command.check(config)
+
+
+def test_recovery_migration_allows_recovering_run_status(tmp_path: Path) -> None:
+    """0002 应把 recovering 加入治理运行数据库状态白名单。"""
+    database_path = tmp_path / "application.sqlite3"
+    config = create_alembic_config(database_path)
+    insert_statement = text(
+        "INSERT INTO governance_runs "
+        "(run_id, thread_id, status, current_stage, request_summary) "
+        "VALUES (:run_id, :thread_id, 'recovering', 'error_recovery', '{}')"
+    )
+
+    command.upgrade(config, "0001_application_tables")
+    engine = create_engine(build_application_database_url(database_path))
+    try:
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    insert_statement,
+                    {"run_id": "before-0002", "thread_id": "thread-before"},
+                )
+    finally:
+        engine.dispose()
+
+    command.upgrade(config, "head")
+    engine = create_engine(build_application_database_url(database_path))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                insert_statement,
+                {"run_id": "after-0002", "thread_id": "thread-after"},
+            )
+    finally:
+        engine.dispose()
 
 
 def test_application_database_is_isolated_from_checkpoint_file(

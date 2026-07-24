@@ -1,13 +1,15 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.1` 是从 `0.6.0`
-演进到 `0.7.0` Error Recovery 的第一批，新增恢复状态协议、错误类别策略、
-有限重试参数、确定性退避和安全降级配置；本批尚未把 Recovery 子图接入主流程。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.2` 是从 `0.6.0`
+演进到 `0.7.0` Error Recovery 的第二批，新增错误恢复和节点幂等执行两张表、
+短事务 Repository、可逆迁移及旧 checkpoint 重放保护；本批尚未把 Recovery 子图
+接入主流程。
 `0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
 和应用数据库发布收口。
 `governance_runs`、`memory_items`、`context_summaries`、`tool_call_audits`、
-`human_reviews` 五张表已经全部接线，同时继续保证模型失败或上下文压缩不会改变
-版本关系、证据、推荐和人工选择。Content、Version、Evidence 可分别路由 Claude、
+`human_reviews` 五张表已经全部接线；`error_recovery_records` 和
+`node_execution_records` 已提供持久化基础，同时继续保证模型失败或上下文压缩
+不会改变版本关系、证据、推荐和人工选择。Content、Version、Evidence 可分别路由 Claude、
 Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中转站。
 当前具备：
 
@@ -18,7 +20,8 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - Content、Version、Evidence 三个可独立调用的固定 Subagent 子图；
 - 标准化内容及中间 JSON 产物的隔离、原子持久化；
 - 进程内或 SQLite LangGraph checkpoint；
-- 独立 SQLAlchemy 应用数据库、五张已接线表和 Repository 数据访问边界；
+- 独立 SQLAlchemy 应用数据库、七表 ORM/迁移和 Repository 数据访问边界；
+- 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 治理运行生命周期、脱敏工具审计和人工选择的幂等持久化；
 - 大型工具输出只保存受控产物引用、固定摘要和字节数；
 - 当前运行短期阶段摘要、跨运行长期 Memory 召回和幂等持久化；
@@ -93,8 +96,9 @@ Recommendation 的顺序接入顶层 File Governance 图。当前版本提供 Py
 摘要，并在报告收口后、after_run Hook 前幂等持久化；`0.5.5` 在 Inventory
 同步后及 Evidence 解释分派后调用 Context Compact，不改变任何治理决策字段；
 `0.6.0` 接通运行历史、工具审计和人工选择，补齐 0.5.0 兼容及组合发布验收；
-`0.6.1` 只建立 Error Recovery 状态和策略基础，不改变六个既有子图的正常路径、
-错误路由、治理结论或人工主版本确认协议。
+`0.6.1` 只建立 Error Recovery 状态和策略基础；`0.6.2` 增加两张恢复持久化表、
+短事务 Repository 和第二个可逆迁移，但仍不改变六个既有子图的正常路径、错误路由、
+治理结论或人工主版本确认协议。
 
 ## 安全边界
 
@@ -195,6 +199,7 @@ file-manage-agent/
 ├── docs/version-0.5.5-context-compact.md # 0.5.5 Context Compact 说明
 ├── docs/release-0.6.0-skills-memory-context.md # 0.6.0 正式发布说明
 ├── docs/version-0.6.1-recovery-state-policy.md # 0.7.0 第一批恢复状态与策略
+├── docs/version-0.6.2-recovery-persistence.md # 0.7.0 第二批恢复与幂等持久化
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -861,6 +866,26 @@ state = create_initial_state(
 便于 checkpoint 重放和单元测试。完整边界和后续批次见
 [0.6.1 恢复状态与策略说明](docs/version-0.6.1-recovery-state-policy.md)。
 
+## 0.6.2 恢复与幂等持久化
+
+本版本把 0.6.1 的状态协议映射到独立应用数据库，但不新增图节点，也不让 SQLAlchemy
+`Session` 进入 LangGraph 状态或跨越 `interrupt()`：
+
+- `error_recovery_records` 按 `run_id + error_id` 幂等保存错误事实、重试次数、
+  当前动作、降级选项和恢复状态；
+- `node_execution_records` 以 `idempotency_key` 为主键保存输入摘要、结果引用、
+  结果摘要和累计执行次数；
+- Repository 只查询、写入和 `flush`，提交、回滚与关闭仍由每个节点内部使用的
+  `open_application_session()` 短事务上下文负责；
+- 节点输入摘要、运行归属和节点名称写入后不可改变，旧 checkpoint 也不能用更小的
+  `attempt_count` 或 `retry_count` 覆盖数据库中的较新进度；
+- Alembic `0002_error_recovery_tables` 可独立回退到 0001，同时保留原五张基础表；
+- `governance_runs.status` 数据库约束增加 `recovering`，与 0.6.1 `RunState` 对齐。
+
+本批仍不调度重试、不跳转节点、不产生恢复型 `interrupt()`；完整表结构、事务边界和
+后续接入约束见
+[0.6.2 恢复与幂等持久化说明](docs/version-0.6.2-recovery-persistence.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1223,8 +1248,11 @@ python -m compileall -q app tests
 - 关闭真实 LLM 时与 0.4.0 确定性参照图的治理结论一致性；
 - SQLite checkpoint 恢复状态和原始数据库字节均不包含 API Key 实际值、私有 Prompt
   或长正文尾部；
-- 应用数据库路径与 checkpoint 文件隔离、五个 Repository 的事务提交和异常回滚；
-- Alembic `upgrade head`、`downgrade base`、再次升级及 ORM 元数据一致性；
+- 应用数据库路径与 checkpoint 文件隔离、七个 Repository 的事务提交和异常回滚；
+- Alembic `upgrade head`、0002 单独回退、`downgrade base`、再次升级及 ORM
+  元数据一致性；
+- 错误恢复跨运行隔离、重试次数倒退拒绝、节点输入摘要不可变和结果复用查询；
+- 模拟相邻图节点使用不同 Session，且每个上下文退出后不保留活动事务；
 - Memory 策略的长正文/凭据拒绝、有界历史偏好和自由文本隔离；
 - 释放并重建数据库连接后的长期 Memory 召回；
 - 应用数据库原始字节不包含文档长正文、API Key 或完整模型 Prompt；
@@ -1250,22 +1278,22 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.6.1 -t file-manage-agent:0.6.1 .
+docker build --build-arg APP_VERSION=0.6.2 -t file-manage-agent:0.6.2 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.6.1 \
+  --build-arg APP_VERSION=0.6.2 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.6.1-mainstream .
+  -t file-manage-agent:0.6.2-mainstream .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.6.1
+docker run --rm file-manage-agent:0.6.2
 ```
 
 容器首次使用应用数据库时，可在同一个可写产物卷中执行迁移。镜像内默认通过
@@ -1276,7 +1304,7 @@ docker run --rm file-manage-agent:0.6.1
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --entrypoint python \
-  file-manage-agent:0.6.1 \
+  file-manage-agent:0.6.2 \
   -m alembic upgrade head
 ```
 
@@ -1292,7 +1320,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.6.1 \
+  file-manage-agent:0.6.2 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1305,7 +1333,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.6.1 \
+  file-manage-agent:0.6.2 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
