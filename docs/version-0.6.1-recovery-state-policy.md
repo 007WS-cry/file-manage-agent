@@ -127,4 +127,7 @@ min(
 - 使用 `NodeExecutionRecord.id` 判断是否可以复用已完成结果；
 - 使用独立 `kind="error_recovery"` 的 interrupt；
 - 保留现有 `kind="file_governance_review"` 主版本确认协议；
-- 在修改主图之前先增加错误恢复持久化和故障注入测试。
+- 使用 0.6.2 已提供的短事务恢复持久化，并在修改主图之前补充故障注入测试。
+
+恢复表、幂等仓储和事务边界已在
+[0.6.2 恢复与幂等持久化](version-0.6.2-recovery-persistence.md) 中完成。

@@ -15,14 +15,20 @@ from app.storage.database import (
 from app.storage.orm_models import (
     Base,
     ContextSummaryModel,
+    ErrorRecoveryRecordModel,
     GovernanceRunModel,
     HumanReviewModel,
     MemoryItemModel,
+    NodeExecutionRecordModel,
     ToolCallAuditModel,
 )
-from app.storage.repositories import create_repository_bundle
+from app.storage.repositories import (
+    ErrorRecoveryRecordRepository,
+    NodeExecutionRecordRepository,
+    create_repository_bundle,
+)
 
-"""本文件单元测试应用数据库路径边界、事务语义和五张表 Repository 的基础读写。"""
+"""本文件单元测试应用数据库路径边界、短事务语义和七张表 Repository 的基础读写。"""
 
 
 def prepare_database(tmp_path: Path):
@@ -59,7 +65,7 @@ def make_governance_run(run_id: str = "run-001") -> GovernanceRunModel:
 
 
 def test_engine_creates_parent_and_all_application_tables(tmp_path: Path) -> None:
-    """Engine 应自动创建父目录，ORM 元数据应创建且只创建五张应用表。"""
+    """Engine 应自动创建父目录，ORM 元数据应创建且只创建七张应用表。"""
     database_path = tmp_path / "new-parent" / "application.sqlite3"
 
     engine = create_application_engine(database_path)
@@ -68,16 +74,18 @@ def test_engine_creates_parent_and_all_application_tables(tmp_path: Path) -> Non
     assert database_path.parent.is_dir()
     assert set(inspect(engine).get_table_names()) == {
         "context_summaries",
+        "error_recovery_records",
         "governance_runs",
         "human_reviews",
         "memory_items",
+        "node_execution_records",
         "tool_call_audits",
     }
     engine.dispose()
 
 
 def test_repository_bundle_persists_and_reads_all_models(tmp_path: Path) -> None:
-    """五个 Repository 应在同一事务中写入，并在提交后按稳定顺序读回。"""
+    """五个基础 Repository 应在同一短事务中写入，并在提交后稳定读回。"""
     engine, session_factory = prepare_database(tmp_path)
     with open_application_session(session_factory) as session:
         repositories = create_repository_bundle(session)
@@ -137,18 +145,30 @@ def test_repository_bundle_persists_and_reads_all_models(tmp_path: Path) -> None
         repositories = create_repository_bundle(session)
         assert repositories.governance_runs.get("run-001").status == "running"
         assert (
-            repositories.memory_items.list_by_namespace("workspace:example")[0].id
-            == "memory-001"
+            repositories.memory_items.list_by_namespace("workspace:example")[0].id == "memory-001"
         )
-        assert repositories.context_summaries.list_by_run("run-001")[0].id == (
-            "context-001"
+        assert repositories.context_summaries.list_by_run("run-001")[0].id == ("context-001")
+        assert repositories.tool_call_audits.list_by_run("run-001")[0].id == ("tool-001")
+        assert repositories.human_reviews.list_by_run("run-001")[0].id == ("review-001")
+    engine.dispose()
+
+
+def test_repository_bundle_exposes_recovery_repositories(tmp_path: Path) -> None:
+    """RepositoryBundle 应公开两张恢复表，且模型与 Repository 类型固定。"""
+    engine, session_factory = prepare_database(tmp_path)
+    with open_application_session(session_factory) as session:
+        repositories = create_repository_bundle(session)
+
+        assert isinstance(
+            repositories.node_execution_records,
+            NodeExecutionRecordRepository,
         )
-        assert repositories.tool_call_audits.list_by_run("run-001")[0].id == (
-            "tool-001"
+        assert isinstance(
+            repositories.error_recovery_records,
+            ErrorRecoveryRecordRepository,
         )
-        assert repositories.human_reviews.list_by_run("run-001")[0].id == (
-            "review-001"
-        )
+        assert repositories.node_execution_records.model_type is NodeExecutionRecordModel
+        assert repositories.error_recovery_records.model_type is ErrorRecoveryRecordModel
     engine.dispose()
 
 
