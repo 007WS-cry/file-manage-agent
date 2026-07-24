@@ -1,8 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.3` 是从 `0.6.0`
-演进到 `0.7.0` Error Recovery 的第三批，新增第七个恢复子图、顶层失败路由、
-子图边界未捕获异常入口、失败阶段安全续跑和成功节点结果复用。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.4` 是从 `0.6.0`
+演进到 `0.7.0` Error Recovery 的第四批，把六个既有业务子图、固定 Subagent、
+Memory、Context Compact、Hooks 和 Task 工具的错误统一接入恢复策略与持久化链路。
 `0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
 和应用数据库发布收口。
 `governance_runs`、`memory_items`、`context_summaries`、`tool_call_audits`、
@@ -23,6 +23,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
 - 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
+- 所有业务错误统一绑定 `task_id`、`node_execution_id`、重试进度与恢复终态；
+- coordinator、no-memory、keep-context 和 default-skill 本地回退由 Recovery
+  统一登记，历史已恢复错误不会再次触发顶层恢复；
 - 输入摘要一致、结果摘要校验通过时复用成功节点的受控状态更新产物；
 - 治理运行生命周期、脱敏工具审计和人工选择的幂等持久化；
 - 大型工具输出只保存受控产物引用、固定摘要和字节数；
@@ -102,7 +105,9 @@ Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为
 `0.6.1` 只建立 Error Recovery 状态和策略基础；`0.6.2` 增加两张恢复持久化表、
 短事务 Repository 和第二个可逆迁移；`0.6.3` 接入第七个恢复子图，把既有
 direct-failure 出口统一改到 Recovery，并在不改变正常治理结论和人工主版本确认
-协议的前提下提供有限重试、安全降级、恢复型人工输入和结果复用。
+协议的前提下提供有限重试、安全降级、恢复型人工输入和结果复用；`0.6.4`
+把六个既有业务子图及工具错误统一接入该链路，并补齐重试重放、关联错误收敛和
+历史恢复终态过滤。
 
 ## 安全边界
 
@@ -208,6 +213,7 @@ file-manage-agent/
 ├── docs/version-0.6.1-recovery-state-policy.md # 0.7.0 第一批恢复状态与策略
 ├── docs/version-0.6.2-recovery-persistence.md # 0.7.0 第二批恢复与幂等持久化
 ├── docs/version-0.6.3-error-recovery-graph.md # 0.7.0 第三批恢复子图与顶层路由
+├── docs/version-0.6.4-existing-subgraph-integration.md # 0.7.0 第四批既有子图统一接入
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -914,6 +920,27 @@ direct-failure 分支统一改到恢复入口：
 完整流程、路由白名单和安全边界见
 [0.6.3 Error Recovery 子图说明](docs/version-0.6.3-error-recovery-graph.md)。
 
+## 0.6.4 六个既有子图和工具统一接入
+
+本版本不新增业务子图，而是让所有既有错误产生位置遵守同一恢复协议：
+
+- `ErrorContextState` 在顶层到业务子图、Team Orchestration 和固定 Subagent
+  之间传递稳定运行、Task、逻辑执行与策略快照；
+- 节点只捕获阶段、函数、类别、脱敏消息和可选异常类型，`create_node_error()`
+  统一补齐错误身份并由 Recovery Policy 决定重试、人工处理或固定降级；
+- 同一 `node_execution_id` 重放时继承 `retry_count`，成功产物仍包含当前错误时
+  禁止错误复用，避免有限重试被重置为无限循环；
+- coordinator、no-memory、keep-context、default-skill 和 partial-result
+  保留原有确定性能力，但对应错误、Task 部分状态与 `DegradationRecord`
+  由 Error Recovery 统一登记；
+- 同一 Task 上由本地回退产生的关联错误会随主错误一起进入恢复终态，避免后续
+  阶段重复消费；路由只检查当前阶段且忽略 `recovered`、`fallback_applied` 历史记录；
+- Recovery 在写入 `error_recovery_records` 前补建对应失败
+  `node_execution_records`，两个 Repository 调用仍分别使用独立短事务。
+
+完整接入范围、重放规则和验证结果见
+[0.6.4 六个既有子图统一接入说明](docs/version-0.6.4-existing-subgraph-integration.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1308,22 +1335,22 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.6.3 -t file-manage-agent:0.6.3 .
+docker build --build-arg APP_VERSION=0.6.4 -t file-manage-agent:0.6.4 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.6.3 \
+  --build-arg APP_VERSION=0.6.4 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.6.3-mainstream .
+  -t file-manage-agent:0.6.4-mainstream .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.6.3
+docker run --rm file-manage-agent:0.6.4
 ```
 
 容器首次使用应用数据库时，可在同一个可写产物卷中执行迁移。镜像内默认通过
@@ -1334,7 +1361,7 @@ docker run --rm file-manage-agent:0.6.3
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --entrypoint python \
-  file-manage-agent:0.6.3 \
+  file-manage-agent:0.6.4 \
   -m alembic upgrade head
 ```
 
@@ -1350,7 +1377,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.6.3 \
+  file-manage-agent:0.6.4 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1363,7 +1390,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.6.3 \
+  file-manage-agent:0.6.4 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```

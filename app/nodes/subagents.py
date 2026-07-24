@@ -48,7 +48,8 @@ from app.state.models import (
     VersionSubagentGraphState,
     VersionSubagentOutput,
 )
-from app.utils.runtime import create_error_record, utc_now_iso
+from app.utils.error_context import create_node_error
+from app.utils.runtime import utc_now_iso
 
 """本模块只实现三个 Subagent LangGraph 中通过 add_node 明确注册的节点函数。"""
 
@@ -101,10 +102,11 @@ def resolve_model_profile(state: SubagentGraphState) -> dict:
             "selected_model_profile_id": "",
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage=f"{task_type}_subagent",
                     node_name="resolve_model_profile",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -141,10 +143,11 @@ def execute_before_model_hooks(state: SubagentGraphState) -> dict:
     return {
         "output": None,
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="subagent",
                 node_name="execute_before_model_hooks",
-                category="validation",
+                category="protocol",
                 message=error_message,
                 fatal=False,
             )
@@ -206,10 +209,11 @@ def execute_after_model_hooks(state: SubagentGraphState) -> dict:
     return {
         "output": None,
         "errors": [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="subagent",
                 node_name="execute_after_model_hooks",
-                category="validation",
+                category="protocol",
                 message=error_message,
                 fatal=False,
             )
@@ -240,10 +244,11 @@ def validate_content_subagent_input(state: ContentSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="validate_content_subagent_input",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -286,10 +291,11 @@ def build_content_subagent_prompt(state: ContentSubagentGraphState) -> dict:
             "user_prompt": "",
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="build_content_subagent_prompt",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -318,10 +324,11 @@ def invoke_content_structured_llm(state: ContentSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="invoke_content_structured_llm",
-                    category="validation",
+                    category="protocol",
                     message="调用 Content LLM 前缺少 assignment Team Message",
                     fatal=False,
                 )
@@ -344,7 +351,8 @@ def invoke_content_structured_llm(state: ContentSubagentGraphState) -> dict:
     }
     if result.output is None:
         update["errors"] = [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="content_subagent",
                 node_name="invoke_content_structured_llm",
                 category="llm",
@@ -376,10 +384,11 @@ def validate_content_subagent_output(state: ContentSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="validate_content_subagent_output",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -403,10 +412,11 @@ def persist_content_analysis_artifact(state: ContentSubagentGraphState) -> dict:
     if output is None:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="persist_content_analysis_artifact",
-                    category="validation",
+                    category="protocol",
                     message="没有可固化的 Content Subagent 输出",
                     fatal=False,
                 )
@@ -531,10 +541,11 @@ def validate_version_subagent_input(state: VersionSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="validate_version_subagent_input",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -577,10 +588,11 @@ def build_version_subagent_prompt(state: VersionSubagentGraphState) -> dict:
             "user_prompt": "",
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="build_version_subagent_prompt",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -609,10 +621,11 @@ def invoke_version_structured_llm(state: VersionSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="invoke_version_structured_llm",
-                    category="validation",
+                    category="protocol",
                     message="调用 Version LLM 前缺少 assignment Team Message",
                     fatal=False,
                 )
@@ -634,7 +647,8 @@ def invoke_version_structured_llm(state: VersionSubagentGraphState) -> dict:
     }
     if result.output is None:
         update["errors"] = [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="version_subagent",
                 node_name="invoke_version_structured_llm",
                 category="llm",
@@ -663,10 +677,11 @@ def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="validate_version_subagent_output",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -687,10 +702,11 @@ def persist_version_analysis_artifact(state: VersionSubagentGraphState) -> dict:
     if output is None:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="version_subagent",
                     node_name="persist_version_analysis_artifact",
-                    category="validation",
+                    category="protocol",
                     message="没有可固化的 Version Subagent 输出",
                     fatal=False,
                 )
@@ -815,10 +831,11 @@ def validate_evidence_subagent_input(state: EvidenceSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="validate_evidence_subagent_input",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -861,10 +878,11 @@ def build_evidence_subagent_prompt(state: EvidenceSubagentGraphState) -> dict:
             "user_prompt": "",
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="build_evidence_subagent_prompt",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -893,10 +911,11 @@ def invoke_evidence_structured_llm(state: EvidenceSubagentGraphState) -> dict:
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="invoke_evidence_structured_llm",
-                    category="validation",
+                    category="protocol",
                     message="调用 Evidence LLM 前缺少 assignment Team Message",
                     fatal=False,
                 )
@@ -918,7 +937,8 @@ def invoke_evidence_structured_llm(state: EvidenceSubagentGraphState) -> dict:
     }
     if result.output is None:
         update["errors"] = [
-            create_error_record(
+            create_node_error(
+                state,
                 stage="evidence_subagent",
                 node_name="invoke_evidence_structured_llm",
                 category="llm",
@@ -947,10 +967,11 @@ def validate_evidence_subagent_output(state: EvidenceSubagentGraphState) -> dict
         return {
             "output": None,
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="validate_evidence_subagent_output",
-                    category="validation",
+                    category="protocol",
                     message=str(error)[:MAX_TEAM_MESSAGE_ERROR_CHARACTERS],
                     fatal=False,
                 )
@@ -971,10 +992,11 @@ def persist_evidence_analysis_artifact(state: EvidenceSubagentGraphState) -> dic
     if output is None:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="persist_evidence_analysis_artifact",
-                    category="validation",
+                    category="protocol",
                     message="没有可固化的 Evidence Subagent 输出",
                     fatal=False,
                 )

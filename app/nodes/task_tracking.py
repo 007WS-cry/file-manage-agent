@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from app.state.models import FileGovernanceState
-from app.utils.runtime import create_error_record
+from app.utils.error_context import create_node_error
 from app.utils.task_tracking import (
     apply_task_status,
     build_content_dispatch_requests,
@@ -72,7 +72,8 @@ def dispatch_content_subagent_task(state: FileGovernanceState) -> dict:
     except Exception as error:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="content_subagent",
                     node_name="dispatch_content_subagent_task",
                     category="protocol",
@@ -145,7 +146,8 @@ def dispatch_evidence_subagent_task(state: FileGovernanceState) -> dict:
     except Exception as error:
         return {
             "errors": [
-                create_error_record(
+                create_node_error(
+                    state,
                     stage="evidence_subagent",
                     node_name="dispatch_evidence_subagent_task",
                     category="protocol",

@@ -29,6 +29,7 @@ from app.state.models import (
     VersionAnalysisGraphState,
     VersionSubagentInput,
 )
+from app.utils.error_context import is_error_unresolved
 from app.utils.runtime import utc_now_iso
 
 """本模块提供顶层 Task 跟踪节点使用的编排调用、状态转换和结果收敛辅助能力。"""
@@ -348,7 +349,7 @@ def _fatal_errors_for_stage(
     return [
         error
         for error in state.get("errors", [])
-        if error.get("stage") == stage and error.get("fatal") is True
+        if error.get("stage") == stage and is_error_unresolved(error)
     ]
 
 
@@ -380,7 +381,7 @@ def has_orchestration_failure(errors: list[ErrorRecord]) -> bool:
         存在致命编排错误时返回 True，否则返回 False。
     """
     return any(
-        error.get("stage") == "team_orchestration" and error.get("fatal") is True
+        error.get("stage") == "team_orchestration" and is_error_unresolved(error)
         for error in errors
     )
 

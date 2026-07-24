@@ -7,7 +7,8 @@ from typing import Any, Literal, cast
 from app.hooks import HookFunction, HookPhase, HookResult
 from app.hooks.registry import DEFAULT_HOOK_REGISTRY, resolve_registered_hook
 from app.state.models import ErrorRecord, FileGovernanceState, HookEvent
-from app.utils.runtime import create_error_record, utc_now_iso
+from app.utils.error_context import create_node_error
+from app.utils.runtime import utc_now_iso
 
 """本模块顺序执行静态 Hook，并保护固定 Agent 状态、聚合事件和阻断错误。"""
 
@@ -330,6 +331,7 @@ def should_block_hook_failure(
 
 
 def mark_hook_result_blocked(
+    state: FileGovernanceState,
     *,
     phase: HookPhase,
     hook_name: str,
@@ -338,6 +340,7 @@ def mark_hook_result_blocked(
     """把阻断型 Hook 失败转换为顶层致命 ErrorRecord。
 
     Args:
+        state: 当前顶层治理状态，用于绑定运行、任务和节点执行标识。
         phase: Hook 生命周期阶段。
         hook_name: 执行失败的 Hook 名称。
         event: 已生成并完成消息收敛的失败事件。
@@ -345,7 +348,8 @@ def mark_hook_result_blocked(
     Returns:
         类别为 ``hook``、可由 reducer 合并的致命错误记录。
     """
-    return create_error_record(
+    return create_node_error(
+        state,
         stage=phase,
         node_name=hook_name,
         category="hook",
@@ -450,6 +454,7 @@ def execute_hook_phase(
             if should_block_hook_failure(working_state, hook_name):
                 errors.append(
                     mark_hook_result_blocked(
+                        working_state,
                         phase=phase,
                         hook_name=hook_name,
                         event=event,

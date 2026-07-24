@@ -44,6 +44,7 @@ from app.state.models import (
     TeamOrchestrationGraphState,
     VersionSubagentGraphState,
 )
+from app.utils.error_context import copy_error_context, create_error_context
 from app.utils.runtime import utc_now_iso
 from app.utils.task_orchestration import (
     ALLOWED_TASK_TRANSITIONS,
@@ -84,7 +85,7 @@ def create_task_dag(state: TeamOrchestrationGraphState) -> dict:
         )
         return {"tasks": tasks}
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_orchestration_error("create_task_dag", error)]}
+        return {"errors": [create_orchestration_error(state, "create_task_dag", error)]}
 
 
 def validate_task_dag(state: TeamOrchestrationGraphState) -> dict:
@@ -100,7 +101,7 @@ def validate_task_dag(state: TeamOrchestrationGraphState) -> dict:
         validate_fixed_task_dag(state.get("tasks", []))
         return {}
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_orchestration_error("validate_task_dag", error)]}
+        return {"errors": [create_orchestration_error(state, "validate_task_dag", error)]}
 
 
 def assign_tasks_to_roles(state: TeamOrchestrationGraphState) -> dict:
@@ -115,7 +116,7 @@ def assign_tasks_to_roles(state: TeamOrchestrationGraphState) -> dict:
     try:
         return {"tasks": assign_roles(state.get("tasks", []))}
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_orchestration_error("assign_tasks_to_roles", error)]}
+        return {"errors": [create_orchestration_error(state, "assign_tasks_to_roles", error)]}
 
 
 def initialize_fixed_agent_team(state: TeamOrchestrationGraphState) -> dict:
@@ -130,7 +131,11 @@ def initialize_fixed_agent_team(state: TeamOrchestrationGraphState) -> dict:
     try:
         return {"team": normalize_fixed_team(state.get("team"))}
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_orchestration_error("initialize_fixed_agent_team", error)]}
+        return {
+            "errors": [
+                create_orchestration_error(state, "initialize_fixed_agent_team", error)
+            ]
+        }
 
 
 def validate_orchestration_action(state: TeamOrchestrationGraphState) -> dict:
@@ -146,6 +151,7 @@ def validate_orchestration_action(state: TeamOrchestrationGraphState) -> dict:
         return {
             "errors": [
                 create_orchestration_error(
+                    state,
                     "validate_orchestration_action",
                     ValueError("单次 Team Orchestration 调用不能同时同步状态和分派 Subagent"),
                 )
@@ -187,7 +193,7 @@ def validate_subagent_payload(state: TeamOrchestrationGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as error:
         return {
             "dispatch_result": None,
-            "errors": [create_dispatch_error("validate_subagent_payload", error)],
+            "errors": [create_dispatch_error(state, "validate_subagent_payload", error)],
         }
 
 
@@ -221,7 +227,9 @@ def create_assignment_message(state: TeamOrchestrationGraphState) -> dict:
         )
         return {"team": team, "team_messages": [message]}
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_dispatch_error("create_assignment_message", error)]}
+        return {
+            "errors": [create_dispatch_error(state, "create_assignment_message", error)]
+        }
 
 
 def invoke_content_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
@@ -255,7 +263,10 @@ def invoke_content_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             fallback_used=False,
             team_messages=assignments,
             llm_calls=[],
-            errors=[],
+            errors=[dict(error) for error in state.get("errors", [])],
+            error_context=copy_error_context(
+                create_error_context(state, task_type="inventory")
+            ),
         )
         result = content_subagent_graph.invoke(subgraph_state)
         return {
@@ -269,6 +280,7 @@ def invoke_content_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             "dispatch_result": None,
             "errors": [
                 create_dispatch_error(
+                    state,
                     "invoke_content_subagent_graph",
                     RuntimeError(f"{type(error).__name__}: Content Subagent 子图调用失败"),
                 )
@@ -307,7 +319,10 @@ def invoke_version_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             fallback_used=False,
             team_messages=assignments,
             llm_calls=[],
-            errors=[],
+            errors=[dict(error) for error in state.get("errors", [])],
+            error_context=copy_error_context(
+                create_error_context(state, task_type="version_analysis")
+            ),
         )
         result = version_subagent_graph.invoke(subgraph_state)
         return {
@@ -321,6 +336,7 @@ def invoke_version_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             "dispatch_result": None,
             "errors": [
                 create_dispatch_error(
+                    state,
                     "invoke_version_subagent_graph",
                     RuntimeError(f"{type(error).__name__}: Version Subagent 子图调用失败"),
                 )
@@ -359,7 +375,10 @@ def invoke_evidence_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             fallback_used=False,
             team_messages=assignments,
             llm_calls=[],
-            errors=[],
+            errors=[dict(error) for error in state.get("errors", [])],
+            error_context=copy_error_context(
+                create_error_context(state, task_type="evidence")
+            ),
         )
         result = evidence_subagent_graph.invoke(subgraph_state)
         return {
@@ -373,6 +392,7 @@ def invoke_evidence_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             "dispatch_result": None,
             "errors": [
                 create_dispatch_error(
+                    state,
                     "invoke_evidence_subagent_graph",
                     RuntimeError(f"{type(error).__name__}: Evidence Subagent 子图调用失败"),
                 )
@@ -421,7 +441,7 @@ def validate_team_message(state: TeamOrchestrationGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as error:
         return {
             "dispatch_result": None,
-            "errors": [create_dispatch_error("validate_team_message", error)],
+            "errors": [create_dispatch_error(state, "validate_team_message", error)],
         }
 
 
@@ -509,7 +529,14 @@ def fallback_to_coordinator(state: TeamOrchestrationGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as error:
         return {
             "dispatch_result": None,
-            "errors": [create_dispatch_error("fallback_to_coordinator", error, fatal=True)],
+            "errors": [
+                create_dispatch_error(
+                    state,
+                    "fallback_to_coordinator",
+                    error,
+                    fatal=True,
+                )
+            ],
         }
 
 
@@ -545,7 +572,14 @@ def build_fallback_result_message(state: TeamOrchestrationGraphState) -> dict:
         return {"team": team, "team_messages": [message]}
     except (KeyError, TypeError, ValueError) as error:
         return {
-            "errors": [create_dispatch_error("build_fallback_result_message", error, fatal=True)]
+            "errors": [
+                create_dispatch_error(
+                    state,
+                    "build_fallback_result_message",
+                    error,
+                    fatal=True,
+                )
+            ]
         }
 
 
@@ -595,7 +629,16 @@ def merge_subagent_artifacts(state: TeamOrchestrationGraphState) -> dict:
             "team_messages": [validated],
         }
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_dispatch_error("merge_subagent_artifacts", error, fatal=True)]}
+        return {
+            "errors": [
+                create_dispatch_error(
+                    state,
+                    "merge_subagent_artifacts",
+                    error,
+                    fatal=True,
+                )
+            ]
+        }
 
 
 def append_task_output_refs(state: TeamOrchestrationGraphState) -> dict:
@@ -626,7 +669,14 @@ def append_task_output_refs(state: TeamOrchestrationGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as error:
         return {
             "dispatch_request": None,
-            "errors": [create_dispatch_error("append_task_output_refs", error, fatal=True)],
+            "errors": [
+                create_dispatch_error(
+                    state,
+                    "append_task_output_refs",
+                    error,
+                    fatal=True,
+                )
+            ],
         }
 
 
@@ -727,7 +777,7 @@ def update_task_status(state: TeamOrchestrationGraphState) -> dict:
     except (KeyError, TypeError, ValueError) as error:
         return {
             "task_update": None,
-            "errors": [create_orchestration_error("update_task_status", error)],
+            "errors": [create_orchestration_error(state, "update_task_status", error)],
         }
 
 
@@ -747,4 +797,8 @@ def update_todos_from_tasks(state: TeamOrchestrationGraphState) -> dict:
         )
         return {"todos": todos}
     except (KeyError, TypeError, ValueError) as error:
-        return {"errors": [create_orchestration_error("update_todos_from_tasks", error)]}
+        return {
+            "errors": [
+                create_orchestration_error(state, "update_todos_from_tasks", error)
+            ]
+        }

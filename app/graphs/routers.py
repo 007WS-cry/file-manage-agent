@@ -21,8 +21,24 @@ from app.state.models import (
     VersionAnalysisGraphState,
     VersionSubagentGraphState,
 )
+from app.utils.error_context import (
+    copy_error_context,
+    create_error_context,
+    is_error_unresolved,
+)
 
 """本模块实现各 LangGraph 通过 conditional_edge 明确调用的条件路由函数。"""
+
+
+# 由统一可恢复节点路由检查的局部降级阶段，避免历史业务错误在流程尾部被重复触发。
+LOCAL_RECOVERY_STAGES = frozenset(
+    {
+        "memory_recall",
+        "memory_persist",
+        "context_compact_after_inventory",
+        "context_compact_after_evidence",
+    }
+)
 
 
 def route_context_compaction(
@@ -153,7 +169,7 @@ def route_before_run_hooks_result(
         存在 Hook 阻断或基础设施错误时返回 ``failure``，否则返回 ``continue``。
     """
     has_blocking_error = any(
-        error["fatal"]
+        is_error_unresolved(error)
         and error["category"] == "hook"
         and error["stage"] in {"before_run", "before_run_hooks"}
         for error in state.get("errors", [])
@@ -176,15 +192,35 @@ def route_system_prompt_result(
     if prompt_status not in {"loaded", "disabled"}:
         return "failure"
     has_prompt_error = any(
-        error["fatal"] and error["category"] == "prompt" for error in state.get("errors", [])
+        is_error_unresolved(error) and error["category"] == "prompt"
+        for error in state.get("errors", [])
     )
     return "failure" if has_prompt_error else "continue"
+
+
+def route_recoverable_node_result(
+    state: FileGovernanceState,
+) -> Literal["continue", "recovery"]:
+    """根据最近节点合并后的未解决错误选择正常续跑或进入统一 Recovery。
+
+    Args:
+        state: 已执行 Memory 或 Context Compact 等可降级节点的顶层治理状态。
+
+    Returns:
+        存在尚未处理的阻断错误时返回 ``recovery``，否则返回 ``continue``。
+    """
+    has_local_error = any(
+        error.get("stage") in LOCAL_RECOVERY_STAGES
+        and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    )
+    return "recovery" if has_local_error else "continue"
 
 
 def is_request_valid(state: FileGovernanceState) -> Literal["valid", "invalid"]:
     """根据请求校验阶段产生的致命错误选择继续或失败报告。"""
     has_validation_error = any(
-        error["fatal"] and error["stage"] == "request_validation"
+        is_error_unresolved(error) and error["stage"] == "request_validation"
         for error in state.get("errors", [])
     )
     return "invalid" if has_validation_error else "valid"
@@ -194,7 +230,10 @@ def has_analyzable_documents(
     state: FileGovernanceState,
 ) -> Literal["analyzable", "empty", "failure"]:
     """在 Inventory 子图结束后区分可分析、无数据和致命失败。"""
-    if any(error["fatal"] for error in state.get("errors", [])):
+    if any(
+        error.get("stage") == "inventory" and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    ):
         return "failure"
     parsed_file_ids = {
         file_record["id"]
@@ -219,7 +258,10 @@ def has_pending_human_review(
         存在致命错误时返回 ``failure``；存在待审核推荐时返回 ``review``；
         其余情况返回 ``complete``。
     """
-    if any(error["fatal"] for error in state.get("errors", [])):
+    if any(
+        error.get("stage") == "recommendation" and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    ):
         return "failure"
     if any(decision["needs_human_review"] for decision in state.get("decisions", [])):
         return "review"
@@ -235,7 +277,12 @@ def route_version_analysis_result(state: FileGovernanceState) -> Literal["succes
     Returns:
         没有致命错误时返回 ``success``，否则返回 ``failure``。
     """
-    return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
+    has_version_error = any(
+        error.get("stage") in {"version_analysis", "version_subagent"}
+        and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    )
+    return "failure" if has_version_error else "success"
 
 
 def route_evidence_result(state: FileGovernanceState) -> Literal["success", "failure"]:
@@ -250,7 +297,12 @@ def route_evidence_result(state: FileGovernanceState) -> Literal["success", "fai
     Returns:
         没有致命错误时返回 ``success``，否则返回 ``failure``。
     """
-    return "failure" if any(error["fatal"] for error in state.get("errors", [])) else "success"
+    has_evidence_error = any(
+        error.get("stage") in {"evidence", "evidence_subagent"}
+        and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    )
+    return "failure" if has_evidence_error else "success"
 
 
 def route_team_orchestration_result(state: FileGovernanceState) -> Literal["success", "failure"]:
@@ -263,7 +315,9 @@ def route_team_orchestration_result(state: FileGovernanceState) -> Literal["succ
         存在 Team Orchestration 致命错误时返回 ``failure``，否则返回 ``success``。
     """
     has_orchestration_error = any(
-        error.get("stage") == "team_orchestration" and error.get("fatal") is True
+        error.get("stage")
+        in {"team_orchestration", "content_subagent", "evidence_subagent"}
+        and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "failure" if has_orchestration_error else "success"
@@ -282,7 +336,7 @@ def route_skill_registry_result(
     """
     registry_ready = state.get("skill_registry", {}).get("status") == "ready"
     has_skill_error = any(
-        error.get("stage") == "skills" and error.get("fatal") is True
+        error.get("stage") == "skills" and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "ready" if registry_ready and not has_skill_error else "failure"
@@ -330,7 +384,7 @@ def route_failure_report_task_sync(
         DAG 完整且没有编排致命错误时返回 ``sync``，否则返回 ``skip``。
     """
     if any(
-        error.get("stage") == "team_orchestration" and error.get("fatal") is True
+        error.get("stage") == "team_orchestration" and is_error_unresolved(error)
         for error in state.get("errors", [])
     ):
         return "skip"
@@ -388,7 +442,7 @@ def route_after_run_hooks_result(
         after_run 阶段被阻断时返回 ``failure``，否则返回 ``finalize``。
     """
     has_blocking_error = any(
-        error["fatal"]
+        is_error_unresolved(error)
         and error["category"] == "hook"
         and error["stage"] in {"after_run", "after_run_hooks"}
         for error in state.get("errors", [])
@@ -493,6 +547,9 @@ def dispatch_pdf_match_jobs(state: EvidenceGraphState) -> list[Send]:
                 "pdf_match_jobs": [],
                 "pdf_exports": [],
                 "errors": [],
+                "error_context": copy_error_context(
+                    create_error_context(state, task_type="evidence")
+                ),
             },
         )
         for job in state.get("pdf_match_jobs", [])
@@ -515,7 +572,7 @@ def route_task_dag_validation(
     has_blocking_error = any(
         error.get("stage") == "team_orchestration"
         and error.get("node_name") in blocking_nodes
-        and error.get("fatal") is True
+        and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "invalid" if has_blocking_error else "valid"
@@ -533,7 +590,8 @@ def route_team_initialization_result(
         团队合法时返回 ``valid``；初始化产生致命错误时返回 ``invalid``。
     """
     has_error = any(
-        error.get("node_name") == "initialize_fixed_agent_team" and error.get("fatal") is True
+        error.get("node_name") == "initialize_fixed_agent_team"
+        and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "invalid" if has_error else "valid"
@@ -553,7 +611,7 @@ def route_orchestration_action(
     """
     blocking_nodes = {"assign_tasks_to_roles", "validate_orchestration_action"}
     if any(
-        error.get("node_name") in blocking_nodes and error.get("fatal") is True
+        error.get("node_name") in blocking_nodes and is_error_unresolved(error)
         for error in state.get("errors", [])
     ):
         return "invalid"
