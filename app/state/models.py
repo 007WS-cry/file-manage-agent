@@ -22,12 +22,13 @@ class RunState(TypedDict):
     status: Literal[
         "created",
         "running",
+        "recovering",
         "waiting_human",
         "completed",
         "partial",
         "failed",
     ]
-    # 当前运行状态；存在非致命文件错误时最终状态为 partial。
+    # 当前运行状态；recovering 为 0.7.0 统一恢复流程预留，部分成功最终为 partial。
 
     current_stage: str
     # 当前正在执行的主流程阶段或子图名称。
@@ -456,16 +457,16 @@ class MemoryState(TypedDict):
 
 
 class ErrorRecord(TypedDict):
-    """节点执行过程中产生的结构化错误。"""
+    """统一错误恢复协议使用的结构化错误生命周期记录。"""
 
     id: str
-    # 错误记录唯一 ID。
+    # 错误唯一 ID；同一节点执行中的同一错误在重试时保持不变。
 
     stage: str
     # 错误发生的主流程阶段或子图名称。
 
     node_name: str
-    # 发生错误的节点函数名。
+    # 实际发生错误的函数节点名称。
 
     category: Literal[
         "filesystem",
@@ -478,20 +479,304 @@ class ErrorRecord(TypedDict):
         "prompt",
         "hook",
         "memory",
+        "skill",
         "context",
         "database",
+        "checkpoint",
+        "timeout",
         "unknown",
     ]
-    # 错误类别；memory、context、database 分别表示记忆、压缩和应用数据库错误。
+    # 错误分类；0.6.1 只建立协议和策略，不执行自动恢复。
+
+    exception_type: str | None
+    # 已脱敏的异常类型名称；规则校验产生的错误可以为 None。
 
     message: str
-    # 可供日志和报告展示的错误说明。
+    # 可供日志、人工恢复请求和报告展示的脱敏错误说明。
 
     related_file_id: str | None
     # 与错误相关的文件 ID；非文件错误时为 None。
 
+    task_id: str | None
+    # 相关 Task ID；Task DAG 创建前的错误可以为 None。
+
+    node_execution_id: str | None
+    # 相关节点执行记录 ID；用于后续幂等判断和结果复用。
+
+    retryable: bool
+    # 当前错误分类是否允许自动重试。
+
+    retry_count: int
+    # 已经执行的额外重试次数，不包含第一次正常执行。
+
+    max_retries: int
+    # 允许执行的最大额外重试次数。
+
+    fallback: (
+        Literal[
+            "skip_file",
+            "coordinator",
+            "no_memory",
+            "default_skill",
+            "keep_context",
+            "partial_result",
+        ]
+        | None
+    )
+    # 当前错误可采用的安全降级；不存在安全降级时为 None。
+
+    requires_human: bool
+    # 自动重试和安全降级均不足时是否需要人工恢复。
+
+    status: Literal[
+        "pending",
+        "retrying",
+        "fallback_applied",
+        "waiting_human",
+        "recovered",
+        "failed",
+    ]
+    # 错误从捕获到最终恢复或失败的生命周期状态。
+
     fatal: bool
-    # 是否导致整个治理任务无法继续。
+    # 兼容 0.6.0 的字段；后续恢复图只在最终终止时将其视为致命错误。
+
+    created_at: str
+    # 首次捕获错误的 ISO 8601 时间。
+
+    recovered_at: str | None
+    # 错误完成恢复的时间；尚未恢复时为 None。
+
+
+class NodeExecutionRecord(TypedDict):
+    """一个可以由 checkpoint 重放或通过幂等键复用的节点执行记录。"""
+
+    id: str
+    # 节点幂等键，由运行、Task、节点名称和安全输入摘要计算。
+
+    task_execution_id: str | None
+    # 所属逻辑 Task 的执行 ID；Task DAG 创建前可以为 None。
+
+    run_id: str
+    # 所属治理运行 ID。
+
+    task_id: str | None
+    # 所属 Task ID；生命周期节点可以为 None。
+
+    stage: str
+    # 节点所属主流程阶段或子图名称。
+
+    node_name: str
+    # 实际执行的函数节点名称。
+
+    input_digest: str
+    # 只根据稳定 ID、配置值、文件哈希和产物引用计算的输入摘要。
+
+    status: Literal[
+        "pending",
+        "running",
+        "succeeded",
+        "failed",
+        "reused",
+    ]
+    # 节点尚未执行、执行中、成功、失败或结果复用的状态。
+
+    attempt_count: int
+    # 节点累计执行次数，包含第一次执行。
+
+    state_update_ref: str | None
+    # 成功状态更新的受控 JSON 产物引用，用于重放时复用。
+
+    result_refs: list[str]
+    # 节点产生的业务产物引用。
+
+    result_digest: str | None
+    # 状态更新和产物引用的完整性摘要。
+
+    last_error_id: str | None
+    # 最近一次执行失败对应的 ErrorRecord ID。
+
+    started_at: str
+    # 第一次开始执行的 ISO 8601 时间。
+
+    finished_at: str | None
+    # 成功、失败或复用完成的时间。
+
+
+class DegradationRecord(TypedDict):
+    """一次安全降级及其对最终治理结果影响的记录。"""
+
+    id: str
+    # 降级记录唯一 ID。
+
+    error_id: str
+    # 触发该降级的 ErrorRecord ID。
+
+    stage: str
+    # 应用降级的业务阶段。
+
+    action: Literal[
+        "skip_file",
+        "coordinator",
+        "no_memory",
+        "default_skill",
+        "keep_context",
+        "partial_result",
+    ]
+    # 实际使用的降级动作。
+
+    summary: str
+    # 面向用户和报告的简短降级说明。
+
+    affected_file_ids: list[str]
+    # 受降级影响的文件 ID；非文件级降级时为空列表。
+
+    impact: str
+    # 降级对置信度、完整性或可解释性的影响。
+
+    created_at: str
+    # 降级动作生效的 ISO 8601 时间。
+
+
+class RecoveryCategoryPolicyState(TypedDict):
+    """一个错误类别对应的确定性重试、退避、降级和人工恢复策略。"""
+
+    retryable: bool
+    # 当前类别是否允许自动重试。
+
+    max_retries: int
+    # 允许执行的最大额外重试次数，不包含第一次正常执行。
+
+    initial_backoff_seconds: float
+    # 第一次自动重试前的确定性等待秒数。
+
+    backoff_multiplier: float
+    # 后续重试等待时间使用的指数倍数。
+
+    max_backoff_seconds: float
+    # 单次自动重试允许使用的最大等待秒数。
+
+    fallback: (
+        Literal[
+            "skip_file",
+            "coordinator",
+            "no_memory",
+            "default_skill",
+            "keep_context",
+            "partial_result",
+        ]
+        | None
+    )
+    # 重试不可用或耗尽后允许采用的安全降级。
+
+    requires_human: bool
+    # 无法自动恢复时是否允许请求用户提供恢复输入。
+
+
+class RecoveryPolicyState(TypedDict):
+    """一次治理运行使用的错误分类和恢复策略快照。"""
+
+    enabled: bool
+    # 是否启用恢复策略判断；0.6.1 只保存策略，不接入恢复子图。
+
+    default_policy: RecoveryCategoryPolicyState
+    # 未知或未单独配置错误类别使用的默认策略。
+
+    category_policies: dict[str, RecoveryCategoryPolicyState]
+    # 错误类别名称到完整恢复策略的映射。
+
+
+class RecoveryHumanState(TypedDict):
+    """恢复型人工确认的待处理请求和用户响应状态。"""
+
+    kind: Literal["error_recovery"]
+    # interrupt 类型；必须与主版本选择的 file_governance_review 区分。
+
+    pending_error_id: str | None
+    # 当前等待用户处理的错误 ID。
+
+    allowed_actions: list[
+        Literal[
+            "retry",
+            "skip_file",
+            "provide_path",
+            "abort",
+        ]
+    ]
+    # 当前错误允许用户选择的恢复动作。
+
+    selected_action: (
+        Literal[
+            "retry",
+            "skip_file",
+            "provide_path",
+            "abort",
+        ]
+        | None
+    )
+    # 用户恢复后选择的动作；尚未恢复时为 None。
+
+    replacement_path: str | None
+    # 用户补充或修正的输入路径；不需要路径时为 None。
+
+    note: str | None
+    # 用户提供的简短恢复说明；不得进入长期 Memory。
+
+
+class RecoveryState(TypedDict):
+    """顶层状态保存的恢复策略、待处理错误和恢复动作。"""
+
+    policy: RecoveryPolicyState
+    # 当前运行使用的确定性恢复策略快照。
+
+    pending_error_ids: list[str]
+    # 等待后续 Error Recovery 子图处理的错误 ID 队列。
+
+    current_error_id: str | None
+    # 当前正在分类或处理的错误 ID。
+
+    action: Literal[
+        "none",
+        "retry",
+        "reuse_result",
+        "skip_file",
+        "fallback",
+        "continue_partial",
+        "wait_human",
+        "abort",
+    ]
+    # Error Recovery 子图未来输出的恢复动作。
+
+    resume_node: str | None
+    # 自动重试或补充输入后需要重新执行的顶层节点。
+
+    resume_after_node: str | None
+    # 结果复用或安全降级后需要继续执行的顶层节点。
+
+    retry_delay_seconds: float
+    # 当前重试动作使用的确定性退避时间。
+
+    fallback: (
+        Literal[
+            "skip_file",
+            "coordinator",
+            "no_memory",
+            "default_skill",
+            "keep_context",
+            "partial_result",
+        ]
+        | None
+    )
+    # 当前选择的安全降级策略。
+
+    human: RecoveryHumanState
+    # 独立于主版本选择的恢复型人工确认状态。
+
+    degradation_ids: list[str]
+    # 本次恢复流程已经产生的降级记录 ID。
+
+    last_policy_reason: str | None
+    # 当前恢复动作的分类和策略理由。
 
 
 class ReportState(TypedDict):
@@ -511,6 +796,12 @@ class ReportState(TypedDict):
 
     generated_at: str | None
     # 报告生成时间。
+
+    degradation_ids: list[str]
+    # 本次报告引用的安全降级记录 ID，正文展示将在后续恢复批次接入。
+
+    recovered_error_ids: list[str]
+    # 本次报告引用的已恢复或已应用降级错误 ID。
 
 
 class PdfMatchJob(TypedDict):
@@ -939,6 +1230,9 @@ class TaskItem(TypedDict):
     task_id: str
     # Task 的稳定唯一 ID，建议使用“run_id:task_type”。
 
+    execution_id: str
+    # 逻辑 Task 的稳定执行 ID；同一 Task 的有限重试必须保持不变。
+
     task_type: Literal[
         "inventory",
         "version_analysis",
@@ -955,11 +1249,16 @@ class TaskItem(TypedDict):
     status: Literal[
         "pending",
         "running",
+        "retrying",
         "completed",
+        "partial",
         "failed",
         "skipped",
     ]
-    # Task 当前真实执行状态。
+    # Task 当前真实执行状态；partial 为有可用降级结果的终态。
+
+    attempt_count: int
+    # Task 累计开始执行的次数，包含第一次正常执行和后续重试。
 
     dependencies: list[str]
     # 普通 Task 启动前须依赖成功终结；Report Task 可在依赖进入任一终态后收口。
@@ -994,13 +1293,21 @@ class TaskStatusUpdate(TypedDict):
     task_id: str
     # 本次需要更新的目标 Task ID。
 
+    execution_id: str
+    # 目标逻辑 Task 的稳定执行 ID，用于拒绝跨 Task 或过期更新。
+
     status: Literal[
         "running",
+        "retrying",
         "completed",
+        "partial",
         "failed",
         "skipped",
     ]
     # 目标 Task 需要进入的新状态。
+
+    attempt_count: int
+    # 本次更新完成后的 Task 累计执行次数。
 
     output_refs: list[str]
     # 本阶段新产生的状态记录或产物引用。
@@ -1598,6 +1905,9 @@ class FileGovernanceState(TypedDict):
     application_database: ApplicationDatabaseState
     # 五张应用表共用的独立数据库配置和当前连接状态。
 
+    recovery: RecoveryState
+    # 当前运行的恢复策略、待处理错误和恢复动作。
+
     hook_events: Annotated[
         list[HookEvent],
         merge_by_id,
@@ -1664,8 +1974,14 @@ class FileGovernanceState(TypedDict):
     decisions: Annotated[list[DecisionRecord], merge_by_id]
     # 每个版本组各自的主版本推荐结果。
 
+    node_executions: Annotated[list[NodeExecutionRecord], merge_by_id]
+    # 已开始、失败、完成或复用的幂等节点执行记录。
+
+    degradations: Annotated[list[DegradationRecord], merge_by_id]
+    # 本次运行应用过的安全降级及其结果影响。
+
     errors: Annotated[list[ErrorRecord], merge_by_id]
-    # 所有阶段产生的文件级或运行级错误。
+    # 所有阶段产生的文件级或运行级错误及其恢复生命周期。
 
 
 class TeamOrchestrationGraphState(TypedDict):
@@ -1935,3 +2251,37 @@ class RecommendationGraphState(TypedDict):
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
     # 候选评分、证据规则或推荐验证错误。
+
+
+class RecoveryGraphState(TypedDict):
+    """未来 Error Recovery 子图使用的最小共享状态。"""
+
+    run: RunState
+    # 当前治理运行及 recovering、waiting_human 等生命周期状态。
+
+    tasks: Annotated[
+        list[TaskItem],
+        merge_by_task_id,
+    ]
+    # 发生错误、正在重试或部分完成的 Task。
+
+    errors: Annotated[
+        list[ErrorRecord],
+        merge_by_id,
+    ]
+    # 等待分类或已经恢复的错误记录。
+
+    node_executions: Annotated[
+        list[NodeExecutionRecord],
+        merge_by_id,
+    ]
+    # 用于重试检查和已完成结果复用的节点执行记录。
+
+    degradations: Annotated[
+        list[DegradationRecord],
+        merge_by_id,
+    ]
+    # 恢复子图产生的安全降级记录。
+
+    recovery: RecoveryState
+    # 当前恢复策略、错误队列、跳转目标和人工输入。

@@ -23,8 +23,10 @@ from app.utils.runtime import create_error_record, utc_now_iso
 # Task 状态允许的确定性转换；终态只能幂等保持，不能重新打开。
 ALLOWED_TASK_TRANSITIONS: dict[str, frozenset[str]] = {
     "pending": frozenset({"running", "failed", "skipped"}),
-    "running": frozenset({"running", "completed", "failed", "skipped"}),
+    "running": frozenset({"running", "retrying", "completed", "partial", "failed", "skipped"}),
+    "retrying": frozenset({"retrying", "running", "partial", "failed", "skipped"}),
     "completed": frozenset({"completed"}),
+    "partial": frozenset({"partial"}),
     "failed": frozenset({"failed"}),
     "skipped": frozenset({"skipped"}),
 }
@@ -114,9 +116,7 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
     if team.get("coordinator_id") != "coordinator-agent":
         raise ValueError("TeamState.coordinator_id 必须是 coordinator-agent")
     if team.get("protocol_version") != DEFAULT_TEAM_PROTOCOL_VERSION:
-        raise ValueError(
-            f"TeamState.protocol_version 必须是 {DEFAULT_TEAM_PROTOCOL_VERSION}"
-        )
+        raise ValueError(f"TeamState.protocol_version 必须是 {DEFAULT_TEAM_PROTOCOL_VERSION}")
     max_parallel_agents = team.get("max_parallel_agents")
     if (
         isinstance(max_parallel_agents, bool)
@@ -124,8 +124,7 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
         or not 1 <= max_parallel_agents <= DEFAULT_MAX_PARALLEL_AGENTS
     ):
         raise ValueError(
-            "TeamState.max_parallel_agents 必须位于 1 到 "
-            f"{DEFAULT_MAX_PARALLEL_AGENTS} 之间"
+            f"TeamState.max_parallel_agents 必须位于 1 到 {DEFAULT_MAX_PARALLEL_AGENTS} 之间"
         )
 
     raw_members = team.get("members")
@@ -161,20 +160,14 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
         if tool_names != []:
             raise ValueError("0.4.4 固定 Subagent 不配置工具或 Worktree 能力")
         if not isinstance(skill_ids, list) or any(
-            not isinstance(skill_id, str) or not skill_id.strip()
-            for skill_id in skill_ids
+            not isinstance(skill_id, str) or not skill_id.strip() for skill_id in skill_ids
         ):
             raise TypeError(f"成员 {agent_id} 的 skill_ids 必须是非空字符串列表")
         if len(skill_ids) != len(set(skill_ids)):
             raise ValueError(f"成员 {agent_id} 的 skill_ids 不得重复")
-        unknown_skill_ids = sorted(
-            set(skill_ids) - ALLOWED_SKILL_IDS_BY_ROLE[expected_role]
-        )
+        unknown_skill_ids = sorted(set(skill_ids) - ALLOWED_SKILL_IDS_BY_ROLE[expected_role])
         if unknown_skill_ids:
-            raise ValueError(
-                f"成员 {agent_id} 包含职责外 Skill："
-                + ", ".join(unknown_skill_ids)
-            )
+            raise ValueError(f"成员 {agent_id} 包含职责外 Skill：" + ", ".join(unknown_skill_ids))
         normalized_members.append(
             AgentMemberState(
                 id=agent_id,
@@ -324,9 +317,9 @@ def ensure_task_dependencies_ready(
 ) -> None:
     """确认 Task 的所有依赖满足当前阶段的启动条件。
 
-    普通业务 Task 只接受已完成或无错误跳过的依赖。报告 Task 是治理运行的统一
-    收口阶段，因此允许依赖以 completed、failed 或 skipped 任一终态结束，确保
-    失败报告仍可记录真实故障，而不会把报告自身误判为失败。
+    普通业务 Task 只接受已完成、有降级结果或无错误跳过的依赖。报告 Task 是治理
+    运行的统一收口阶段，因此允许依赖以 completed、partial、failed 或 skipped
+    任一终态结束，确保失败报告仍可记录真实故障，而不会把报告自身误判为失败。
 
     Args:
         task: 等待进入运行或完成状态的目标 Task。
@@ -340,12 +333,15 @@ def ensure_task_dependencies_ready(
         if dependency is None:
             raise ValueError(f"Task {task['task_id']} 引用了未知依赖：{dependency_id}")
         if task["task_type"] == "report":
-            if dependency["status"] not in {"completed", "failed", "skipped"}:
-                raise ValueError(
-                    f"Task {task['task_id']} 的依赖尚未进入终态：{dependency_id}"
-                )
+            if dependency["status"] not in {
+                "completed",
+                "partial",
+                "failed",
+                "skipped",
+            }:
+                raise ValueError(f"Task {task['task_id']} 的依赖尚未进入终态：{dependency_id}")
             continue
-        dependency_completed = dependency["status"] == "completed"
+        dependency_completed = dependency["status"] in {"completed", "partial"}
         dependency_skipped_normally = dependency["status"] == "skipped" and not dependency.get(
             "error"
         )

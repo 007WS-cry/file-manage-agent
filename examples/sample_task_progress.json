@@ -46,7 +46,9 @@
   "task_status_counts": {
     "pending": 0,
     "running": 0,
+    "retrying": 0,
     "completed": 5,
+    "partial": 0,
     "failed": 0,
     "skipped": 1
   },

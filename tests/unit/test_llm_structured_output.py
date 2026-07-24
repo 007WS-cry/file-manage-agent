@@ -166,15 +166,15 @@ def test_initial_state_contains_safe_llm_and_fixed_team_contract(
 
 
 def test_release_version_is_consistent_across_package_and_docker() -> None:
-    """Python 包、项目元数据、Docker 默认值和 README 应统一为 0.6.0。"""
+    """Python 包、项目元数据、Docker 默认值和 README 应统一为 0.6.1。"""
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert app.__version__ == "0.6.0"
-    assert 'version = "0.6.0"' in pyproject
-    assert "ARG APP_VERSION=0.6.0" in dockerfile
-    assert "当前版本 `0.6.0`" in readme
+    assert app.__version__ == "0.6.1"
+    assert 'version = "0.6.1"' in pyproject
+    assert "ARG APP_VERSION=0.6.1" in dockerfile
+    assert "当前版本 `0.6.1`" in readme
 
 
 def test_default_config_and_sample_request_disable_real_provider() -> None:

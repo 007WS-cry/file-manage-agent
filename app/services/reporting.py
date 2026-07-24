@@ -36,15 +36,10 @@ def build_version_summary_lines(
         可直接追加到 Markdown 报告的章节行；没有文件对差异时返回明确说明。
     """
     file_names = {
-        file_record["id"]: file_record["file_name"]
-        for file_record in state.get("files", [])
+        file_record["id"]: file_record["file_name"] for file_record in state.get("files", [])
     }
     diffs = sorted(
-        (
-            diff
-            for diff in state.get("diffs", [])
-            if diff.get("group_id") == group_id
-        ),
+        (diff for diff in state.get("diffs", []) if diff.get("group_id") == group_id),
         key=lambda item: item["id"],
     )
     lines = ["", "### 关键修改摘要", ""]
@@ -56,9 +51,7 @@ def build_version_summary_lines(
         left_name = file_names.get(diff["file_a_id"], diff["file_a_id"])
         right_name = file_names.get(diff["file_b_id"], diff["file_b_id"])
         source = (
-            "Version Subagent"
-            if diff.get("summary_source") == "version_subagent"
-            else "确定性规则"
+            "Version Subagent" if diff.get("summary_source") == "version_subagent" else "确定性规则"
         )
         lines.append(
             "- `"
@@ -134,9 +127,15 @@ def build_report_state(
         warnings: 已知运行警告列表。
 
     Returns:
-        包含摘要、Markdown、警告、可选磁盘路径和生成时间的报告状态。
+        包含摘要、Markdown、警告、恢复索引、可选磁盘路径和生成时间的报告状态。
     """
     merged_warnings = list(warnings)
+    degradation_ids = [item["id"] for item in state.get("degradations", [])]
+    recovered_error_ids = [
+        item["id"]
+        for item in state.get("errors", [])
+        if item.get("status") in {"recovered", "fallback_applied"}
+    ]
     try:
         report_path = persist_report(state, markdown)
     except (OSError, ValueError) as exc:
@@ -148,4 +147,6 @@ def build_report_state(
         warnings=merged_warnings,
         report_path=report_path,
         generated_at=utc_now_iso(),
+        degradation_ids=degradation_ids,
+        recovered_error_ids=recovered_error_ids,
     )

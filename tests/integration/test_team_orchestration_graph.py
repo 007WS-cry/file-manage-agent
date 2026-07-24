@@ -188,9 +188,12 @@ def test_subgraph_consumes_task_update_and_reprojects_todo() -> None:
     graph = build_team_orchestration_graph()
     planned = graph.invoke(_create_subgraph_state())
     inventory_id = build_task_id(RUN_ID, "inventory")
+    inventory_execution_id = _task_by_type(planned["tasks"], "inventory")["execution_id"]
     running_update = TaskStatusUpdate(
         task_id=inventory_id,
+        execution_id=inventory_execution_id,
         status="running",
+        attempt_count=1,
         output_refs=[],
         error=None,
         updated_at="2026-07-21T09:00:30+00:00",
@@ -199,13 +202,18 @@ def test_subgraph_consumes_task_update_and_reprojects_todo() -> None:
 
     running = graph.invoke(planned)
 
-    assert _task_by_type(running["tasks"], "inventory")["status"] == "running"
+    running_inventory = _task_by_type(running["tasks"], "inventory")
+    assert running_inventory["status"] == "running"
+    assert running_inventory["execution_id"] == inventory_execution_id
+    assert running_inventory["attempt_count"] == 1
     assert running["todos"][0]["status"] == "in_progress"
     assert running["task_update"] is None
 
     running["task_update"] = TaskStatusUpdate(
         task_id=inventory_id,
+        execution_id=inventory_execution_id,
         status="completed",
+        attempt_count=1,
         output_refs=["files", "documents"],
         error=None,
         updated_at="2026-07-21T09:01:00+00:00",
@@ -214,9 +222,57 @@ def test_subgraph_consumes_task_update_and_reprojects_todo() -> None:
     inventory = _task_by_type(completed["tasks"], "inventory")
 
     assert inventory["status"] == "completed"
+    assert inventory["execution_id"] == inventory_execution_id
+    assert inventory["attempt_count"] == 1
     assert inventory["output_refs"] == ["files", "documents"]
     assert completed["todos"][0]["status"] == "completed"
     assert completed["task_update"] is None
+
+
+def test_retry_transition_preserves_execution_id_and_increments_attempt() -> None:
+    """Task 进入 retrying 后再次运行应保留逻辑执行 ID 并只增加一次尝试。"""
+    graph = build_team_orchestration_graph()
+    state = graph.invoke(_create_subgraph_state())
+    inventory = _task_by_type(state["tasks"], "inventory")
+    execution_id = inventory["execution_id"]
+
+    state["task_update"] = TaskStatusUpdate(
+        task_id=inventory["task_id"],
+        execution_id=execution_id,
+        status="running",
+        attempt_count=1,
+        output_refs=[],
+        error=None,
+        updated_at="2026-07-21T09:00:30+00:00",
+    )
+    first_attempt = graph.invoke(state)
+    first_attempt["task_update"] = TaskStatusUpdate(
+        task_id=inventory["task_id"],
+        execution_id=execution_id,
+        status="retrying",
+        attempt_count=1,
+        output_refs=[],
+        error="模型调用超时，准备有限重试",
+        updated_at="2026-07-21T09:00:45+00:00",
+    )
+    retrying = graph.invoke(first_attempt)
+    retrying["task_update"] = TaskStatusUpdate(
+        task_id=inventory["task_id"],
+        execution_id=execution_id,
+        status="running",
+        attempt_count=2,
+        output_refs=[],
+        error=None,
+        updated_at="2026-07-21T09:01:00+00:00",
+    )
+
+    retried = graph.invoke(retrying)
+    retried_inventory = _task_by_type(retried["tasks"], "inventory")
+
+    assert retried_inventory["status"] == "running"
+    assert retried_inventory["execution_id"] == execution_id
+    assert retried_inventory["attempt_count"] == 2
+    assert retried["todos"][0]["status"] == "in_progress"
 
 
 def test_invalid_dependency_transition_records_error_without_changing_task() -> None:
@@ -236,8 +292,7 @@ def test_invalid_dependency_transition_records_error_without_changing_task() -> 
     assert _task_by_type(result["tasks"], "version_analysis")["status"] == "pending"
     assert result["task_update"] is None
     assert any(
-        error["node_name"] == "update_task_status" and error["fatal"]
-        for error in result["errors"]
+        error["node_name"] == "update_task_status" and error["fatal"] for error in result["errors"]
     )
 
 

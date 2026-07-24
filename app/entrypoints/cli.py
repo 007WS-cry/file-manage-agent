@@ -26,7 +26,9 @@ MAX_CLI_JSON_BYTES = 1024 * 1024
 TASK_STATUS_VALUES: tuple[str, ...] = (
     "pending",
     "running",
+    "retrying",
     "completed",
+    "partial",
     "failed",
     "skipped",
 )
@@ -415,13 +417,14 @@ def serialize_todos(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def count_task_statuses(result: dict[str, Any]) -> dict[str, int]:
-    """统计顶层状态中五种固定 Task 状态的数量。
+    """统计顶层状态中七种固定 Task 状态的数量。
 
     Args:
         result: 图调用返回的顶层状态对象。
 
     Returns:
-        始终包含 pending、running、completed、failed、skipped 的计数字典。
+        始终包含 pending、running、retrying、completed、partial、failed、
+        skipped 的计数字典。
     """
     counts = {status: 0 for status in TASK_STATUS_VALUES}
     for task in result.get("tasks", []):

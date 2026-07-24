@@ -398,7 +398,9 @@ def test_cli_runs_empty_directory_request(tmp_path: Path, capsys) -> None:
     assert output["task_status_counts"] == {
         "pending": 0,
         "running": 0,
+        "retrying": 0,
         "completed": 2,
+        "partial": 0,
         "failed": 0,
         "skipped": 4,
     }
@@ -466,7 +468,9 @@ def test_cli_outputs_task_progress_during_pause_and_after_resume(
     assert paused_output["task_status_counts"] == {
         "pending": 1,
         "running": 1,
+        "retrying": 0,
         "completed": 4,
+        "partial": 0,
         "failed": 0,
         "skipped": 0,
     }
@@ -507,7 +511,9 @@ def test_cli_outputs_task_progress_during_pause_and_after_resume(
     assert resumed_output["task_status_counts"] == {
         "pending": 0,
         "running": 0,
+        "retrying": 0,
         "completed": 6,
+        "partial": 0,
         "failed": 0,
         "skipped": 0,
     }

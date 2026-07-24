@@ -143,6 +143,25 @@ def build_task_id(run_id: str, task_type: str) -> str:
     return f"{normalized_run_id}:{task_type}"
 
 
+def build_task_execution_id(run_id: str, task_type: str) -> str:
+    """根据运行 ID 和 Task 类型生成稳定的逻辑执行 ID。
+
+    该 ID 标识一次逻辑 Task，而不是某一次尝试，因此有限重试不会改变它。单次
+    节点执行应继续使用独立的 ``NodeExecutionRecord.id``。
+
+    Args:
+        run_id: 当前治理运行的非空唯一标识。
+        task_type: 固定 DAG 模板中的 Task 类型。
+
+    Returns:
+        形如 ``run_id:task_type:execution`` 的稳定执行 ID。
+
+    Raises:
+        ValueError: 运行 ID 为空或 Task 类型不在固定模板中时抛出。
+    """
+    return f"{build_task_id(run_id, task_type)}:execution"
+
+
 def _index_tasks(tasks: Sequence[TaskItem]) -> dict[str, TaskItem]:
     """按照 task_id 建立索引，并拒绝空 ID 和重复 Task。
 
@@ -246,9 +265,9 @@ def create_task_dag(
 ) -> list[TaskItem]:
     """幂等创建一次治理运行使用的固定 Task DAG。
 
-    已存在的 Task 会按 task_id 原样保留其状态、输出、错误和时间字段；缺少的固定
-    Task 才会被补齐。函数拒绝不属于当前运行或偏离固定依赖模板的 Task，避免恢复
-    checkpoint 时静默改变治理执行顺序。
+    已存在的 Task 会按 task_id 原样保留其状态、输出、错误和时间字段，并为旧记录
+    补齐稳定执行 ID 与零次尝试；缺少的固定 Task 才会被补齐。函数拒绝不属于当前
+    运行或偏离固定依赖模板的 Task，避免恢复 checkpoint 时静默改变治理执行顺序。
 
     Args:
         run_id: 当前治理运行的非空唯一标识。
@@ -275,9 +294,7 @@ def create_task_dag(
     }
     unexpected_ids = [task_id for task_id in existing if task_id not in expected_ids]
     if unexpected_ids:
-        raise ValueError(
-            "已有 Task 不属于当前固定 DAG：" + ", ".join(unexpected_ids)
-        )
+        raise ValueError("已有 Task 不属于当前固定 DAG：" + ", ".join(unexpected_ids))
 
     result: list[TaskItem] = []
     for definition in TASK_DAG_TEMPLATE:
@@ -293,12 +310,27 @@ def create_task_dag(
                 raise ValueError(f"Task {task_id} 的 task_type 与固定模板不一致")
             if existing_task.get("dependencies") != dependencies:
                 raise ValueError(f"Task {task_id} 的 dependencies 与固定模板不一致")
-            result.append(cast(TaskItem, dict(existing_task)))
+            expected_execution_id = build_task_execution_id(normalized_run_id, task_type)
+            execution_id = existing_task.get("execution_id", expected_execution_id)
+            if execution_id != expected_execution_id:
+                raise ValueError(f"Task {task_id} 的 execution_id 与当前运行不一致")
+            attempt_count = existing_task.get("attempt_count", 0)
+            if (
+                isinstance(attempt_count, bool)
+                or not isinstance(attempt_count, int)
+                or attempt_count < 0
+            ):
+                raise ValueError(f"Task {task_id} 的 attempt_count 必须是非负整数")
+            normalized_task = dict(existing_task)
+            normalized_task["execution_id"] = expected_execution_id
+            normalized_task["attempt_count"] = attempt_count
+            result.append(cast(TaskItem, normalized_task))
             continue
 
         result.append(
             TaskItem(
                 task_id=task_id,
+                execution_id=build_task_execution_id(normalized_run_id, task_type),
                 task_type=cast(
                     Literal[
                         "inventory",
@@ -312,6 +344,7 @@ def create_task_dag(
                 ),
                 title=definition["title"],
                 status="pending",
+                attempt_count=0,
                 dependencies=dependencies,
                 assigned_role=cast(
                     Literal["coordinator", "content", "version", "evidence"],
@@ -390,9 +423,7 @@ def resolve_subagent_task(
         raise ValueError(f"Task {normalized_task_id} 不允许分派给 Subagent")
     expected_role = TASK_ROLE_BY_TYPE[task_type]
     if task.get("assigned_role") != expected_role:
-        raise ValueError(
-            f"Task {normalized_task_id} 的 assigned_role 与固定职责不一致"
-        )
+        raise ValueError(f"Task {normalized_task_id} 的 assigned_role 与固定职责不一致")
     if task.get("status") in {"failed", "skipped"}:
         raise ValueError(f"终态 Task {normalized_task_id} 不允许再次分派")
     return cast(TaskItem, dict(task))
@@ -416,12 +447,9 @@ def _derive_todo_status(
         raise ValueError("Todo 至少需要关联一个 Task")
     if any(task["status"] == "failed" for task in related_tasks):
         return "blocked"
-    if any(
-        task["status"] == "skipped" and bool(task.get("error"))
-        for task in related_tasks
-    ):
+    if any(task["status"] == "skipped" and bool(task.get("error")) for task in related_tasks):
         return "blocked"
-    if all(task["status"] in {"completed", "skipped"} for task in related_tasks):
+    if all(task["status"] in {"completed", "partial", "skipped"} for task in related_tasks):
         return "completed"
     if any(task["status"] != "pending" for task in related_tasks):
         return "in_progress"

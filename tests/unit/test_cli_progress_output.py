@@ -43,7 +43,7 @@ def test_todo_serialization_uses_safe_fields_and_stable_order() -> None:
 
 
 def test_task_status_counts_include_zero_value_states() -> None:
-    """Task 计数应固定包含五种状态，并忽略不属于 Task 对象的值。"""
+    """Task 计数应固定包含七种状态，并忽略不属于 Task 对象的值。"""
     result = {
         "tasks": [
             {"task_id": "run:inventory", "status": "completed"},
@@ -58,7 +58,9 @@ def test_task_status_counts_include_zero_value_states() -> None:
     assert counts == {
         "pending": 0,
         "running": 0,
+        "retrying": 0,
         "completed": 2,
+        "partial": 0,
         "failed": 0,
         "skipped": 1,
     }

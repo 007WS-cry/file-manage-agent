@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.6.0 Task、Skill、Memory、Context Compact、工具审计和数据库快照含运行信息
+# 0.6.1 Task、Skill、Memory、Context Compact、恢复策略和数据库快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -113,6 +113,13 @@ memory_export*.json
 context_compact*.json
 context_summary*.json
 token_estimation*.json
+recovery_policy*.json
+recovery_state*.json
+error_recovery*.json
+node_execution*.json
+degradation*.json
+retry_attempt*.json
+fault_injection*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

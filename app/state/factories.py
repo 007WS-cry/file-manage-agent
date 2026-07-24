@@ -15,6 +15,11 @@ from app.services.memory_policy import (
     derive_configured_memory_namespace,
     derive_memory_namespace,
 )
+from app.services.recovery_policy import (
+    RECOVERY_FALLBACK_ACTIONS,
+    copy_recovery_policy_state,
+    create_recovery_policy_state,
+)
 from app.skills.loader import create_pending_skill_registry
 from app.state.models import (
     AgentMemberState,
@@ -24,6 +29,8 @@ from app.state.models import (
     HookConfigState,
     MemoryState,
     PromptState,
+    RecoveryHumanState,
+    RecoveryState,
     RequestState,
     TeamState,
     WorkspaceState,
@@ -71,6 +78,30 @@ DEFAULT_MEMORY_RECALL_LIMIT = 50
 
 # 可覆盖长期 Memory 默认应用数据库位置的环境变量名称，与 Alembic 保持一致。
 APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
+
+# 顶层 RecoveryState 允许保存的恢复动作，用于旧 checkpoint 安全补齐。
+RECOVERY_STATE_ACTIONS = frozenset(
+    {
+        "none",
+        "retry",
+        "reuse_result",
+        "skip_file",
+        "fallback",
+        "continue_partial",
+        "wait_human",
+        "abort",
+    }
+)
+
+# 恢复型人工确认允许的用户动作，禁止任意命令或动态节点名称。
+RECOVERY_HUMAN_ACTIONS = frozenset(
+    {
+        "retry",
+        "skip_file",
+        "provide_path",
+        "abort",
+    }
+)
 
 
 def create_disabled_application_database_state() -> ApplicationDatabaseState:
@@ -188,6 +219,191 @@ def _reject_unknown_fields(
     unknown_fields = sorted(set(config) - allowed_fields)
     if unknown_fields:
         raise ValueError(f"{config_name} 包含未知字段：{', '.join(unknown_fields)}")
+
+
+def create_recovery_state(
+    recovery_config: Mapping[str, object] | None = None,
+) -> RecoveryState:
+    """根据可选恢复策略配置创建尚无待处理错误的顶层恢复状态。
+
+    Args:
+        recovery_config: 可选恢复开关、默认规则和错误类别覆盖。
+
+    Returns:
+        策略完整且错误队列、跳转目标、人工输入和降级记录均为空的恢复状态。
+
+    Raises:
+        TypeError: 恢复配置或内部规则字段类型不正确时抛出。
+        ValueError: 恢复配置包含未知字段、类别或非法范围时抛出。
+    """
+    return RecoveryState(
+        policy=create_recovery_policy_state(recovery_config),
+        pending_error_ids=[],
+        current_error_id=None,
+        action="none",
+        resume_node=None,
+        resume_after_node=None,
+        retry_delay_seconds=0.0,
+        fallback=None,
+        human=RecoveryHumanState(
+            kind="error_recovery",
+            pending_error_id=None,
+            allowed_actions=[],
+            selected_action=None,
+            replacement_path=None,
+            note=None,
+        ),
+        degradation_ids=[],
+        last_policy_reason=None,
+    )
+
+
+def copy_recovery_state(
+    recovery: Mapping[str, object] | None,
+) -> RecoveryState:
+    """复制 Recovery 状态，并为 0.6.0 checkpoint 补齐安全默认值。
+
+    Args:
+        recovery: 当前顶层状态中的可选恢复状态映射。
+
+    Returns:
+        与输入解除可变引用关系、且不包含未知动作的完整恢复状态。
+
+    Raises:
+        TypeError: 列表、字符串、数值或策略字段类型不正确时抛出。
+        ValueError: 状态包含重复 ID、负退避时间或未知恢复动作时抛出。
+    """
+    if recovery is None:
+        return create_recovery_state()
+
+    raw_action = recovery.get("action", "none")
+    if not isinstance(raw_action, str):
+        raise TypeError("recovery.action 必须是字符串")
+    if raw_action not in RECOVERY_STATE_ACTIONS:
+        raise ValueError(f"recovery.action 不是允许的恢复动作：{raw_action}")
+
+    raw_fallback = recovery.get("fallback")
+    if raw_fallback is not None and not isinstance(raw_fallback, str):
+        raise TypeError("recovery.fallback 必须是字符串或 None")
+    if raw_fallback not in {None, *RECOVERY_FALLBACK_ACTIONS}:
+        raise ValueError("recovery.fallback 不是允许的安全降级动作")
+
+    raw_delay = recovery.get("retry_delay_seconds", 0.0)
+    if isinstance(raw_delay, bool) or not isinstance(raw_delay, (int, float)):
+        raise TypeError("recovery.retry_delay_seconds 必须是数字")
+    retry_delay_seconds = float(raw_delay)
+    if retry_delay_seconds < 0 or retry_delay_seconds > 3600:
+        raise ValueError("recovery.retry_delay_seconds 必须位于 0 到 3600 之间")
+
+    raw_human = recovery.get("human", {})
+    if not isinstance(raw_human, Mapping):
+        raise TypeError("recovery.human 必须是映射")
+    raw_allowed_actions = raw_human.get("allowed_actions", [])
+    allowed_actions = _normalize_string_list(
+        raw_allowed_actions,
+        field_name="recovery.human.allowed_actions",
+    )
+    if any(action not in RECOVERY_HUMAN_ACTIONS for action in allowed_actions):
+        raise ValueError("recovery.human.allowed_actions 包含未知人工恢复动作")
+    raw_selected_action = raw_human.get("selected_action")
+    if raw_selected_action is not None and not isinstance(raw_selected_action, str):
+        raise TypeError("recovery.human.selected_action 必须是字符串或 None")
+    if raw_selected_action not in {None, *RECOVERY_HUMAN_ACTIONS}:
+        raise ValueError("recovery.human.selected_action 不是允许的人工恢复动作")
+
+    policy_value = recovery.get("policy")
+    if policy_value is not None and not isinstance(policy_value, Mapping):
+        raise TypeError("recovery.policy 必须是映射")
+    return RecoveryState(
+        policy=copy_recovery_policy_state(policy_value),
+        pending_error_ids=_normalize_string_list(
+            recovery.get("pending_error_ids", []),
+            field_name="recovery.pending_error_ids",
+        ),
+        current_error_id=(
+            str(recovery["current_error_id"])
+            if recovery.get("current_error_id") is not None
+            else None
+        ),
+        action=cast(
+            Literal[
+                "none",
+                "retry",
+                "reuse_result",
+                "skip_file",
+                "fallback",
+                "continue_partial",
+                "wait_human",
+                "abort",
+            ],
+            raw_action,
+        ),
+        resume_node=(
+            str(recovery["resume_node"]) if recovery.get("resume_node") is not None else None
+        ),
+        resume_after_node=(
+            str(recovery["resume_after_node"])
+            if recovery.get("resume_after_node") is not None
+            else None
+        ),
+        retry_delay_seconds=retry_delay_seconds,
+        fallback=cast(
+            Literal[
+                "skip_file",
+                "coordinator",
+                "no_memory",
+                "default_skill",
+                "keep_context",
+                "partial_result",
+            ]
+            | None,
+            raw_fallback,
+        ),
+        human=RecoveryHumanState(
+            kind="error_recovery",
+            pending_error_id=(
+                str(raw_human["pending_error_id"])
+                if raw_human.get("pending_error_id") is not None
+                else None
+            ),
+            allowed_actions=cast(
+                list[
+                    Literal[
+                        "retry",
+                        "skip_file",
+                        "provide_path",
+                        "abort",
+                    ]
+                ],
+                allowed_actions,
+            ),
+            selected_action=cast(
+                Literal[
+                    "retry",
+                    "skip_file",
+                    "provide_path",
+                    "abort",
+                ]
+                | None,
+                raw_selected_action,
+            ),
+            replacement_path=(
+                str(raw_human["replacement_path"])
+                if raw_human.get("replacement_path") is not None
+                else None
+            ),
+            note=(str(raw_human["note"]) if raw_human.get("note") is not None else None),
+        ),
+        degradation_ids=_normalize_string_list(
+            recovery.get("degradation_ids", []),
+            field_name="recovery.degradation_ids",
+        ),
+        last_policy_reason=(
+            str(recovery["last_policy_reason"])
+            if recovery.get("last_policy_reason") is not None
+            else None
+        ),
+    )
 
 
 def create_prompt_state(
@@ -702,6 +918,7 @@ def create_initial_state(
     memory_config: Mapping[str, object] | None = None,
     context_compact_config: Mapping[str, object] | None = None,
     application_database_config: Mapping[str, object] | None = None,
+    recovery_config: Mapping[str, object] | None = None,
     checkpoint_path: str | Path | None = None,
     thread_id: str | None = None,
 ) -> FileGovernanceState:
@@ -718,6 +935,7 @@ def create_initial_state(
         memory_config: 可选短期与长期 Memory 配置；省略时不访问应用数据库。
         context_compact_config: 可选 Context Compact 阈值、预览与持久化配置。
         application_database_config: 可选运行历史、工具审计与人工选择数据库配置。
+        recovery_config: 可选错误分类、有限重试、退避、降级和人工恢复策略。
         checkpoint_path: 可选 SQLite Checkpointer 路径，用于与应用数据库隔离。
         thread_id: 可选 Checkpointer 线程 ID；非 CLI 调用可在初始化时回退为 run_id。
 
@@ -766,6 +984,7 @@ def create_initial_state(
         memory=memory,
         context_compact=context_compact,
         application_database=application_database,
+        recovery=create_recovery_state(recovery_config),
         hook_events=[],
         todos=[],
         tasks=[],
@@ -782,6 +1001,8 @@ def create_initial_state(
             "warnings": [],
             "report_path": None,
             "generated_at": None,
+            "degradation_ids": [],
+            "recovered_error_ids": [],
         },
         files=[],
         documents=[],
@@ -793,5 +1014,7 @@ def create_initial_state(
         pdf_exports=[],
         deliveries=[],
         decisions=[],
+        node_executions=[],
+        degradations=[],
         errors=[],
     )

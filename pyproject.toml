@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.6.0"
-description = "支持多模型 Task 路由、按需 Skills、安全 Memory、Context Compact 和五表应用数据库审计的 LangGraph 文件版本治理 Agent"
+version = "0.6.1"
+description = "支持恢复状态协议、确定性恢复策略、多模型 Task 路由、安全 Memory、Context Compact 和应用数据库审计的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

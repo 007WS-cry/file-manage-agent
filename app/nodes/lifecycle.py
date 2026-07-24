@@ -23,6 +23,7 @@ from app.services.context_compaction import copy_context_compact_state
 from app.services.memory_policy import copy_memory_state
 from app.state.factories import (
     copy_application_database_state,
+    copy_recovery_state,
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
@@ -56,6 +57,16 @@ def initialize_run(state: FileGovernanceState) -> dict:
     thread_id = previous_run.get("thread_id") or run_id
     started_at = previous_run.get("started_at") or utc_now_iso()
     application_database = copy_application_database_state(state.get("application_database"))
+    report = {
+        "summary": "",
+        "report_markdown": "",
+        "warnings": [],
+        "report_path": None,
+        "generated_at": None,
+        "degradation_ids": [],
+        "recovered_error_ids": [],
+        **state.get("report", {}),
+    }
     result = {
         "run": {
             "run_id": run_id,
@@ -69,16 +80,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
             "human_review",
             {"pending_group_ids": [], "selections": {}, "review_note": None},
         ),
-        "report": state.get(
-            "report",
-            {
-                "summary": "",
-                "report_markdown": "",
-                "warnings": [],
-                "report_path": None,
-                "generated_at": None,
-            },
-        ),
+        "report": report,
         "pdf_exports": state.get("pdf_exports", []),
         "deliveries": state.get("deliveries", []),
         "prompt": state.get("prompt", create_prompt_state()),
@@ -88,11 +90,14 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "memory": copy_memory_state(state.get("memory")),
         "context_compact": copy_context_compact_state(state.get("context_compact")),
         "application_database": application_database,
+        "recovery": copy_recovery_state(state.get("recovery")),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),
         "team_messages": state.get("team_messages", []),
         "llm_calls": state.get("llm_calls", []),
+        "node_executions": state.get("node_executions", []),
+        "degradations": state.get("degradations", []),
     }
     if not application_database["enabled"]:
         return result
