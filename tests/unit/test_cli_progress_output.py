@@ -2,7 +2,12 @@ from __future__ import annotations
 
 import json
 
-from app.entrypoints.cli import count_task_statuses, print_result, serialize_todos
+from app.entrypoints.cli import (
+    count_task_statuses,
+    print_result,
+    serialize_interrupts,
+    serialize_todos,
+)
 
 """本文件验证 CLI 进度摘要的字段白名单、稳定计数和大型状态隔离。"""
 
@@ -64,6 +69,60 @@ def test_task_status_counts_include_zero_value_states() -> None:
         "failed": 0,
         "skipped": 1,
     }
+
+
+def test_cli_interrupt_prompt_preserves_primary_version_selection_protocol() -> None:
+    """主版本审核提示应继续要求 selections，不能被恢复动作协议替换。"""
+    result = {
+        "__interrupt__": (
+            {
+                "kind": "file_governance_review",
+                "groups": [{"group_id": "group-001"}],
+                "expected_schema": {
+                    "selections": {"<group_id>": "<file_id>"},
+                    "review_note": "可选说明",
+                },
+            },
+        )
+    }
+
+    interrupts = serialize_interrupts(result)
+
+    assert interrupts[0]["kind"] == "file_governance_review"
+    assert "selections" in interrupts[0]["cli_prompt"]
+    assert interrupts[0]["response_example"] == {
+        "selections": {"<group_id>": "<file_id>"},
+        "review_note": None,
+    }
+    assert "action" not in interrupts[0]["response_example"]
+
+
+def test_cli_interrupt_prompt_lists_recovery_actions_and_path_requirement() -> None:
+    """恢复型提示应只展示当前白名单动作并说明 provide_path 的路径字段。"""
+    result = {
+        "__interrupt__": (
+            {
+                "kind": "error_recovery",
+                "error_id": "error-001",
+                "allowed_actions": [
+                    "retry",
+                    "skip_file",
+                    "provide_path",
+                    "abort",
+                ],
+            },
+        )
+    }
+
+    interrupts = serialize_interrupts(result)
+
+    assert interrupts[0]["kind"] == "error_recovery"
+    assert all(
+        action in interrupts[0]["cli_prompt"]
+        for action in ("retry", "skip_file", "provide_path", "abort")
+    )
+    assert "replacement_path" in interrupts[0]["cli_prompt"]
+    assert interrupts[0]["response_example"]["action"] == "retry"
 
 
 def test_print_result_excludes_documents_task_details_and_report_markdown(

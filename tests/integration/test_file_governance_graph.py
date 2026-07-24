@@ -265,7 +265,8 @@ def test_invalid_delivery_log_is_nonfatal_and_reaches_recommendation(
         and degradation["action"] == "partial_result"
         for degradation in result["degradations"]
     )
-    assert "## 运行警告" in result["report"]["report_markdown"]
+    assert "## 已恢复错误" in result["report"]["report_markdown"]
+    assert "## 降级项" in result["report"]["report_markdown"]
 
 
 def test_top_graph_completes_without_modifying_source_files(tmp_path: Path) -> None:

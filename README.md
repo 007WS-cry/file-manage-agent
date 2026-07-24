@@ -1,8 +1,8 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.4` 是从 `0.6.0`
-演进到 `0.7.0` Error Recovery 的第四批，把六个既有业务子图、固定 Subagent、
-Memory、Context Compact、Hooks 和 Task 工具的错误统一接入恢复策略与持久化链路。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.6.5` 是从 `0.6.0`
+演进到 `0.7.0` Error Recovery 的第五批，在统一恢复链路上补齐恢复型人工确认、
+按 interrupt 类型生成 CLI 提示，以及独立展示已恢复错误与降级项的部分成功报告。
 `0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
 和应用数据库发布收口。
 `governance_runs`、`memory_items`、`context_summaries`、`tool_call_audits`、
@@ -35,8 +35,8 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 未跟踪临时压缩载荷、可重建中间产物和有界 Context Summary；
 - 压缩开关对版本边、分叉、推荐和人工选择的严格不变性测试；
 - 可升级、回退和重放的 Alembic SQLite 迁移；
-- 可跨进程恢复 `interrupt()` 的最小 CLI；
-- 成功、部分成功、无数据和失败 Markdown 报告；
+- 可跨进程恢复 `interrupt()`、按 kind 输出提示与兼容响应示例的最小 CLI；
+- 成功、部分成功、无数据和失败 Markdown 报告，独立列出已恢复错误和降级项；
 - `ErrorRecord` 重试、降级、人工恢复和生命周期字段的 0.6.0 兼容扩展；
 - `RecoveryState`、`RecoveryGraphState`、`NodeExecutionRecord` 和
   `DegradationRecord` 状态协议；
@@ -107,7 +107,9 @@ Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为
 direct-failure 出口统一改到 Recovery，并在不改变正常治理结论和人工主版本确认
 协议的前提下提供有限重试、安全降级、恢复型人工输入和结果复用；`0.6.4`
 把六个既有业务子图及工具错误统一接入该链路，并补齐重试重放、关联错误收敛和
-历史恢复终态过滤。
+历史恢复终态过滤；`0.6.5` 接入 retry、skip_file、provide_path、abort 四种
+人工恢复输入，按 interrupt kind 生成 CLI 提示，并让 partial 报告与 failed
+任务统计明确分离。
 
 ## 安全边界
 
@@ -214,6 +216,7 @@ file-manage-agent/
 ├── docs/version-0.6.2-recovery-persistence.md # 0.7.0 第二批恢复与幂等持久化
 ├── docs/version-0.6.3-error-recovery-graph.md # 0.7.0 第三批恢复子图与顶层路由
 ├── docs/version-0.6.4-existing-subgraph-integration.md # 0.7.0 第四批既有子图统一接入
+├── docs/version-0.6.5-recovery-interrupt-report-cli.md # 0.7.0 第五批人工恢复、报告与 CLI
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -941,6 +944,26 @@ direct-failure 分支统一改到恢复入口：
 完整接入范围、重放规则和验证结果见
 [0.6.4 六个既有子图统一接入说明](docs/version-0.6.4-existing-subgraph-integration.md)。
 
+## 0.6.5 恢复型人工确认、部分报告和 CLI
+
+本版本在统一 Recovery 协议上补齐用户可见的暂停恢复与报告收口：
+
+- `error_recovery` interrupt 根据当前错误只公开允许的 retry、skip_file、
+  provide_path 和 abort 动作；provide_path 继续执行符号链接、目录类型、
+  输出目录和数据库路径隔离校验；
+- `file_governance_review` 继续使用
+  `{"selections": {group_id: file_id}, "review_note": ...}`，不会混入
+  Recovery 的 action 字段；
+- CLI 保留原 interrupt 载荷，并依据 kind 添加 `cli_prompt` 和最小
+  `response_example`，让两个恢复协议可以安全区分；
+- Markdown 报告使用“已恢复错误”和“降级项”两个独立章节，ReportState 同步
+  保存对应 ID；存在恢复终态且无未解决错误时，摘要明确标记结果为部分完成；
+- 安全降级后的业务 Task 保持 partial，Report Task 仍为 completed，
+  partial 不计入 failed，也不会阻断后续可安全执行的流程。
+
+协议示例、安全限制和集成验证见
+[0.6.5 恢复型人工确认、部分报告和 CLI 说明](docs/version-0.6.5-recovery-interrupt-report-cli.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1131,8 +1154,8 @@ file-governance run examples/sample_request.json \
 ```
 
 CLI 输出固定为最小 JSON 摘要。自动完成时包含报告路径；需要人工确认时，
-`status` 为 `waiting_human`，并在 `interrupts` 中列出版本组和候选文件。所有路径
-都会同时输出：
+`status` 为 `waiting_human`，并在 `interrupts` 中保留受控载荷。每个已知
+interrupt kind 还包含 `cli_prompt` 和兼容 `response_example`。所有路径都会同时输出：
 
 - `todos`：按 `order` 排列的用户进度，只含 ID、标题、状态和关联 Task ID；
 - `task_status_counts`：固定包含 pending、running、retrying、completed、partial、
@@ -1164,6 +1187,29 @@ file-governance resume review_response.json \
 ```
 
 `selections` 必须恰好覆盖全部待审核版本组，且每个文件 ID 必须属于对应版本组。
+
+恢复型 `error_recovery` interrupt 使用独立的 action 协议。例如重试：
+
+```json
+{
+  "action": "retry",
+  "note": "已确认可以重新执行"
+}
+```
+
+跳过关联文件使用 `{"action": "skip_file"}`，终止运行使用
+`{"action": "abort"}`。修正输入目录时必须提供绝对目录：
+
+```json
+{
+  "action": "provide_path",
+  "replacement_path": "/data/replacement-input"
+}
+```
+
+CLI 只接受当前 interrupt `allowed_actions` 中的动作；非 provide_path 动作不得
+携带 replacement_path。恢复文件仍通过同一个 `resume` 子命令提交，CLI 会由
+checkpoint 中的 interrupt kind 交给对应图节点校验。
 `memory` 后端只适合同一 Python 进程，不能用于两个独立 CLI 进程之间的恢复。
 
 ## Python 调用
@@ -1335,22 +1381,22 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.6.4 -t file-manage-agent:0.6.4 .
+docker build --build-arg APP_VERSION=0.6.5 -t file-manage-agent:0.6.5 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.6.4 \
+  --build-arg APP_VERSION=0.6.5 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.6.4-mainstream .
+  -t file-manage-agent:0.6.5-mainstream .
 ```
 
 默认显示 CLI 帮助：
 
 ```bash
-docker run --rm file-manage-agent:0.6.4
+docker run --rm file-manage-agent:0.6.5
 ```
 
 容器首次使用应用数据库时，可在同一个可写产物卷中执行迁移。镜像内默认通过
@@ -1361,7 +1407,7 @@ docker run --rm file-manage-agent:0.6.4
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --entrypoint python \
-  file-manage-agent:0.6.4 \
+  file-manage-agent:0.6.5 \
   -m alembic upgrade head
 ```
 
@@ -1377,7 +1423,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.6.4 \
+  file-manage-agent:0.6.5 \
   run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1390,7 +1436,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.6.4 \
+  file-manage-agent:0.6.5 \
   resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```

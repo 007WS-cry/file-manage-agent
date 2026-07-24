@@ -5,6 +5,7 @@ import tempfile
 from pathlib import Path
 
 from app.state.models import FileGovernanceState, ReportState
+from app.utils.error_context import is_error_unresolved
 from app.utils.runtime import paths_overlap, utc_now_iso
 
 """本模块负责版本摘要 Markdown、值转义、隔离持久化和统一报告状态构造。"""
@@ -20,6 +21,118 @@ def escape_markdown_cell(value: object) -> str:
         不会破坏表格列或额外生成换行的文本。
     """
     return str(value).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def build_recovery_report_lines(state: FileGovernanceState) -> list[str]:
+    """生成彼此独立的“已恢复错误”和“降级项”Markdown 章节。
+
+    已恢复错误包含正常重试恢复和已应用安全降级的错误生命周期记录；降级项则
+    单独展示动作、影响和受影响文件，避免把部分完成误解为执行失败。没有任何
+    恢复事实时不生成空章节。
+
+    Args:
+        state: 包含结构化错误和降级记录的顶层治理状态。
+
+    Returns:
+        可直接追加到报告正文的 Markdown 行。
+    """
+    recovered_error_by_id = {
+        str(error["id"]): error
+        for error in state.get("errors", [])
+        if error.get("status") in {"recovered", "fallback_applied"}
+    }
+    recovered_errors = sorted(
+        recovered_error_by_id.values(),
+        key=lambda item: (str(item.get("created_at", "")), str(item.get("id", ""))),
+    )
+    degradation_by_id = {
+        str(degradation["id"]): degradation
+        for degradation in state.get("degradations", [])
+    }
+    degradations = sorted(
+        degradation_by_id.values(),
+        key=lambda item: (str(item.get("created_at", "")), str(item.get("id", ""))),
+    )
+    lines: list[str] = []
+    if recovered_errors:
+        lines.extend(["", "## 已恢复错误", ""])
+        for error in recovered_errors:
+            retry_count = int(error.get("retry_count", 0))
+            status_label = (
+                "安全降级已应用"
+                if error.get("status") == "fallback_applied"
+                else "重试或结果复用后恢复"
+            )
+            task_id = error.get("task_id") or "未绑定 Task"
+            lines.append(
+                "- `"
+                f"{escape_markdown_cell(error.get('node_name', 'unknown'))}`"
+                f"（{escape_markdown_cell(error.get('stage', 'unknown'))}，"
+                f"{status_label}，重试 {retry_count} 次，"
+                f"Task `{escape_markdown_cell(task_id)}`）："
+                f"{escape_markdown_cell(error.get('message', '未提供错误说明'))}"
+            )
+
+    if degradations:
+        lines.extend(["", "## 降级项", ""])
+        for degradation in degradations:
+            affected_file_ids = list(degradation.get("affected_file_ids", []))
+            affected_files = (
+                "、".join(
+                    f"`{escape_markdown_cell(file_id)}`"
+                    for file_id in affected_file_ids
+                )
+                if affected_file_ids
+                else "无特定文件"
+            )
+            lines.extend(
+                [
+                    "- `"
+                    f"{escape_markdown_cell(degradation.get('action', 'unknown'))}`"
+                    f"（{escape_markdown_cell(degradation.get('stage', 'unknown'))}）："
+                    f"{escape_markdown_cell(degradation.get('summary', '已应用安全降级。'))}",
+                    "  - 影响："
+                    f"{escape_markdown_cell(degradation.get('impact', '结果完整性可能降低。'))}",
+                    f"  - 受影响文件：{affected_files}",
+                ]
+            )
+    return lines
+
+
+def append_recovery_outcome_summary(
+    state: FileGovernanceState,
+    summary: str,
+) -> str:
+    """为非失败报告追加恢复数量和部分完成语义。
+
+    Args:
+        state: 包含错误生命周期和降级记录的顶层治理状态。
+        summary: 报告节点生成的基础摘要。
+
+    Returns:
+        失败状态保持原摘要；存在已恢复错误时明确标注部分完成的摘要。
+    """
+    if any(is_error_unresolved(error) for error in state.get("errors", [])):
+        return summary
+    recovered_count = len(
+        {
+            str(error["id"])
+            for error in state.get("errors", [])
+            if error.get("status") in {"recovered", "fallback_applied"}
+        }
+    )
+    degradation_count = len(
+        {
+            str(degradation["id"])
+            for degradation in state.get("degradations", [])
+        }
+    )
+    if recovered_count == 0 and degradation_count == 0:
+        return summary
+    suffix = f"本次运行已恢复 {recovered_count} 个错误"
+    if degradation_count:
+        suffix += f"，并记录 {degradation_count} 个降级项"
+    return f"{summary.rstrip()} {suffix}，结果为部分完成。"
 
 
 def build_version_summary_lines(
@@ -129,12 +242,17 @@ def build_report_state(
     Returns:
         包含摘要、Markdown、警告、恢复索引、可选磁盘路径和生成时间的报告状态。
     """
-    merged_warnings = list(warnings)
-    degradation_ids = [item["id"] for item in state.get("degradations", [])]
+    merged_warnings = list(dict.fromkeys(warnings))
+    degradation_ids = list(
+        dict.fromkeys(item["id"] for item in state.get("degradations", []))
+    )
     recovered_error_ids = [
-        item["id"]
-        for item in state.get("errors", [])
-        if item.get("status") in {"recovered", "fallback_applied"}
+        error_id
+        for error_id in dict.fromkeys(
+            item["id"]
+            for item in state.get("errors", [])
+            if item.get("status") in {"recovered", "fallback_applied"}
+        )
     ]
     try:
         report_path = persist_report(state, markdown)
@@ -142,7 +260,7 @@ def build_report_state(
         report_path = None
         merged_warnings.append(f"报告未写入磁盘：{exc}")
     return ReportState(
-        summary=summary,
+        summary=append_recovery_outcome_summary(state, summary),
         report_markdown=markdown,
         warnings=merged_warnings,
         report_path=report_path,

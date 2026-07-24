@@ -200,6 +200,7 @@ def sync_report_task_status(state: FileGovernanceState) -> dict:
 
     成功、无数据和业务失败报告均走同一节点。报告 Task 只描述报告是否生成，
     不继承业务 Task 的失败状态，因此下游阻断不会被误报为报告自身失败。
+    已安全降级的上游 Task 保持 ``partial``，不会被本节点改写为 ``failed``。
 
     Args:
         state: 已生成任一种业务报告且具有合法固定 Task DAG 的顶层状态。

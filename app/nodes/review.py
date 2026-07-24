@@ -8,7 +8,7 @@ from app.services.memory_policy import capture_human_choice_memory
 from app.services.recommendation import apply_human_selection as apply_human_selection_service
 from app.state.models import FileGovernanceState
 
-"""本模块实现人工审核前状态准备、LangGraph interrupt 暂停和恢复选择应用。"""
+"""本模块实现主版本人工审核的暂停与恢复，并保持既有 selections 输入协议。"""
 
 
 def prepare_human_review(state: FileGovernanceState) -> dict:
@@ -31,6 +31,8 @@ def request_human_review(state: FileGovernanceState) -> dict:
     interrupt 载荷只包含文件 ID、文件名、评分和推荐理由，不包含文档正文。
     恢复值必须是 ``{"selections": {group_id: file_id}, "review_note": ...}``，
     且每个待确认版本组都必须选择该组内的一个文件。
+    本节点只处理 ``file_governance_review``，不会把 Error Recovery 的
+    ``action`` 输入混入既有主版本选择协议。
 
     Args:
         state: 已标记为 ``waiting_human`` 的顶层治理状态。

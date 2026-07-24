@@ -79,6 +79,16 @@ coordinator、no-memory、keep-context、default-skill 和 partial-result 等既
 恢复。写入错误恢复表前必须存在对应节点执行记录，Session 仍不得跨节点或
 `interrupt()` 存活。
 
+0.6.5 的 CLI 必须根据 interrupt kind 区分主版本选择和错误恢复，不能把
+`file_governance_review` 的 selections 协议解释为 Recovery action，反之亦然。
+恢复型载荷只允许公开错误 ID、动作白名单、简短说明和响应结构；CLI 追加的提示与
+示例不得包含正文、堆栈、数据库路径或节点完整输入。`provide_path` 必须重新执行
+符号链接、目录类型、输出目录和数据库路径隔离校验；`skip_file` 只能跳过当前
+错误关联的文件并登记降级，不能删除、移动或覆盖原文件。报告只展示脱敏错误说明、
+内部 ID、有限重试次数和降级影响，`RecoveryHumanState.note` 仍不得进入报告、
+长期 Memory 或应用数据库。`partial` 表示已安全收口但完整性降低，不得被 CLI、
+Task 统计或报告错误地标记为 `failed`。
+
 标准化内容和中间产物统一由 `app/storage/artifacts.py` 写入独立目录。产物 ID
 不允许包含路径分隔符，写入使用临时文件和原子替换；调用方仍应限制产物目录的
 操作系统权限，并避免将包含业务正文的 JSON 提交到源码仓库。
