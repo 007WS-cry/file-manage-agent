@@ -5,21 +5,30 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Generic, TypeVar
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, select, update
 from sqlalchemy.orm import Session
 
-from app.state.models import ErrorRecord, NodeExecutionRecord
+from app.state.models import (
+    BackgroundJobState,
+    ErrorRecord,
+    NodeExecutionRecord,
+    ScheduledJobState,
+    WorkerLeaseState,
+)
 from app.storage.orm_models import (
+    BackgroundJobModel,
     ContextSummaryModel,
     ErrorRecoveryRecordModel,
     GovernanceRunModel,
     HumanReviewModel,
     MemoryItemModel,
     NodeExecutionRecordModel,
+    ScheduledJobModel,
     ToolCallAuditModel,
+    WorkerLeaseModel,
 )
 
-"""本模块通过 Repository 隔离七张应用表的数据访问，不负责创建 Session 或提交事务。"""
+"""本模块通过 Repository 隔离十张应用表的数据访问，不负责创建 Session 或提交事务。"""
 
 
 # Repository 泛型使用的 SQLAlchemy ORM 模型类型。
@@ -86,6 +95,25 @@ ERROR_RECOVERY_STATUS_TRANSITIONS = {
     "recovered": frozenset({"recovered"}),
     "failed": frozenset({"failed"}),
 }
+
+# 后台任务允许进入的全部持久化生命周期状态。
+BACKGROUND_JOB_STATUSES = frozenset(
+    {
+        "queued",
+        "leased",
+        "running",
+        "waiting_human",
+        "completed",
+        "partial",
+        "failed",
+    }
+)
+
+# 后台任务完成后不得再由 Worker 重新打开的最终状态。
+BACKGROUND_JOB_TERMINAL_STATUSES = frozenset({"completed", "partial", "failed"})
+
+# Worker 租约允许持久化的固定生命周期状态。
+WORKER_LEASE_STATUSES = frozenset({"active", "released", "expired"})
 
 
 def _normalize_required_identifier(value: str, *, field_name: str) -> str:
@@ -353,6 +381,7 @@ class GovernanceRunRepository(BaseRepository[GovernanceRunModel]):
         *,
         thread_id: str,
         current_stage: str,
+        status: str = "running",
         request_summary: dict[str, object] | None = None,
     ) -> GovernanceRunModel:
         """读取治理运行，或创建不含业务正文的最小运行摘要。
@@ -361,6 +390,7 @@ class GovernanceRunRepository(BaseRepository[GovernanceRunModel]):
             run_id: 当前治理运行 ID。
             thread_id: 用于应用数据库审计隔离的线程标识。
             current_stage: 当前持久化节点所在阶段。
+            status: 首次创建记录时使用的治理运行状态。
             request_summary: 可选固定布尔值、计数或哈希摘要。
 
         Returns:
@@ -379,7 +409,7 @@ class GovernanceRunRepository(BaseRepository[GovernanceRunModel]):
                     thread_id,
                     field_name="thread_id",
                 ),
-                status="running",
+                status=_normalize_required_identifier(status, field_name="status"),
                 current_stage=_normalize_required_identifier(
                     current_stage,
                     field_name="current_stage",
@@ -459,6 +489,541 @@ class GovernanceRunRepository(BaseRepository[GovernanceRunModel]):
             run.finished_at = finished_at
         self._session.flush()
         return run
+
+
+class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
+    """读写 background_jobs 表中的持久化后台任务。"""
+
+    model_type = BackgroundJobModel
+    # 当前 Repository 固定管理后台任务 ORM 模型。
+
+    def enqueue(self, job: BackgroundJobState) -> BackgroundJobModel:
+        """新增一个尚未被 Worker 领取的后台任务。
+
+        Args:
+            job: 已完成 ID、时间和请求信封规范化的后台任务状态。
+
+        Returns:
+            已加入当前事务并完成 flush 的后台任务 ORM 对象。
+
+        Raises:
+            ValueError: 状态、尝试次数或必需标识不符合入队协议时抛出。
+        """
+        if job["status"] != "queued":
+            raise ValueError("新后台任务必须以 queued 状态入队")
+        if job["attempt_count"] != 0:
+            raise ValueError("新后台任务 attempt_count 必须为零")
+        max_attempts = _normalize_nonnegative_integer(
+            job["max_attempts"],
+            field_name="job.max_attempts",
+        )
+        if max_attempts < 1:
+            raise ValueError("job.max_attempts 必须大于零")
+        return self.add(
+            BackgroundJobModel(
+                job_id=_normalize_required_identifier(job["id"], field_name="job.id"),
+                run_id=_normalize_required_identifier(job["run_id"], field_name="job.run_id"),
+                thread_id=_normalize_required_identifier(
+                    job["thread_id"],
+                    field_name="job.thread_id",
+                ),
+                trigger_source=job["trigger_source"],
+                status="queued",
+                request_payload=dict(job["request_payload"]),
+                current_worker_id=None,
+                attempt_count=0,
+                max_attempts=max_attempts,
+                available_at=_parse_required_datetime(
+                    job["available_at"],
+                    field_name="job.available_at",
+                ),
+                claimed_at=None,
+                started_at=None,
+                report_path=None,
+                error_summary=None,
+                created_at=_parse_required_datetime(
+                    job["created_at"],
+                    field_name="job.created_at",
+                ),
+                updated_at=_parse_required_datetime(
+                    job["updated_at"],
+                    field_name="job.updated_at",
+                ),
+                finished_at=None,
+            )
+        )
+
+    def find_by_run_id(self, run_id: str) -> BackgroundJobModel | None:
+        """按照治理运行 ID 查询唯一后台任务。
+
+        Args:
+            run_id: 后台任务对应的治理运行 ID。
+
+        Returns:
+            找到时返回后台任务 ORM 对象，否则返回 None。
+        """
+        statement = select(BackgroundJobModel).where(
+            BackgroundJobModel.run_id
+            == _normalize_required_identifier(run_id, field_name="run_id")
+        )
+        return self._session.scalars(statement).one_or_none()
+
+    def claim_next(
+        self,
+        *,
+        worker_id: str,
+        claimed_at: datetime,
+    ) -> BackgroundJobModel | None:
+        """使用条件更新领取一个已经到达可执行时间的排队任务。
+
+        候选读取后仍以 ``status='queued'`` 和 ``available_at`` 作为更新条件，
+        因此多个 Worker 即使读到同一候选，也只有一个事务能够成功推进状态。
+
+        Args:
+            worker_id: 尝试领取任务的 Worker ID。
+            claimed_at: 当前领取事务使用的 UTC 时间。
+
+        Returns:
+            成功领取后的后台任务；当前无任务或竞争失败时返回 None。
+        """
+        normalized_worker_id = _normalize_required_identifier(
+            worker_id,
+            field_name="worker_id",
+        )
+        candidate_id = self._session.scalar(
+            select(BackgroundJobModel.job_id)
+            .where(
+                BackgroundJobModel.status == "queued",
+                BackgroundJobModel.available_at <= claimed_at,
+                BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+            )
+            .order_by(
+                BackgroundJobModel.available_at.asc(),
+                BackgroundJobModel.created_at.asc(),
+                BackgroundJobModel.job_id.asc(),
+            )
+            .limit(1)
+        )
+        if candidate_id is None:
+            return None
+        result = self._session.execute(
+            update(BackgroundJobModel)
+            .where(
+                BackgroundJobModel.job_id == candidate_id,
+                BackgroundJobModel.status == "queued",
+                BackgroundJobModel.available_at <= claimed_at,
+                BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+            )
+            .values(
+                status="leased",
+                current_worker_id=normalized_worker_id,
+                claimed_at=claimed_at,
+                attempt_count=BackgroundJobModel.attempt_count + 1,
+                updated_at=claimed_at,
+            )
+        )
+        if result.rowcount != 1:
+            return None
+        self._session.flush()
+        return self.get(candidate_id)
+
+    def mark_running(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        started_at: datetime,
+    ) -> BackgroundJobModel:
+        """把当前 Worker 已领取的任务推进为正在执行。
+
+        Args:
+            job_id: 等待开始执行的后台任务 ID。
+            worker_id: 必须与任务当前 Worker 一致的 Worker ID。
+            started_at: 本次开始执行 LangGraph 的 UTC 时间。
+
+        Returns:
+            已更新并完成 flush 的后台任务。
+
+        Raises:
+            RuntimeError: 任务状态或 Worker 归属与当前调用不一致时抛出。
+        """
+        job = self.get_required(job_id)
+        normalized_worker_id = _normalize_required_identifier(
+            worker_id,
+            field_name="worker_id",
+        )
+        if job.status != "leased" or job.current_worker_id != normalized_worker_id:
+            raise RuntimeError("后台任务必须由当前租约 Worker 从 leased 状态开始执行")
+        job.status = "running"
+        job.started_at = started_at
+        job.updated_at = started_at
+        self._session.flush()
+        return job
+
+    def finish(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        status: str,
+        finished_at: datetime,
+        report_path: str | None = None,
+        error_summary: str | None = None,
+    ) -> BackgroundJobModel:
+        """完成、部分完成、暂停或最终失败一个当前 Worker 持有的任务。
+
+        Args:
+            job_id: 等待收口的后台任务 ID。
+            worker_id: 当前持有任务租约的 Worker ID。
+            status: ``waiting_human`` 或三个最终状态之一。
+            finished_at: 当前收口事务使用的 UTC 时间。
+            report_path: 可选治理报告路径。
+            error_summary: 可选脱敏错误摘要。
+
+        Returns:
+            已收口并完成 flush 的后台任务。
+
+        Raises:
+            ValueError: 目标状态不是允许的收口状态时抛出。
+            RuntimeError: 当前 Worker 不拥有任务或任务不在可收口状态时抛出。
+        """
+        normalized_status = _normalize_required_identifier(status, field_name="status")
+        if normalized_status not in BACKGROUND_JOB_TERMINAL_STATUSES | {"waiting_human"}:
+            raise ValueError("后台任务收口状态不合法")
+        job = self.get_required(job_id)
+        normalized_worker_id = _normalize_required_identifier(
+            worker_id,
+            field_name="worker_id",
+        )
+        if job.current_worker_id != normalized_worker_id or job.status not in {
+            "leased",
+            "running",
+        }:
+            raise RuntimeError("只有当前租约 Worker 可以收口 leased 或 running 任务")
+        job.status = normalized_status
+        job.current_worker_id = None
+        job.report_path = report_path
+        job.error_summary = error_summary
+        job.finished_at = (
+            finished_at if normalized_status in BACKGROUND_JOB_TERMINAL_STATUSES else None
+        )
+        job.updated_at = finished_at
+        self._session.flush()
+        return job
+
+    def requeue(
+        self,
+        job_id: str,
+        *,
+        available_at: datetime,
+        updated_at: datetime | None = None,
+        error_summary: str,
+    ) -> BackgroundJobModel:
+        """把未耗尽尝试次数的异常任务重新放回队列。
+
+        Args:
+            job_id: 等待重新入队的后台任务 ID。
+            available_at: 任务最早允许再次领取的时间。
+            updated_at: 本次状态变更时间；省略时沿用最早可领取时间。
+            error_summary: 本次重入队原因的脱敏摘要。
+
+        Returns:
+            已恢复为 queued 状态的后台任务。
+
+        Raises:
+            RuntimeError: 任务已经终结或尝试次数已经耗尽时抛出。
+        """
+        job = self.get_required(job_id)
+        if job.status in BACKGROUND_JOB_TERMINAL_STATUSES:
+            raise RuntimeError("最终状态后台任务不得重新入队")
+        if job.attempt_count >= job.max_attempts:
+            raise RuntimeError("后台任务尝试次数已耗尽")
+        job.status = "queued"
+        job.current_worker_id = None
+        job.available_at = available_at
+        job.claimed_at = None
+        job.error_summary = error_summary
+        job.finished_at = None
+        job.updated_at = updated_at or available_at
+        self._session.flush()
+        return job
+
+    def fail_expired(
+        self,
+        job_id: str,
+        *,
+        failed_at: datetime,
+        error_summary: str,
+    ) -> BackgroundJobModel:
+        """把已经耗尽尝试次数的过期租约任务标记为最终失败。
+
+        Args:
+            job_id: 等待标记失败的后台任务 ID。
+            failed_at: 最终失败时间。
+            error_summary: 面向状态查询的脱敏失败摘要。
+
+        Returns:
+            已进入 failed 状态的后台任务。
+        """
+        job = self.get_required(job_id)
+        job.status = "failed"
+        job.current_worker_id = None
+        job.error_summary = error_summary
+        job.finished_at = failed_at
+        job.updated_at = failed_at
+        self._session.flush()
+        return job
+
+
+class ScheduledJobRepository(BaseRepository[ScheduledJobModel]):
+    """读写 scheduled_jobs 表中的持久化 Cron 计划。"""
+
+    model_type = ScheduledJobModel
+    # 当前 Repository 固定管理定时计划 ORM 模型。
+
+    def add_state(self, schedule: ScheduledJobState) -> ScheduledJobModel:
+        """新增一项已经由调度层完成 Cron 校验的计划。
+
+        Args:
+            schedule: 具有完整计划字段和时间字段的状态。
+
+        Returns:
+            已加入当前事务并完成 flush 的定时计划 ORM 对象。
+        """
+        return self.add(
+            ScheduledJobModel(
+                schedule_id=_normalize_required_identifier(
+                    schedule["id"],
+                    field_name="schedule.id",
+                ),
+                name=_normalize_required_identifier(
+                    schedule["name"],
+                    field_name="schedule.name",
+                ),
+                cron_expression=_normalize_required_identifier(
+                    schedule["cron_expression"],
+                    field_name="schedule.cron_expression",
+                ),
+                timezone=_normalize_required_identifier(
+                    schedule["timezone"],
+                    field_name="schedule.timezone",
+                ),
+                enabled=bool(schedule["enabled"]),
+                request_payload=dict(schedule["request_payload"]),
+                last_triggered_at=_parse_optional_datetime(
+                    schedule["last_triggered_at"],
+                    field_name="schedule.last_triggered_at",
+                ),
+                last_run_id=schedule["last_run_id"],
+                next_run_at=_parse_optional_datetime(
+                    schedule["next_run_at"],
+                    field_name="schedule.next_run_at",
+                ),
+                last_error=schedule["last_error"],
+                created_at=_parse_required_datetime(
+                    schedule["created_at"],
+                    field_name="schedule.created_at",
+                ),
+                updated_at=_parse_required_datetime(
+                    schedule["updated_at"],
+                    field_name="schedule.updated_at",
+                ),
+            )
+        )
+
+    def list_enabled(self, *, limit: int = 500) -> list[ScheduledJobModel]:
+        """读取当前允许 Scheduler 注册的全部启用计划。
+
+        Args:
+            limit: 允许返回的最大计划数量。
+
+        Returns:
+            按计划 ID 稳定排序的启用计划。
+        """
+        statement = (
+            select(ScheduledJobModel)
+            .where(ScheduledJobModel.enabled.is_(True))
+            .order_by(ScheduledJobModel.schedule_id.asc())
+        )
+        return self._list(statement, limit=limit)
+
+
+class WorkerLeaseRepository(BaseRepository[WorkerLeaseModel]):
+    """读写 worker_leases 表中的当前任务租约。"""
+
+    model_type = WorkerLeaseModel
+    # 当前 Repository 固定管理 Worker 租约 ORM 模型。
+
+    def activate(self, lease: WorkerLeaseState) -> WorkerLeaseModel:
+        """创建或替换一个后台任务的当前有效租约。
+
+        Args:
+            lease: 已生成唯一租约 ID 和到期时间的完整租约状态。
+
+        Returns:
+            已创建或重新激活并完成 flush 的租约 ORM 对象。
+        """
+        if lease["status"] != "active":
+            raise ValueError("新领取任务必须创建 active Worker 租约")
+        job_id = _normalize_required_identifier(lease["job_id"], field_name="lease.job_id")
+        existing = self.get(job_id)
+        acquired_at = _parse_required_datetime(
+            lease["acquired_at"],
+            field_name="lease.acquired_at",
+        )
+        heartbeat_at = _parse_required_datetime(
+            lease["heartbeat_at"],
+            field_name="lease.heartbeat_at",
+        )
+        expires_at = _parse_required_datetime(
+            lease["expires_at"],
+            field_name="lease.expires_at",
+        )
+        if expires_at <= heartbeat_at:
+            raise ValueError("lease.expires_at 必须晚于 heartbeat_at")
+        if existing is None:
+            return self.add(
+                WorkerLeaseModel(
+                    job_id=job_id,
+                    lease_id=_normalize_required_identifier(
+                        lease["id"],
+                        field_name="lease.id",
+                    ),
+                    worker_id=_normalize_required_identifier(
+                        lease["worker_id"],
+                        field_name="lease.worker_id",
+                    ),
+                    status="active",
+                    acquired_at=acquired_at,
+                    heartbeat_at=heartbeat_at,
+                    expires_at=expires_at,
+                    released_at=None,
+                    updated_at=_parse_required_datetime(
+                        lease["updated_at"],
+                        field_name="lease.updated_at",
+                    ),
+                )
+            )
+        existing.lease_id = _normalize_required_identifier(
+            lease["id"],
+            field_name="lease.id",
+        )
+        existing.worker_id = _normalize_required_identifier(
+            lease["worker_id"],
+            field_name="lease.worker_id",
+        )
+        existing.status = "active"
+        existing.acquired_at = acquired_at
+        existing.heartbeat_at = heartbeat_at
+        existing.expires_at = expires_at
+        existing.released_at = None
+        existing.updated_at = _parse_required_datetime(
+            lease["updated_at"],
+            field_name="lease.updated_at",
+        )
+        self._session.flush()
+        return existing
+
+    def heartbeat(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        heartbeat_at: datetime,
+        expires_at: datetime,
+    ) -> WorkerLeaseModel:
+        """续期当前 Worker 持有的有效租约。
+
+        Args:
+            job_id: 当前执行的后台任务 ID。
+            worker_id: 必须与租约持有者一致的 Worker ID。
+            heartbeat_at: 本次心跳时间。
+            expires_at: 心跳完成后的新到期时间。
+
+        Returns:
+            已续期并完成 flush 的租约。
+
+        Raises:
+            RuntimeError: 租约不存在、不是 active 或持有者不一致时抛出。
+            ValueError: 新到期时间不晚于心跳时间时抛出。
+        """
+        if expires_at <= heartbeat_at:
+            raise ValueError("expires_at 必须晚于 heartbeat_at")
+        lease = self.get_required(job_id)
+        normalized_worker_id = _normalize_required_identifier(
+            worker_id,
+            field_name="worker_id",
+        )
+        if lease.status != "active" or lease.worker_id != normalized_worker_id:
+            raise RuntimeError("只有当前持有者可以续期 active Worker 租约")
+        lease.heartbeat_at = heartbeat_at
+        lease.expires_at = expires_at
+        lease.updated_at = heartbeat_at
+        self._session.flush()
+        return lease
+
+    def release(
+        self,
+        job_id: str,
+        *,
+        worker_id: str,
+        status: str,
+        released_at: datetime,
+    ) -> WorkerLeaseModel:
+        """主动释放或标记过期一个 Worker 租约。
+
+        Args:
+            job_id: 当前租约对应的后台任务 ID。
+            worker_id: 当前租约持有者的 Worker ID。
+            status: ``released`` 或 ``expired``。
+            released_at: 租约释放或确认过期时间。
+
+        Returns:
+            已更新并完成 flush 的租约。
+        """
+        normalized_status = _normalize_required_identifier(status, field_name="status")
+        if normalized_status not in {"released", "expired"}:
+            raise ValueError("租约释放状态只能是 released 或 expired")
+        lease = self.get_required(job_id)
+        normalized_worker_id = _normalize_required_identifier(
+            worker_id,
+            field_name="worker_id",
+        )
+        if lease.worker_id != normalized_worker_id:
+            raise RuntimeError("只有当前持有者可以释放 Worker 租约")
+        lease.status = normalized_status
+        lease.released_at = released_at
+        lease.updated_at = released_at
+        self._session.flush()
+        return lease
+
+    def list_expired_active(
+        self,
+        *,
+        expired_before: datetime,
+        limit: int = 500,
+    ) -> list[WorkerLeaseModel]:
+        """读取心跳已经超过租约期限的有效 Worker 租约。
+
+        Args:
+            expired_before: 到期时间小于等于该值的租约视为过期。
+            limit: 单次恢复扫描允许处理的最大租约数量。
+
+        Returns:
+            按到期时间和任务 ID 稳定排序的过期有效租约。
+        """
+        statement = (
+            select(WorkerLeaseModel)
+            .where(
+                WorkerLeaseModel.status == "active",
+                WorkerLeaseModel.expires_at <= expired_before,
+            )
+            .order_by(
+                WorkerLeaseModel.expires_at.asc(),
+                WorkerLeaseModel.job_id.asc(),
+            )
+        )
+        return self._list(statement, limit=limit)
 
 
 class MemoryItemRepository(BaseRepository[MemoryItemModel]):
@@ -1039,7 +1604,7 @@ class ErrorRecoveryRecordRepository(BaseRepository[ErrorRecoveryRecordModel]):
 
 
 class RepositoryBundle:
-    """聚合一个短事务 Session 上的七个 Repository，供图节点依赖注入。"""
+    """聚合一个短事务 Session 上的十个 Repository，供图节点和运行时服务使用。"""
 
     def __init__(self, session: Session) -> None:
         """为同一事务创建全部应用数据库 Repository。
@@ -1049,6 +1614,15 @@ class RepositoryBundle:
         """
         self.governance_runs = GovernanceRunRepository(session)
         # 治理运行生命周期 Repository。
+
+        self.background_jobs = BackgroundJobRepository(session)
+        # 持久化后台任务 Repository。
+
+        self.scheduled_jobs = ScheduledJobRepository(session)
+        # APScheduler 计划 Repository。
+
+        self.worker_leases = WorkerLeaseRepository(session)
+        # Worker 执行租约 Repository。
 
         self.memory_items = MemoryItemRepository(session)
         # 结构化治理 Memory Repository。
@@ -1076,6 +1650,6 @@ def create_repository_bundle(session: Session) -> RepositoryBundle:
         session: 当前短生命周期事务独占的 SQLAlchemy Session。
 
     Returns:
-        包含七个表 Repository 的聚合对象。
+        包含十个表 Repository 的聚合对象。
     """
     return RepositoryBundle(session)

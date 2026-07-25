@@ -337,5 +337,28 @@ def build_file_governance_graph(
     return builder.compile(checkpointer=selected_checkpointer)
 
 
+def build_background_file_governance_graph(
+    *,
+    checkpointer: BaseCheckpointSaver,
+):
+    """使用调用方显式提供的持久化 Checkpointer 构建后台治理图。
+
+    后台 Worker 与提交 API 位于不同进程，禁止回退到 ``InMemorySaver``。本函数
+    复用完全相同的节点和业务连线，只收紧运行时依赖注入边界。
+
+    Args:
+        checkpointer: 已由 Worker 打开并完成初始化的持久化 Checkpointer。
+
+    Returns:
+        与前台顶层图业务结构一致、但可跨进程恢复的已编译 LangGraph。
+
+    Raises:
+        TypeError: 调用方没有提供 BaseCheckpointSaver 实例时抛出。
+    """
+    if not isinstance(checkpointer, BaseCheckpointSaver):
+        raise TypeError("后台治理图必须显式提供 BaseCheckpointSaver")
+    return build_file_governance_graph(checkpointer=checkpointer)
+
+
 # 默认使用进程内 Checkpointer 的已编译顶层治理图。
 file_governance_graph = build_file_governance_graph()

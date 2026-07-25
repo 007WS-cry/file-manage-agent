@@ -192,6 +192,34 @@ application_database:
   # SQLite 遇到短暂文件锁时最多等待的秒数。
   timeout_seconds: 30.0
 
+runtime:
+  # API、Worker 和后续 Scheduler 共用已经执行 Alembic 迁移的应用数据库。
+  application_database_path: .artifacts/database/file-governance-app.sqlite3
+
+  # 后台 Worker 必须使用 SQLite checkpoint，禁止回退到进程内 MemorySaver。
+  checkpoint_path: .artifacts/checkpoints/file-governance-background.sqlite3
+
+  api:
+    # 默认只监听本机；容器运行时显式覆盖为 0.0.0.0。
+    host: 127.0.0.1
+    port: 8000
+
+  worker:
+    # 当前无任务时等待下一次数据库领取的秒数。
+    poll_interval_seconds: 1.0
+
+    # 未收到心跳前任务保持锁定的秒数。
+    lease_seconds: 30.0
+
+    # 必须小于 lease_seconds，避免正常长任务被错误重新领取。
+    heartbeat_interval_seconds: 10.0
+
+    # Worker 执行异常后重新允许领取任务的最小等待秒数。
+    retry_delay_seconds: 1.0
+
+    # API 未显式指定时使用的后台任务最大总尝试次数。
+    max_attempts: 3
+
 recovery:
   # 0.7.0 已完成故障注入、恢复重放与兼容验收；关闭时保留兼容失败语义。
   enabled: true

@@ -1,1 +1,1 @@
-"""本包提供文件版本治理 Agent 的命令行与安全 Task 进度摘要入口。"""
+"""本包提供文件治理 CLI、HTTP API 和独立 Background Worker 进程入口。"""

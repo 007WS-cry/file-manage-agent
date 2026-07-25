@@ -94,7 +94,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.7.0 Task、故障注入、人工恢复、幂等重放和发布验收快照只在运行时生成
+# 0.7.1 Task、恢复、后台任务、租约和发布验收快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -165,6 +165,12 @@ replay_snapshot*.json
 state_reference*.json
 release_validation*.json
 v060_compatibility*.json
+background_job*.json
+worker_lease*.json
+runtime_submission*.json
+runtime_status*.json
+api_response*.json
+worker_output*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

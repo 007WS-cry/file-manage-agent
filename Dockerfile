@@ -1,17 +1,20 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.7.0
+ARG APP_VERSION=0.7.1
 ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持故障注入验证、有限重试重放、幂等结果复用、人工恢复、部分成功报告与七表审计的只读文件版本治理 Agent"
+    org.opencontainers.image.description="支持持久化后台队列、HTTP 提交查询、Worker 租约恢复与十表审计的只读文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
-    FILE_GOVERNANCE_DATABASE_PATH=/data/artifacts/database/file-governance-app.sqlite3
+    FILE_GOVERNANCE_DATABASE_PATH=/data/artifacts/database/file-governance-app.sqlite3 \
+    FILE_GOVERNANCE_CHECKPOINT_PATH=/data/artifacts/checkpoints/file-governance-background.sqlite3 \
+    FILE_GOVERNANCE_API_HOST=0.0.0.0 \
+    FILE_GOVERNANCE_API_PORT=8000
 
 WORKDIR /app
 
@@ -47,6 +50,7 @@ USER agent
 
 VOLUME ["/data/input", "/data/artifacts", "/data/evidence"]
 
-# 默认展示 CLI 帮助；实际运行时传入 run 或 resume 子命令及请求文件。
-ENTRYPOINT ["file-governance"]
-CMD ["--help"]
+EXPOSE 8000
+
+# 默认启动 HTTP API；CLI 或 Worker 可通过 docker run 的命令参数整体覆盖。
+CMD ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]

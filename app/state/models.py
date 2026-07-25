@@ -11,7 +11,7 @@ from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_i
 
 
 class RunState(TypedDict):
-    """一次文件版本治理运行的生命周期状态。"""
+    """一次前台或后台文件版本治理运行的生命周期状态。"""
 
     run_id: str
     # 本次运行的唯一标识。
@@ -19,8 +19,21 @@ class RunState(TypedDict):
     thread_id: str
     # LangGraph Checkpointer 使用的线程 ID；非 CLI 调用可回退为 run_id。
 
+    trigger_source: Literal["manual", "cron"]
+    # 运行由用户手动请求还是由 Cron 计划触发。
+
+    execution_mode: Literal["foreground", "background"]
+    # 运行在请求进程内立即执行还是交给独立后台 Worker。
+
+    background_job_id: str | None
+    # 对应的持久化后台任务 ID；前台运行时为 None。
+
+    worker_id: str | None
+    # 当前执行运行的 Worker ID；前台运行或尚未领取时为 None。
+
     status: Literal[
         "created",
+        "queued",
         "running",
         "recovering",
         "waiting_human",
@@ -38,6 +51,140 @@ class RunState(TypedDict):
 
     finished_at: str | None
     # 运行结束时间；任务未结束时为 None。
+
+
+class BackgroundJobState(TypedDict):
+    """持久化后台任务队列中的一项文件治理任务。"""
+
+    id: str
+    # 后台任务唯一 ID，与治理运行 run_id 和 Task DAG task_id 分开。
+
+    run_id: str
+    # 当前后台任务对应的治理运行 ID。
+
+    thread_id: str
+    # 跨进程恢复 LangGraph checkpoint 使用的线程 ID。
+
+    trigger_source: Literal["manual", "cron"]
+    # 后台任务由手动 API 请求还是 Cron 计划创建。
+
+    status: Literal[
+        "queued",
+        "leased",
+        "running",
+        "waiting_human",
+        "completed",
+        "partial",
+        "failed",
+    ]
+    # 后台任务在排队、领取、执行、中断和终结阶段的状态。
+
+    request_payload: dict[str, Any]
+    # 已规范化的治理请求信封；不得包含 API Key 实际值或完整文档正文。
+
+    current_worker_id: str | None
+    # 当前持有任务租约的 Worker ID；未领取或已经释放时为 None。
+
+    attempt_count: int
+    # Worker 实际领取并尝试执行该任务的累计次数。
+
+    max_attempts: int
+    # Worker 崩溃或运行失败后允许重新领取的最大次数。
+
+    available_at: str
+    # 当前任务最早允许再次领取的 ISO 8601 时间。
+
+    claimed_at: str | None
+    # 最近一次被 Worker 成功领取的时间。
+
+    started_at: str | None
+    # 最近一次开始执行 LangGraph 的时间。
+
+    report_path: str | None
+    # 成功或部分成功后生成的治理报告路径。
+
+    error_summary: str | None
+    # 最近一次后台执行失败或租约过期的脱敏摘要。
+
+    created_at: str
+    # 后台任务首次入队时间。
+
+    updated_at: str
+    # 后台任务最近一次状态变化时间。
+
+    finished_at: str | None
+    # 后台任务进入最终状态的时间。
+
+
+class ScheduledJobState(TypedDict):
+    """应用数据库中一项可由 APScheduler 恢复的 Cron 计划。"""
+
+    id: str
+    # 定时计划唯一 ID。
+
+    name: str
+    # 面向用户展示的定时计划名称。
+
+    cron_expression: str
+    # 经过调度层校验的 Cron 表达式。
+
+    timezone: str
+    # 解释 Cron 表达式所使用的时区名称。
+
+    enabled: bool
+    # 当前计划是否允许继续触发后台任务。
+
+    request_payload: dict[str, Any]
+    # 计划触发时复制使用的治理请求模板。
+
+    last_triggered_at: str | None
+    # 最近一次实际触发计划的时间。
+
+    last_run_id: str | None
+    # 最近一次触发创建的治理运行 ID。
+
+    next_run_at: str | None
+    # Scheduler 最近计算的下一次预计触发时间。
+
+    last_error: str | None
+    # 最近一次注册或触发失败的脱敏摘要。
+
+    created_at: str
+    # 定时计划创建时间。
+
+    updated_at: str
+    # 定时计划最近一次修改时间。
+
+
+class WorkerLeaseState(TypedDict):
+    """Worker 对一个后台任务持有的限时执行租约。"""
+
+    id: str
+    # 当前租约唯一 ID，每次重新领取都会生成新值。
+
+    job_id: str
+    # 被当前租约锁定的后台任务 ID。
+
+    worker_id: str
+    # 持有当前租约的 Worker 唯一 ID。
+
+    status: Literal["active", "released", "expired"]
+    # 租约当前处于有效、主动释放或已经过期状态。
+
+    acquired_at: str
+    # Worker 成功领取任务的时间。
+
+    heartbeat_at: str
+    # Worker 最近一次续租心跳时间。
+
+    expires_at: str
+    # 超过该时间未续租时允许其他 Worker 重新领取。
+
+    released_at: str | None
+    # Worker 完成、暂停、失败或租约过期后的释放时间。
+
+    updated_at: str
+    # 租约最近一次心跳或状态变化时间。
 
 
 class RequestState(TypedDict):
@@ -1068,7 +1215,7 @@ class ContextCompactState(TypedDict):
 
 
 class ApplicationDatabaseState(TypedDict):
-    """应用数据库的启用状态、SQLite 隔离配置和运行期连接结果。"""
+    """十张应用表共用的启用状态、SQLite 隔离配置和运行期连接结果。"""
 
     enabled: bool
     # 是否持久化运行、Memory、审计、人工选择、错误恢复和节点执行；默认关闭。
@@ -1077,7 +1224,7 @@ class ApplicationDatabaseState(TypedDict):
     # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
 
     database_path: str | None
-    # 七张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+    # 十张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
 
     checkpoint_path: str | None
     # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。

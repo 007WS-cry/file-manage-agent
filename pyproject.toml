@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.7.0"
-description = "支持故障注入验证、有限重试重放、幂等结果复用、人工恢复和部分成功报告的 LangGraph 文件版本治理 Agent"
+version = "0.7.1"
+description = "支持持久化后台队列、HTTP 提交查询、Worker 租约恢复和统一错误恢复的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,13 +21,18 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1,<4",
     "SQLAlchemy>=2.0,<3",
     "alembic>=1.15,<2",
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.34,<1",
 ]
 
 [project.scripts]
 file-governance = "app.entrypoints.cli:main"
+file-governance-api = "app.entrypoints.api:main"
+file-governance-worker = "app.entrypoints.worker:main"
 
 [project.optional-dependencies]
 dev = [
+    "httpx>=0.27,<1",
     "pytest>=8,<10",
     "ruff>=0.12,<1",
 ]

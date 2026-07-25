@@ -1,13 +1,16 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.7.0` 已完成从 `0.6.0`
-演进到 Error Recovery 的六批交付，并以故障注入、有限重试重放、节点幂等复用、
-恢复型人工确认、部分成功报告和旧状态兼容矩阵完成正式发布验收。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.7.1` 是从 `0.7.0`
+向 `0.8.0` 演进的第一批，已经完成持久化后台队列、HTTP 提交与状态查询、
+独立 Background Worker、租约心跳和 Worker 崩溃后的任务重新领取。
+`0.7.0` 的故障注入、有限重试重放、节点幂等复用、恢复型人工确认、
+部分成功报告和旧状态兼容矩阵继续保持不变。
 `0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
 和应用数据库发布收口。
 `governance_runs`、`memory_items`、`context_summaries`、`tool_call_audits`、
-`human_reviews` 五张基础表已经全部接线；`error_recovery_records` 和
-`node_execution_records` 已接入恢复执行，同时继续保证模型失败或上下文压缩
+`human_reviews` 五张基础表已经全部接线；`error_recovery_records`、
+`node_execution_records`、`background_jobs`、`scheduled_jobs` 和
+`worker_leases` 已接入恢复及外围运行基础设施，同时继续保证模型失败或上下文压缩
 不会改变版本关系、证据、推荐和人工选择。Content、Version、Evidence 可分别路由 Claude、
 Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中转站。
 当前具备：
@@ -19,7 +22,10 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - Content、Version、Evidence 三个可独立调用的固定 Subagent 子图；
 - 标准化内容及中间 JSON 产物的隔离、原子持久化；
 - 进程内或 SQLite LangGraph checkpoint；
-- 独立 SQLAlchemy 应用数据库、七表 ORM/迁移和 Repository 数据访问边界；
+- 独立 SQLAlchemy 应用数据库、十表 ORM/迁移和 Repository 数据访问边界；
+- `POST /runs` 持久化后台提交，以及按 `run_id`、`job_id` 查询的脱敏 HTTP API；
+- 独立 Worker 事务领取、限时租约、短事务心跳、失败重新入队和尝试次数上限；
+- Worker 异常退出后的过期租约扫描、任务重新领取和最终失败收口；
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
 - 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
@@ -89,8 +95,8 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 
 四个业务子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为第七个
-编排子图统一承接失败出口。当前版本提供 Python 接口
-和 CLI，尚未提供 HTTP API 或后台 Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
+编排子图统一承接失败出口。当前版本提供 Python 接口、CLI、HTTP API 和独立
+Background Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
 `0.5.0` 由顶层图和 Version Analysis 子图构造最小 `dispatch_request`。模型只解释
@@ -112,7 +118,9 @@ direct-failure 出口统一改到 Recovery，并在不改变正常治理结论�
 历史恢复终态过滤；`0.6.5` 接入 retry、skip_file、provide_path、abort 四种
 人工恢复输入，按 interrupt kind 生成 CLI 提示，并让 partial 报告与 failed
 任务统计明确分离；`0.7.0` 通过九组集成场景验证短暂故障重放、文件级跳过、
-五类既有回退、状态引用隔离、数据库幂等键和 0.6.0 状态升级，并统一发布版本。
+五类既有回退、状态引用隔离、数据库幂等键和 0.6.0 状态升级，并统一发布版本；
+`0.7.1` 在业务图外新增 API、持久化队列和 Worker，顶层业务节点及 conditional
+router 连线保持不变。
 
 ## 安全边界
 
@@ -187,10 +195,12 @@ file-manage-agent/
 │   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
 │   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
+│   ├── runtime/               # 后台任务队列、请求分派和独立 Worker
+│   ├── api/                   # HTTP Schema、运行提交和状态查询路由
 │   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
 │   ├── graphs/                # 四业务图、Context Compact、团队图、恢复图与顶层图
-│   └── entrypoints/           # 最小 CLI
+│   └── entrypoints/           # CLI、HTTP API 和 Background Worker 进程入口
 ├── alembic/                   # 应用数据库迁移环境和版本脚本
 ├── alembic.ini                # 默认应用数据库迁移配置
 ├── configs/default.yaml       # 默认治理、生命周期、存储和数据库参数
@@ -201,6 +211,7 @@ file-manage-agent/
 ├── examples/sample_multi_model_request.json # 0.6.0 多模型与五表组合请求
 ├── examples/sample_delivery_log.json
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
+├── examples/sample_background_submission.json # 0.7.1 HTTP 后台提交示例
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
@@ -221,6 +232,7 @@ file-manage-agent/
 ├── docs/version-0.6.4-existing-subgraph-integration.md # 0.7.0 第四批既有子图统一接入
 ├── docs/version-0.6.5-recovery-interrupt-report-cli.md # 0.7.0 第五批人工恢复、报告与 CLI
 ├── docs/release-0.7.0-error-recovery.md # 0.7.0 Error Recovery 正式发布说明
+├── docs/version-0.7.1-background-runtime.md # 0.8.0 第一批后台运行说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -985,6 +997,25 @@ direct-failure 分支统一改到恢复入口：
 升级、验证矩阵与安全边界见
 [0.7.0 Error Recovery 正式发布说明](docs/release-0.7.0-error-recovery.md)。
 
+## 0.7.1 持久化队列、HTTP API 与 Background Worker
+
+本版本只增加 LangGraph 外层运行基础设施，不修改七个子图的正常业务顺序：
+
+- `background_jobs` 保存请求信封、运行身份、状态、报告路径和有限尝试次数；
+- `worker_leases` 每个后台任务只保留当前或最近一次租约，Worker 通过独立短
+  Session 续租，图执行期间不持有数据库事务；
+- 任务领取通过 `status=queued` 和 `available_at` 条件更新解决多 Worker 竞争；
+- Worker 启动每次领取前扫描过期 active 租约，未耗尽尝试次数时重新入队，
+  已耗尽时同时把后台任务和治理运行标记为 failed；
+- `scheduled_jobs` 在本批只完成 ORM、Repository 和迁移，APScheduler 注册与
+  Cron 管理留到下一批；
+- 后台图必须显式注入 SQLite Checkpointer，不允许回退到 `InMemorySaver`；
+- API 只返回 ID、状态、阶段、报告路径和脱敏错误摘要，不返回请求信封、文档状态、
+  Prompt、Team Message、Task 引用或完整报告 Markdown。
+
+详细状态转换和安全边界见
+[0.7.1 后台运行基础设施说明](docs/version-0.7.1-background-runtime.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1003,8 +1034,9 @@ python -m pip install -r requirements.txt
 python -m pip install -e ".[dev]"
 ```
 
-安装后会提供 `file-governance` 命令，也可以使用
-`python -m app.entrypoints.cli`。
+安装后会提供 `file-governance`、`file-governance-api` 和
+`file-governance-worker` 三个命令，也可以分别通过对应的
+`python -m app.entrypoints.*` 模块启动。
 
 构建 wheel 时，受控 Prompt、Skill 注册表和四个 `SKILL.md` 会随分发包进入安装
 数据目录：
@@ -1012,6 +1044,61 @@ python -m pip install -e ".[dev]"
 ```bash
 python -m pip wheel . --no-deps --no-build-isolation
 ```
+
+## HTTP API 与 Background Worker
+
+API 和 Worker 启动前先把应用数据库升级到当前十表结构：
+
+```bash
+python -m alembic upgrade head
+```
+
+启动 HTTP API：
+
+```bash
+file-governance-api \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --database-path .artifacts/database/file-governance-app.sqlite3 \
+  --checkpoint-path .artifacts/checkpoints/file-governance-background.sqlite3
+```
+
+另一个终端启动独立 Worker：
+
+```bash
+file-governance-worker \
+  --database-path .artifacts/database/file-governance-app.sqlite3
+```
+
+提交脱敏示例请求。接口持久化完成后立即返回 HTTP 202，不等待 LangGraph 执行：
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_background_submission.json
+```
+
+响应只包含：
+
+```json
+{
+  "run_id": "治理运行 ID",
+  "job_id": "后台任务 ID",
+  "thread_id": "LangGraph 线程 ID",
+  "status": "queued"
+}
+```
+
+按返回的 ID 查询状态：
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>
+curl http://127.0.0.1:8000/runs/jobs/<job_id>
+```
+
+Worker 手工演示或集成测试可以增加 `--once`，只执行一次过期租约恢复和任务领取
+后退出。API 与 Worker 必须共享同一个应用数据库和 checkpoint 挂载；输入目录仍
+必须只读，应用数据库与 checkpoint 仍必须是两个不同的 SQLite 文件。
 
 ## 准备请求
 
@@ -1302,10 +1389,11 @@ with open_checkpointer(
 - SQLite checkpoint 后端及数据库路径；
 - 默认关闭的 Memory、哈希命名空间、召回上限和独立应用数据库路径；
 - 默认关闭的 Context Compact、Token 阈值、预览保留量和摘要持久化配置；
-- 默认关闭的五表应用数据库、父目录自动创建、SQL 日志和文件锁等待配置。
+- 默认关闭的十表应用数据库、父目录自动创建、SQL 日志和文件锁等待配置。
 
 当前 CLI 以请求 JSON 为直接运行配置；YAML 用于记录统一部署默认值。0.6.0 的
-Memory、Context Compact 和五表应用数据库均已接入 CLI 与主图；迁移命令继续读取
+Memory、Context Compact 和十表应用数据库均已接入 CLI、API、Worker 与主图；
+迁移命令继续读取
 `alembic.ini` 或 `FILE_GOVERNANCE_DATABASE_PATH`，不会在普通治理运行中静默
 修改表结构。
 
@@ -1405,34 +1493,46 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.7.0 -t file-manage-agent:0.7.0 .
+docker build --build-arg APP_VERSION=0.7.1 -t file-manage-agent:0.7.1 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.7.0 \
+  --build-arg APP_VERSION=0.7.1 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.7.0-mainstream .
+  -t file-manage-agent:0.7.1-mainstream .
 ```
 
-默认显示 CLI 帮助：
-
-```bash
-docker run --rm file-manage-agent:0.7.0
-```
-
-容器首次使用应用数据库时，可在同一个可写产物卷中执行迁移。镜像内默认通过
-`FILE_GOVERNANCE_DATABASE_PATH` 把数据库放到
-`/data/artifacts/database/file-governance-app.sqlite3`：
+镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
+可写产物卷中执行迁移：
 
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  --entrypoint python \
-  file-manage-agent:0.7.0 \
-  -m alembic upgrade head
+  file-manage-agent:0.7.1 \
+  python -m alembic upgrade head
+```
+
+启动 API：
+
+```bash
+docker run --rm -p 8000:8000 \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:0.7.1
+```
+
+使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:0.7.1 \
+  file-governance-worker \
+  --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
@@ -1447,8 +1547,8 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.7.0 \
-  run /config/request.json --thread-id governance-run-001 \
+  file-manage-agent:0.7.1 \
+  file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
@@ -1460,16 +1560,16 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.7.0 \
-  resume /config/review.json --thread-id governance-run-001 \
+  file-manage-agent:0.7.1 \
+  file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
 
 ## 当前未实现
 
-- HTTP API、后台 Worker 和定时任务；
+- APScheduler 定时任务管理与 Cron 触发；
 - PostgreSQL 等生产级 Checkpointer；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
-- 多进程 Worker 的抢占锁和崩溃后任务领取、邮件 MCP 证据和 Worktree；
+- 邮件 MCP 证据和 Worktree；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

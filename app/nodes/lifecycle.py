@@ -72,6 +72,10 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "run": {
             "run_id": run_id,
             "thread_id": thread_id,
+            "trigger_source": previous_run.get("trigger_source", "manual"),
+            "execution_mode": previous_run.get("execution_mode", "foreground"),
+            "background_job_id": previous_run.get("background_job_id"),
+            "worker_id": previous_run.get("worker_id"),
             "status": "running",
             "current_stage": "initialize_run",
             "started_at": started_at,

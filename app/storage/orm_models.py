@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-"""本模块定义应用数据库的七张 SQLAlchemy ORM 表，不负责创建或迁移表结构。"""
+"""本模块定义应用数据库的十张 SQLAlchemy ORM 表，不负责创建或迁移表结构。"""
 
 
 # 统一约束命名规则，使 Alembic 自动生成和回退迁移时可以稳定引用约束。
@@ -117,6 +117,246 @@ class GovernanceRunModel(Base):
         ),
     )
     # 限制运行状态，防止数据库保存未知生命周期值。
+
+
+class BackgroundJobModel(Base):
+    """保存一个可被独立 Worker 事务领取和跨进程恢复的后台治理任务。"""
+
+    __tablename__ = "background_jobs"
+    # 应用数据库中的固定表名。
+
+    job_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 后台任务唯一 ID，与治理运行和 Task DAG 标识分开。
+
+    run_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("governance_runs.run_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    # 当前后台任务对应的治理运行 ID。
+
+    thread_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # 跨进程恢复 LangGraph checkpoint 使用的线程 ID。
+
+    trigger_source: Mapped[str] = mapped_column(String(16), nullable=False)
+    # 后台任务由手动请求还是 Cron 计划触发。
+
+    status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    # 后台任务在排队、领取、执行、中断和终结阶段的状态。
+
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    # 已规范化的治理请求信封，不得包含密钥实际值或完整文档正文。
+
+    current_worker_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+        index=True,
+    )
+    # 当前持有任务租约的 Worker ID；未领取时为 None。
+
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Worker 实际领取并尝试执行该任务的累计次数。
+
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    # Worker 崩溃或运行失败后允许重新领取的最大次数。
+
+    available_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        index=True,
+    )
+    # 当前任务最早允许再次领取的时间。
+
+    claimed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # 最近一次被 Worker 成功领取的时间。
+
+    started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # 最近一次开始执行 LangGraph 的时间。
+
+    report_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 成功或部分成功后生成的治理报告路径。
+
+    error_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 最近一次后台执行失败或租约过期的脱敏摘要。
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.current_timestamp(),
+    )
+    # 后台任务首次入队时间。
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+    # 后台任务最近一次状态变化时间。
+
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # 后台任务进入最终状态的时间。
+
+    __table_args__ = (
+        CheckConstraint(
+            "trigger_source IN ('manual', 'cron')",
+            name="trigger_source_allowed",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'leased', 'running', 'waiting_human', "
+            "'completed', 'partial', 'failed')",
+            name="status_allowed",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND max_attempts >= 1 AND attempt_count <= max_attempts",
+            name="attempt_counts_valid",
+        ),
+        Index(
+            "ix_background_jobs_claimable",
+            "status",
+            "available_at",
+            "created_at",
+        ),
+    )
+    # 限制来源、生命周期和尝试次数，并优化 Worker 的领取查询。
+
+
+class ScheduledJobModel(Base):
+    """保存一项后续可由 APScheduler 注册和恢复的 Cron 计划。"""
+
+    __tablename__ = "scheduled_jobs"
+    # 应用数据库中的固定表名。
+
+    schedule_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 定时计划唯一 ID。
+
+    name: Mapped[str] = mapped_column(String(160), nullable=False)
+    # 面向用户展示的计划名称。
+
+    cron_expression: Mapped[str] = mapped_column(String(160), nullable=False)
+    # 经过调度层校验的 Cron 表达式。
+
+    timezone: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 解释 Cron 表达式所使用的时区名称。
+
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    # 当前计划是否允许继续触发后台任务。
+
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    # 计划触发时复制使用的治理请求模板。
+
+    last_triggered_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # 最近一次实际触发计划的时间。
+
+    last_run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 最近一次触发创建的治理运行 ID。
+
+    next_run_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # Scheduler 最近计算的下一次预计触发时间。
+
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 最近一次注册或触发失败的脱敏摘要。
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        server_default=func.current_timestamp(),
+    )
+    # 定时计划创建时间。
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+    # 定时计划最近一次修改时间。
+
+
+class WorkerLeaseModel(Base):
+    """保存一个后台任务当前或最近一次 Worker 执行租约。"""
+
+    __tablename__ = "worker_leases"
+    # 应用数据库中的固定表名。
+
+    job_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("background_jobs.job_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    # 被租约锁定的后台任务 ID；每个任务只保留当前或最近一次租约。
+
+    lease_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    # 当前租约唯一 ID，每次重新领取都会替换为新值。
+
+    worker_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    # 持有当前租约的 Worker 唯一 ID。
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, index=True)
+    # 租约当前处于有效、主动释放或已经过期状态。
+
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Worker 成功领取任务的时间。
+
+    heartbeat_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    # Worker 最近一次续租心跳时间。
+
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        index=True,
+    )
+    # 超过该时间未续租时允许其他 Worker 重新领取。
+
+    released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    # Worker 完成、暂停、失败或租约过期后的释放时间。
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+    # 租约最近一次心跳或状态变化时间。
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active', 'released', 'expired')",
+            name="status_allowed",
+        ),
+        Index(
+            "ix_worker_leases_expiration",
+            "status",
+            "expires_at",
+        ),
+    )
+    # 限制租约生命周期，并优化过期租约扫描。
 
 
 class MemoryItemModel(Base):

@@ -31,8 +31,19 @@ RECOVERY_APPLICATION_TABLES = {
     "node_execution_records",
 }
 
-# 当前迁移 head 应包含的七张应用表。
-APPLICATION_TABLES = BASE_APPLICATION_TABLES | RECOVERY_APPLICATION_TABLES
+# 0.7.1 第三个迁移新增的后台队列、定时计划和 Worker 租约表。
+RUNTIME_APPLICATION_TABLES = {
+    "background_jobs",
+    "scheduled_jobs",
+    "worker_leases",
+}
+
+# 当前迁移 head 应包含的十张应用表。
+APPLICATION_TABLES = (
+    BASE_APPLICATION_TABLES
+    | RECOVERY_APPLICATION_TABLES
+    | RUNTIME_APPLICATION_TABLES
+)
 
 
 def create_alembic_config(database_path: Path) -> Config:
@@ -73,7 +84,7 @@ def read_table_names(database_path: Path) -> set[str]:
 
 
 def test_upgrade_creates_parent_tables_and_matches_metadata(tmp_path: Path) -> None:
-    """upgrade head 应自动创建父目录和七张表，且 ORM 元数据不存在新差异。"""
+    """upgrade head 应自动创建父目录和十张表，且 ORM 元数据不存在新差异。"""
     database_path = tmp_path / "nested" / "application.sqlite3"
     config = create_alembic_config(database_path)
 
@@ -85,7 +96,7 @@ def test_upgrade_creates_parent_tables_and_matches_metadata(tmp_path: Path) -> N
 
 
 def test_downgrade_and_reupgrade_are_reversible(tmp_path: Path) -> None:
-    """完整迁移链应能回退到 base，并能再次升级到相同七表结构。"""
+    """完整迁移链应能回退到 base，并能再次升级到相同十表结构。"""
     database_path = tmp_path / "application.sqlite3"
     config = create_alembic_config(database_path)
 
@@ -112,6 +123,26 @@ def test_recovery_migration_downgrades_without_removing_base_tables(
     table_names = read_table_names(database_path)
     assert BASE_APPLICATION_TABLES <= table_names
     assert RECOVERY_APPLICATION_TABLES.isdisjoint(table_names)
+
+    command.upgrade(config, "head")
+
+    assert APPLICATION_TABLES <= read_table_names(database_path)
+    command.check(config)
+
+
+def test_runtime_migration_downgrades_without_removing_recovery_tables(
+    tmp_path: Path,
+) -> None:
+    """0003 回退应只删除运行时三表，并保留 0.7.0 的七张应用表。"""
+    database_path = tmp_path / "application.sqlite3"
+    config = create_alembic_config(database_path)
+
+    command.upgrade(config, "head")
+    command.downgrade(config, "0002_error_recovery_tables")
+
+    table_names = read_table_names(database_path)
+    assert BASE_APPLICATION_TABLES | RECOVERY_APPLICATION_TABLES <= table_names
+    assert RUNTIME_APPLICATION_TABLES.isdisjoint(table_names)
 
     command.upgrade(config, "head")
 
