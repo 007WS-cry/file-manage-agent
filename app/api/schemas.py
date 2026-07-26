@@ -4,7 +4,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.state.models import BackgroundJobState
+from app.state.models import BackgroundJobState, ScheduledJobState
 
 """本模块定义 HTTP API 的请求与响应 Schema，并隔离 LangGraph 完整内部状态。"""
 
@@ -174,6 +174,92 @@ class RunStatusResponse(BaseModel):
 
     background_job: BackgroundJobResponse | None
     # 对应后台任务摘要；非后台运行时为 None。
+
+
+class ScheduleCreateRequest(BaseModel):
+    """创建一项持久化 Cron 计划的 HTTP 请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 拒绝未声明字段，避免调用方误以为动态调度参数已经生效。
+
+    name: str = Field(min_length=1, max_length=160)
+    # 面向用户展示的计划名称。
+
+    cron_expression: str = Field(min_length=1, max_length=160)
+    # 标准五段 crontab 表达式。
+
+    timezone: str = Field(default="Asia/Shanghai", min_length=1, max_length=64)
+    # 解释 Cron 表达式的 IANA 时区名称。
+
+    enabled: bool = True
+    # 创建后是否允许独立 Scheduler 注册和触发。
+
+    payload: dict[str, Any]
+    # Cron 触发时复制到后台队列的治理请求模板。
+
+
+class ScheduleResponse(BaseModel):
+    """HTTP API 可公开的持久化 Cron 计划和最近运行摘要。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 响应不返回治理请求模板、文档路径信封或 APScheduler 内部对象。
+
+    schedule_id: str
+    # 持久化计划唯一 ID。
+
+    name: str
+    # 面向用户展示的计划名称。
+
+    cron_expression: str
+    # 已通过调度层校验的五段 Cron 表达式。
+
+    timezone: str
+    # 解释 Cron 的 IANA 时区名称。
+
+    enabled: bool
+    # 独立 Scheduler 是否应注册当前计划。
+
+    last_triggered_at: str | None
+    # 最近一次成功创建后台任务的时间。
+
+    last_run_id: str | None
+    # 最近一次 Cron 触发创建的治理运行 ID。
+
+    next_run_at: str | None
+    # Scheduler 最近计算的下一次预计触发时间。
+
+    last_error: str | None
+    # 最近一次注册或入队失败的脱敏摘要。
+
+    created_at: str
+    # 计划创建时间。
+
+    updated_at: str
+    # 计划最近一次修改或触发时间。
+
+    @classmethod
+    def from_state(cls, schedule: ScheduledJobState) -> ScheduleResponse:
+        """从内部计划状态创建不包含请求模板的 API 响应。
+
+        Args:
+            schedule: SchedulerService 返回的完整持久化计划状态。
+
+        Returns:
+            只保留调度规则、生命周期和最近运行事实的响应对象。
+        """
+        return cls(
+            schedule_id=schedule["id"],
+            name=schedule["name"],
+            cron_expression=schedule["cron_expression"],
+            timezone=schedule["timezone"],
+            enabled=schedule["enabled"],
+            last_triggered_at=schedule["last_triggered_at"],
+            last_run_id=schedule["last_run_id"],
+            next_run_at=schedule["next_run_at"],
+            last_error=schedule["last_error"],
+            created_at=schedule["created_at"],
+            updated_at=schedule["updated_at"],
+        )
 
 
 class HealthResponse(BaseModel):

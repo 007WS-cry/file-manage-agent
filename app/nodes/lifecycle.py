@@ -27,6 +27,7 @@ from app.state.factories import (
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
+    create_workspace_state,
 )
 from app.state.models import FileGovernanceState
 from app.storage.database import (
@@ -58,6 +59,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
     thread_id = previous_run.get("thread_id") or run_id
     started_at = previous_run.get("started_at") or utc_now_iso()
     application_database = copy_application_database_state(state.get("application_database"))
+    workspace = create_workspace_state(state["workspace"])
     report = {
         "summary": "",
         "report_markdown": "",
@@ -96,6 +98,8 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "context_compact": copy_context_compact_state(state.get("context_compact")),
         "application_database": application_database,
         "recovery": copy_recovery_state(state.get("recovery")),
+        "workspace": workspace,
+        "worktrees": state.get("worktrees", []),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),
@@ -114,7 +118,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
             raise ValueError("应用数据库已启用但未配置 database_path")
         engine = create_application_engine(
             database_path,
-            input_root=state["workspace"]["input_root"],
+            input_root=workspace["input_root"],
             checkpoint_path=application_database.get("checkpoint_path"),
             echo=application_database["echo"],
             timeout_seconds=application_database["timeout_seconds"],

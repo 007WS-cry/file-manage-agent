@@ -233,6 +233,12 @@ class WorkspaceState(TypedDict):
     report_root: str
     # 可选治理报告的输出目录。
 
+    temporary_root: str
+    # 运行时临时目录；Worktree 只能创建在该受控目录的专用子目录中。
+
+    project_git_root: str | None
+    # Agent 治理项目自身的可选 Git 根目录；普通文件治理任务保持为 None。
+
 
 class FileRecord(TypedDict):
     """扫描得到的单个原始文件记录。"""
@@ -630,6 +636,7 @@ class ErrorRecord(TypedDict):
         "context",
         "database",
         "checkpoint",
+        "worktree",
         "timeout",
         "unknown",
     ]
@@ -1329,6 +1336,16 @@ class HookConfigState(TypedDict):
     # Hook 名称到失败策略的映射；覆盖默认失败策略。
 
 
+class HookResult(TypedDict):
+    """单个 Hook 返回的简短说明和受限顶层状态更新。"""
+
+    message: str
+    # Hook 执行结果的简短说明，不得包含文档正文或敏感工具输出。
+
+    state_update: dict[str, Any]
+    # Hook 建议合并到顶层状态的字段；runner 会校验允许修改的范围。
+
+
 class HookEvent(TypedDict):
     """Hook 执行事件：记录单个 Hook 的顺序、状态和处理策略。"""
 
@@ -1390,6 +1407,119 @@ class TodoItem(TypedDict):
     # Todo 在用户界面或 CLI 输出中的固定显示顺序。
 
 
+class TaskDefinition(TypedDict):
+    """固定文件治理 Task DAG 中一个不可变任务模板。"""
+
+    task_type: str
+    # Task 的稳定类型名称。
+
+    title: str
+    # Task 面向用户和日志展示的中文标题。
+
+    dependency_types: tuple[str, ...]
+    # 当前 Task 依赖的其他 Task 类型。
+
+    input_refs: tuple[str, ...]
+    # Task 默认读取的顶层状态字段引用。
+
+    requires_repository_write: bool
+    # 模板是否明确要求修改治理项目仓库；普通治理模板固定为 False。
+
+
+class TodoDefinition(TypedDict):
+    """由若干 Task 状态共同推导的固定 Todo 模板。"""
+
+    key: str
+    # Todo ID 使用的稳定短名称。
+
+    title: str
+    # Todo 面向用户展示的中文标题。
+
+    task_types: tuple[str, ...]
+    # 决定 Todo 状态的 Task 类型。
+
+    order: int
+    # Todo 的固定展示顺序。
+
+
+class GitProcessResultState(TypedDict):
+    """一次受控 Git 子进程调用的有限输出和退出状态。"""
+
+    subcommand: str
+    # 通过白名单校验后实际执行的 Git 子命令。
+
+    arguments: list[str]
+    # 未经 Shell 拼接、按元素传给 Git 的参数副本。
+
+    working_directory: str
+    # 已完成边界校验的 Git 进程工作目录。
+
+    return_code: int
+    # Git 进程退出码；零表示命令成功完成。
+
+    stdout: str
+    # 截断到安全上限的标准输出，不包含完整业务文件正文。
+
+    stderr: str
+    # 截断到安全上限的标准错误输出。
+
+
+class WorktreeInspectionState(TypedDict):
+    """对一个隔离 Worktree 执行只读检查后得到的状态摘要。"""
+
+    path: str
+    # 已确认位于受控临时根目录中的 Worktree 绝对路径。
+
+    head: str
+    # Worktree 当前 HEAD 提交的完整对象 ID。
+
+    clean: bool
+    # 工作区和索引是否均无已跟踪或未跟踪改动。
+
+    status_porcelain: list[str]
+    # Git porcelain 状态的逐行有限摘要，不读取文件正文。
+
+
+class WorktreeState(TypedDict):
+    """隔离显式仓库写入 Task 的 Git Worktree 生命周期状态。"""
+
+    id: str
+    # Worktree 唯一 ID，由所属 Task 和仓库路径生成。
+
+    owner_task_id: str
+    # 唯一允许使用该 Worktree 的 Task ID。
+
+    repository_root: str
+    # Worktree 所属主 Git 仓库的规范化绝对路径。
+
+    path: str
+    # Worktree 自身位于受控临时根目录中的绝对路径。
+
+    branch: str
+    # Worktree 对应的隔离分支；关闭 Worktree 时不会自动删除或合并。
+
+    base_ref: str
+    # 创建隔离分支时使用的受控基础引用。
+
+    status: Literal["ready", "in_use", "completed", "closed", "failed"]
+    # Worktree 当前准备、使用、保留成果、安全关闭或失败状态。
+
+    original_files_readonly: bool
+    # 原始业务文件是否保持只读；该字段必须始终为 True。
+
+    created_at: str
+    # Worktree 成功创建的 ISO 8601 时间。
+
+    closed_at: str | None
+    # Worktree 被 Git 安全移除的时间；保留或失败时为 None。
+
+    clean: bool | None
+    # 最近一次状态检查结果；尚未检查时为 None。
+
+    error_summary: str | None
+    # 创建、检查或关闭失败时保存的脱敏错误摘要。
+
+
 class TaskItem(TypedDict):
     """Task System 中的真实执行状态，是 Todo 和执行进度的唯一事实来源。"""
 
@@ -1436,6 +1566,9 @@ class TaskItem(TypedDict):
         "evidence",
     ]
     # 当前 Task 的固定负责角色；0.4.4 由 Team Orchestration 实际选择并调用。
+
+    requires_repository_write: bool
+    # 是否明确授权该 Task 修改治理项目仓库；默认治理 Task 必须为 False。
 
     input_refs: list[str]
     # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
@@ -2078,7 +2211,7 @@ class FileGovernanceState(TypedDict):
     # Context Compact 配置、最近估算结果和有界摘要索引。
 
     application_database: ApplicationDatabaseState
-    # 七张应用表共用的独立数据库配置和当前连接状态。
+    # 十张应用表共用的独立数据库配置和当前连接状态。
 
     recovery: RecoveryState
     # 当前运行的恢复策略、待处理错误和恢复动作。
@@ -2106,6 +2239,12 @@ class FileGovernanceState(TypedDict):
         merge_by_message_id,
     ]
     # 按 message_id 合并的 Team Protocol 结构化消息。
+
+    worktrees: Annotated[
+        list[WorktreeState],
+        merge_by_id,
+    ]
+    # 显式仓库写入 Task 创建、保留或安全关闭的 Worktree 记录。
 
     llm_calls: Annotated[
         list[LLMCallRecord],
@@ -2168,6 +2307,9 @@ class TeamOrchestrationGraphState(TypedDict):
     run: RunState
     # 当前顶层治理运行信息，用于生成稳定 Task ID。
 
+    workspace: WorkspaceState
+    # 原始只读目录、受控临时目录和可选治理项目 Git 根目录。
+
     llm: LLMConfigState
     # 固定 Subagent 共用的模型配置。
 
@@ -2192,6 +2334,9 @@ class TeamOrchestrationGraphState(TypedDict):
     dispatch_result: ContentSubagentOutput | VersionSubagentOutput | EvidenceSubagentOutput | None
     # 当前 Subagent 调用产生的 Pydantic 结构化结果。
 
+    active_worktree_id: str | None
+    # 当前单次分派准备的 Worktree ID；普通治理分派和状态同步时为 None。
+
     tasks: Annotated[
         list[TaskItem],
         merge_by_task_id,
@@ -2209,6 +2354,12 @@ class TeamOrchestrationGraphState(TypedDict):
         merge_by_message_id,
     ]
     # 当前编排调用读取或产生的 Team Protocol 消息。
+
+    worktrees: Annotated[
+        list[WorktreeState],
+        merge_by_id,
+    ]
+    # 当前治理运行已创建、保留或关闭的隔离 Worktree。
 
     llm_calls: Annotated[
         list[LLMCallRecord],
@@ -2275,6 +2426,9 @@ class VersionAnalysisGraphState(TypedDict):
     request: RequestState
     # 分组相似度和自动选择置信度等参数。
 
+    workspace: WorkspaceState
+    # Version Subagent 嵌套编排继承的只读工作空间和可选 Worktree 根目录。
+
     llm: LLMConfigState
     # Version Subagent 后续使用的统一模型配置。
 
@@ -2340,6 +2494,9 @@ class VersionAnalysisGraphState(TypedDict):
 
     team_messages: Annotated[list[TeamMessage], merge_by_message_id]
     # Version Subagent 后续产生的 assignment、result 或 error 消息。
+
+    worktrees: Annotated[list[WorktreeState], merge_by_id]
+    # 嵌套 Team Orchestration 返回的 Worktree 生命周期记录。
 
     llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
     # Version Subagent 后续产生的模型调用审计记录。

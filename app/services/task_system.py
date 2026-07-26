@@ -1,43 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Literal, TypedDict, cast
+from typing import Literal, cast
 
-from app.state.models import TaskItem, TodoItem
+from app.state.models import TaskDefinition, TaskItem, TodoDefinition, TodoItem
 
 """本模块实现固定治理 Task DAG、拓扑校验、角色分配和 Todo 纯投影。"""
-
-
-class TaskDefinition(TypedDict):
-    """描述固定 Task DAG 中一个不可变的任务模板。"""
-
-    task_type: str
-    # Task 的稳定类型名称。
-
-    title: str
-    # Task 面向用户和日志展示的中文标题。
-
-    dependency_types: tuple[str, ...]
-    # 当前 Task 依赖的其他 Task 类型。
-
-    input_refs: tuple[str, ...]
-    # Task 默认读取的顶层状态字段引用。
-
-
-class TodoDefinition(TypedDict):
-    """描述一个由若干 Task 状态共同推导的固定 Todo 模板。"""
-
-    key: str
-    # Todo ID 使用的稳定短名称。
-
-    title: str
-    # Todo 面向用户展示的中文标题。
-
-    task_types: tuple[str, ...]
-    # 决定 Todo 状态的 Task 类型。
-
-    order: int
-    # Todo 的固定展示顺序。
 
 
 # 固定 Task 类型到实际负责角色的映射；前三类 Task 可由固定 Subagent 执行。
@@ -60,36 +28,42 @@ TASK_DAG_TEMPLATE: tuple[TaskDefinition, ...] = (
         "title": "扫描文件并提取内容",
         "dependency_types": (),
         "input_refs": ("request", "workspace"),
+        "requires_repository_write": False,
     },
     {
         "task_type": "version_analysis",
         "title": "分析版本关系与分叉",
         "dependency_types": ("inventory",),
         "input_refs": ("files", "documents"),
+        "requires_repository_write": False,
     },
     {
         "task_type": "evidence",
         "title": "匹配 PDF 与客户发送证据",
         "dependency_types": ("version_analysis",),
         "input_refs": ("files", "documents", "version_groups"),
+        "requires_repository_write": False,
     },
     {
         "task_type": "recommendation",
         "title": "生成主版本推荐",
         "dependency_types": ("evidence",),
         "input_refs": ("version_chains", "pdf_exports", "deliveries"),
+        "requires_repository_write": False,
     },
     {
         "task_type": "human_review",
         "title": "完成人工审核",
         "dependency_types": ("recommendation",),
         "input_refs": ("decisions", "human_review"),
+        "requires_repository_write": False,
     },
     {
         "task_type": "report",
         "title": "生成治理报告",
         "dependency_types": ("human_review",),
         "input_refs": ("decisions", "errors", "human_review"),
+        "requires_repository_write": False,
     },
 )
 
@@ -353,9 +327,18 @@ def create_task_dag(
                 or attempt_count < 0
             ):
                 raise ValueError(f"Task {task_id} 的 attempt_count 必须是非负整数")
+            requires_repository_write = existing_task.get(
+                "requires_repository_write",
+                definition["requires_repository_write"],
+            )
+            if not isinstance(requires_repository_write, bool):
+                raise ValueError(
+                    f"Task {task_id} 的 requires_repository_write 必须是布尔值"
+                )
             normalized_task = dict(existing_task)
             normalized_task["execution_id"] = expected_execution_id
             normalized_task["attempt_count"] = attempt_count
+            normalized_task["requires_repository_write"] = requires_repository_write
             result.append(cast(TaskItem, normalized_task))
             continue
 
@@ -382,6 +365,7 @@ def create_task_dag(
                     Literal["coordinator", "content", "version", "evidence"],
                     TASK_ROLE_BY_TYPE[task_type],
                 ),
+                requires_repository_write=definition["requires_repository_write"],
                 input_refs=list(definition["input_refs"]),
                 output_refs=[],
                 error=None,

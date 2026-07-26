@@ -197,6 +197,7 @@ def create_node_error(
         "context",
         "database",
         "checkpoint",
+        "worktree",
         "timeout",
         "unknown",
     ],

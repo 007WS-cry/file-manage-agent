@@ -141,9 +141,12 @@ def test_graph_contains_task_sync_and_fixed_subagent_dispatch_nodes() -> None:
         "build_fallback_result_message",
         "merge_subagent_artifacts",
         "append_task_output_refs",
+        "prepare_task_workspace",
+        "prepare_task_worktree",
+        "prepare_readonly_workspace",
+        "close_task_worktree",
     }
     assert expected_nodes.issubset(node_names)
-    assert not any("worktree" in name.lower() for name in node_names)
 
 
 def test_subgraph_creates_valid_dag_assigns_roles_and_projects_todos() -> None:
@@ -351,6 +354,7 @@ def test_converters_do_not_leak_task_update_or_unrelated_top_errors() -> None:
         "todos",
         "team_messages",
         "llm_calls",
+        "worktrees",
         "errors",
     }
     assert "task_update" not in top_update
@@ -380,6 +384,7 @@ def test_top_level_wrapper_returns_only_public_orchestration_fields() -> None:
         "todos",
         "team_messages",
         "llm_calls",
+        "worktrees",
         "errors",
     }
     assert len(update["tasks"]) == 6

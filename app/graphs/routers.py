@@ -635,6 +635,70 @@ def route_subagent_payload_validation(
     return "fallback" if has_error else "assign"
 
 
+def needs_worktree_isolation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["worktree", "readonly"]:
+    """根据当前已验证 Task 的显式仓库写权限选择隔离或只读工作空间。
+
+    Args:
+        state: 已通过分派载荷校验并包含完整 Task DAG 的团队编排状态。
+
+    Returns:
+        Task 明确设置 requires_repository_write 时返回 ``worktree``，
+        普通治理 Task 返回 ``readonly``。
+    """
+    request = state.get("dispatch_request")
+    task_id = request.get("task_id") if isinstance(request, dict) else None
+    task = next(
+        (
+            item
+            for item in state.get("tasks", [])
+            if item.get("task_id") == task_id
+        ),
+        None,
+    )
+    return (
+        "worktree"
+        if task is not None and task.get("requires_repository_write") is True
+        else "readonly"
+    )
+
+
+def route_worktree_preparation_result(
+    state: TeamOrchestrationGraphState,
+) -> Literal["ready", "failed"]:
+    """根据 Worktree 创建节点结果选择继续分派或安全收口。
+
+    Args:
+        state: 已执行 prepare_task_worktree 的团队编排状态。
+
+    Returns:
+        当前 Worktree 已进入 in_use 时返回 ``ready``；创建失败时返回 ``failed``。
+    """
+    active_worktree_id = state.get("active_worktree_id")
+    if any(
+        error.get("node_name") == "prepare_task_worktree"
+        and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    ):
+        return "failed"
+    if not isinstance(active_worktree_id, str) or not active_worktree_id:
+        return "failed"
+    worktree = next(
+        (
+            item
+            for item in state.get("worktrees", [])
+            if item.get("id") == active_worktree_id
+        ),
+        None,
+    )
+    return (
+        "ready"
+        if worktree is not None and worktree.get("status") == "in_use"
+        else "failed"
+    )
+
+
 def select_subagent(
     state: TeamOrchestrationGraphState,
 ) -> Literal["content", "version", "evidence", "fallback"]:

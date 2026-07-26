@@ -9,7 +9,7 @@ from app.api.app import create_app
 from app.storage.database import create_application_engine
 from app.storage.orm_models import Base
 
-"""本文件集成测试 HTTP API 的后台立即提交、状态查询和响应字段隔离。"""
+"""本文件集成测试 HTTP API 的后台提交、Cron 计划管理、状态查询和响应字段隔离。"""
 
 
 def create_runtime_database(database_path: Path) -> None:
@@ -125,3 +125,46 @@ def test_api_rejects_unknown_or_invalid_submission_fields(tmp_path: Path) -> Non
 
     assert unknown.status_code == 422
     assert invalid.status_code == 422
+
+
+def test_api_creates_views_disables_and_enables_schedule(tmp_path: Path) -> None:
+    """计划 API 应完整持久化启停状态，且任何响应都不得泄漏治理请求模板。"""
+    database_path = tmp_path / "application.sqlite3"
+    create_runtime_database(database_path)
+    application = create_app(
+        database_path=database_path,
+        checkpoint_path=tmp_path / "checkpoint.sqlite3",
+    )
+    submission = {
+        "name": "工作日夜间治理",
+        "cron_expression": "0 2 * * 1-5",
+        "timezone": "Asia/Shanghai",
+        "enabled": True,
+        "payload": build_api_submission(tmp_path)["payload"],
+    }
+
+    with TestClient(application) as client:
+        created = client.post("/schedules", json=submission)
+        assert created.status_code == 201
+        schedule = created.json()
+        schedule_id = schedule["schedule_id"]
+        assert schedule["enabled"] is True
+        assert schedule["next_run_at"] is not None
+        assert "payload" not in schedule
+        assert "request_payload" not in schedule
+
+        listed = client.get("/schedules")
+        fetched = client.get(f"/schedules/{schedule_id}")
+        disabled = client.post(f"/schedules/{schedule_id}/disable")
+        enabled = client.post(f"/schedules/{schedule_id}/enable")
+
+    assert listed.status_code == 200
+    assert [item["schedule_id"] for item in listed.json()] == [schedule_id]
+    assert fetched.status_code == 200
+    assert fetched.json()["schedule_id"] == schedule_id
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    assert disabled.json()["next_run_at"] is None
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert enabled.json()["next_run_at"] is not None

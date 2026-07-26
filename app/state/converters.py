@@ -216,6 +216,7 @@ def file_governance_to_team_orchestration_state(
             task_id=context_task_id,
         ),
         run=dict(state["run"]),
+        workspace=dict(state["workspace"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
         skill_registry=copy_skill_registry(registry),
@@ -224,9 +225,11 @@ def file_governance_to_team_orchestration_state(
         task_update=dict(task_update) if task_update is not None else None,
         dispatch_request=(dict(dispatch_request) if dispatch_request is not None else None),
         dispatch_result=None,
+        active_worktree_id=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
         team_messages=[dict(message) for message in state.get("team_messages", [])],
+        worktrees=[dict(worktree) for worktree in state.get("worktrees", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=[
             dict(error)
@@ -258,6 +261,7 @@ def team_orchestration_state_to_file_governance_update(
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "team_messages": [dict(message) for message in state.get("team_messages", [])],
+        "worktrees": [dict(worktree) for worktree in state.get("worktrees", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }
@@ -337,6 +341,7 @@ def file_governance_to_version_analysis_state(
         ),
         run=dict(state["run"]),
         request=dict(state["request"]),
+        workspace=dict(state["workspace"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
         skill_registry=copy_skill_registry(
@@ -365,6 +370,7 @@ def file_governance_to_version_analysis_state(
             "review_note": state["human_review"].get("review_note"),
         },
         team_messages=[dict(message) for message in state.get("team_messages", [])],
+        worktrees=[dict(worktree) for worktree in state.get("worktrees", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=list(state.get("errors", [])),
     )
@@ -396,6 +402,7 @@ def version_analysis_state_to_file_governance_update(
         "branches": list(state.get("branches", [])),
         "version_chains": list(state.get("version_chains", [])),
         "team_messages": [dict(message) for message in state.get("team_messages", [])],
+        "worktrees": [dict(worktree) for worktree in state.get("worktrees", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": list(state.get("errors", [])),
     }
@@ -417,6 +424,19 @@ def version_analysis_to_team_orchestration_state(
     return TeamOrchestrationGraphState(
         error_context=copy_error_context(state["error_context"]),
         run=dict(state["run"]),
+        workspace=dict(
+            state.get(
+                "workspace",
+                {
+                    "input_root": "",
+                    "input_readonly": True,
+                    "artifact_root": "",
+                    "report_root": "",
+                    "temporary_root": "",
+                    "project_git_root": None,
+                },
+            )
+        ),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
         skill_registry=copy_skill_registry(state["skill_registry"]),
@@ -425,9 +445,11 @@ def version_analysis_to_team_orchestration_state(
         task_update=None,
         dispatch_request=dict(dispatch_request),
         dispatch_result=None,
+        active_worktree_id=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
         team_messages=[dict(message) for message in state.get("team_messages", [])],
+        worktrees=[dict(worktree) for worktree in state.get("worktrees", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=[
             dict(error)
@@ -459,6 +481,7 @@ def team_orchestration_state_to_version_analysis_update(
             output.model_copy(deep=True) if output is not None else None
         ),
         "team_messages": [dict(message) for message in state.get("team_messages", [])],
+        "worktrees": [dict(worktree) for worktree in state.get("worktrees", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }

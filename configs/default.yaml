@@ -177,7 +177,7 @@ application_database:
   # 默认关闭以兼容 0.5.0；Memory 或 Context Summary 启用时会自动接通同一数据库。
   enabled: false
 
-  # 七张应用表保存运行、Memory、摘要、审计、人工选择、错误恢复和节点执行事实。
+  # 十张应用表保存运行、Memory、恢复、后台任务、定时计划和 Worker 租约事实。
   backend: sqlite
 
   # 应用数据库与 LangGraph checkpoint 使用不同目录和不同 SQLite 文件。
@@ -193,7 +193,7 @@ application_database:
   timeout_seconds: 30.0
 
 runtime:
-  # API、Worker 和后续 Scheduler 共用已经执行 Alembic 迁移的应用数据库。
+  # API、Worker 和 Scheduler 共用已经执行 Alembic 迁移的应用数据库。
   application_database_path: .artifacts/database/file-governance-app.sqlite3
 
   # 后台 Worker 必须使用 SQLite checkpoint，禁止回退到进程内 MemorySaver。
@@ -219,6 +219,29 @@ runtime:
 
     # API 未显式指定时使用的后台任务最大总尝试次数。
     max_attempts: 3
+
+  scheduler:
+    # 独立 APScheduler 进程内部维护任务使用的 IANA 时区。
+    timezone: Asia/Shanghai
+
+    # API 新增或启停计划后，Scheduler 重新读取 scheduled_jobs 的间隔秒数。
+    reconcile_interval_seconds: 15.0
+
+    # Cron 每次触发创建的后台任务允许的 Worker 总尝试次数。
+    max_attempts: 3
+
+  worktree:
+    # 只有 Task 显式 requires_repository_write=true 时才允许创建 Worktree。
+    enabled: true
+
+    # Worktree 必须创建在 workspace.temporary_root 的 git-worktrees 子目录。
+    directory_name: git-worktrees
+
+    # 单次受控 Git 子进程允许的最长秒数。
+    git_timeout_seconds: 30.0
+
+    # 脏 Worktree 必须保留供人工检查，禁止强制删除或自动合并。
+    preserve_dirty: true
 
 recovery:
   # 0.7.0 已完成故障注入、恢复重放与兼容验收；关闭时保留兼容失败语义。
@@ -290,6 +313,11 @@ recovery:
       retryable: true
       max_retries: 1
       initial_backoff_seconds: 1.0
+
+    worktree:
+      retryable: false
+      max_retries: 0
+      requires_human: true
 
     timeout:
       retryable: true

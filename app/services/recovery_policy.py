@@ -29,6 +29,7 @@ RECOVERY_ERROR_CATEGORIES = (
     "context",
     "database",
     "checkpoint",
+    "worktree",
     "timeout",
     "unknown",
 )
@@ -110,6 +111,11 @@ DEFAULT_RECOVERY_CATEGORY_OVERRIDES = {
         "retryable": True,
         "max_retries": 1,
         "initial_backoff_seconds": 1.0,
+    },
+    "worktree": {
+        "retryable": False,
+        "max_retries": 0,
+        "requires_human": True,
     },
     "timeout": {
         "retryable": True,

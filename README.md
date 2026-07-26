@@ -1,8 +1,10 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.7.1` 是从 `0.7.0`
-向 `0.8.0` 演进的第一批，已经完成持久化后台队列、HTTP 提交与状态查询、
-独立 Background Worker、租约心跳和 Worker 崩溃后的任务重新领取。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.7.2` 是从 `0.7.0`
+向 `0.8.0` 演进的第二批，已经完成持久化 Cron 计划、独立 APScheduler、
+只入队触发，以及显式仓库写入 Task 的隔离 Git Worktree 生命周期。
+`0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
+和 Worker 崩溃后的任务重新领取继续保持不变。
 `0.7.0` 的故障注入、有限重试重放、节点幂等复用、恢复型人工确认、
 部分成功报告和旧状态兼容矩阵继续保持不变。
 `0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
@@ -26,6 +28,12 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - `POST /runs` 持久化后台提交，以及按 `run_id`、`job_id` 查询的脱敏 HTTP API；
 - 独立 Worker 事务领取、限时租约、短事务心跳、失败重新入队和尝试次数上限；
 - Worker 异常退出后的过期租约扫描、任务重新领取和最终失败收口；
+- 持久化 Cron 计划的创建、查看、启用和停用 HTTP API；
+- 独立 APScheduler 进程、数据库计划恢复及只入队的 Cron 回调；
+- 普通治理 Task 默认不创建 Worktree，显式仓库写入 Task 才进入隔离分支；
+- Git 子命令与参数形状白名单、禁用仓库 Hook、argv 参数、超时、工作目录和
+  绝对路径边界检查；
+- 干净 Worktree 安全移除、脏 Worktree 和隔离分支保留、关闭失败现场保留；
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
 - 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
@@ -95,8 +103,8 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 
 四个业务子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为第七个
-编排子图统一承接失败出口。当前版本提供 Python 接口、CLI、HTTP API 和独立
-Background Worker。`0.2.3` 已接入 Prompt 和 Hooks 顶层
+编排子图统一承接失败出口。当前版本提供 Python 接口、CLI、HTTP API、独立
+Background Worker 和 Scheduler。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
 `0.5.0` 由顶层图和 Version Analysis 子图构造最小 `dispatch_request`。模型只解释
@@ -120,7 +128,8 @@ direct-failure 出口统一改到 Recovery，并在不改变正常治理结论�
 任务统计明确分离；`0.7.0` 通过九组集成场景验证短暂故障重放、文件级跳过、
 五类既有回退、状态引用隔离、数据库幂等键和 0.6.0 状态升级，并统一发布版本；
 `0.7.1` 在业务图外新增 API、持久化队列和 Worker，顶层业务节点及 conditional
-router 连线保持不变。
+router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestration 中加入
+只针对显式仓库写入 Task 的 Worktree 条件分支。
 
 ## 安全边界
 
@@ -173,6 +182,12 @@ router 连线保持不变。
   coordinator，模型输出引用必须属于当前输入白名单。
 - Team Orchestration 拒绝动态成员、角色篡改、协调者 Task 分派和失败 Task 重放；
   分派请求、模型输出和 Team Message 三层引用必须保持一致。
+- 普通治理 Task 的 `requires_repository_write` 固定默认为 false，不得仅因存在
+  Git 仓库路径就创建 Worktree。
+- Git 只能通过统一子进程边界执行 `rev-parse`、`status` 和受限 `worktree`，
+  禁止 Shell 拼接、任意参数形状、仓库 Hook、路径越界、强制删除和自动合并。
+- Worktree 检测到未提交、已暂存或未跟踪改动时必须保留目录和隔离分支；原始
+  业务文件仍由独立只读目录提供。
 - Skill 注册表只接受固定字段、Task 类型和角色；Skill 路径必须位于
   `resources/skills` 受控目录并命名为 `SKILL.md`，同时受 UTF-8 和字节上限约束。
 - 顶层只持久化 Skill 元数据；SKILL.md 正文只在当前 Task 分派期间进入子图状态，
@@ -192,15 +207,15 @@ file-manage-agent/
 │   ├── skills/                # Skill 元数据加载、注册表状态操作和 Task 选择
 │   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
-│   ├── tools/                 # 只读文件扫描、解析和本地发送日志工具
+│   ├── tools/                 # 只读治理工具及受控 Git/Worktree 生命周期
 │   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
-│   ├── runtime/               # 后台任务队列、请求分派和独立 Worker
-│   ├── api/                   # HTTP Schema、运行提交和状态查询路由
+│   ├── runtime/               # 后台队列、请求分派、Worker 与 Scheduler
+│   ├── api/                   # 运行提交、状态查询和 Cron 计划路由
 │   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
 │   ├── graphs/                # 四业务图、Context Compact、团队图、恢复图与顶层图
-│   └── entrypoints/           # CLI、HTTP API 和 Background Worker 进程入口
+│   └── entrypoints/           # CLI、API、Worker 和 Scheduler 进程入口
 ├── alembic/                   # 应用数据库迁移环境和版本脚本
 ├── alembic.ini                # 默认应用数据库迁移配置
 ├── configs/default.yaml       # 默认治理、生命周期、存储和数据库参数
@@ -212,6 +227,7 @@ file-manage-agent/
 ├── examples/sample_delivery_log.json
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
 ├── examples/sample_background_submission.json # 0.7.1 HTTP 后台提交示例
+├── examples/sample_schedule.json # 0.7.2 持久化 Cron 计划示例
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
@@ -233,11 +249,13 @@ file-manage-agent/
 ├── docs/version-0.6.5-recovery-interrupt-report-cli.md # 0.7.0 第五批人工恢复、报告与 CLI
 ├── docs/release-0.7.0-error-recovery.md # 0.7.0 Error Recovery 正式发布说明
 ├── docs/version-0.7.1-background-runtime.md # 0.8.0 第一批后台运行说明
+├── docs/version-0.7.2-scheduler-worktree.md # 0.8.0 第二批调度与 Worktree 说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
 │   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
 ├── Dockerfile
+├── docker-compose.yml         # API、Worker、Scheduler 与迁移多进程编排
 ├── requirements.txt           # 基础可编辑安装入口，依赖版本统一由 pyproject.toml 管理
 └── pyproject.toml
 ```
@@ -1016,6 +1034,23 @@ direct-failure 分支统一改到恢复入口：
 详细状态转换和安全边界见
 [0.7.1 后台运行基础设施说明](docs/version-0.7.1-background-runtime.md)。
 
+## 0.7.2 APScheduler 与 Worktree Isolation
+
+第二批在 0.7.1 队列上增加计划管理和隔离式仓库写入边界：
+
+- `POST /schedules` 创建经过五段 Cron 和 IANA 时区校验的持久化计划；
+- `GET /schedules`、`GET /schedules/{schedule_id}` 查看规则和最近运行事实；
+- `POST /schedules/{schedule_id}/enable` 与 `/disable` 修改持久化启停状态；
+- 独立 Scheduler 定期从 `scheduled_jobs` 同步计划，Cron 回调只创建
+  `trigger_source=cron` 的后台任务，实际 LangGraph 仍由 Worker 领取；
+- Team Orchestration 通过 `needs_worktree_isolation` 条件路由区分显式写仓库
+  Task 和普通只读治理 Task；
+- Worktree 只在受控临时目录创建，Git 调用不经过 Shell，脏目录和分支不会被
+  强制删除，且本批不实现自动合并。
+
+详细进程边界、状态流转和安全关闭语义见
+[0.7.2 APScheduler 与 Worktree Isolation](docs/version-0.7.2-scheduler-worktree.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1034,8 +1069,8 @@ python -m pip install -r requirements.txt
 python -m pip install -e ".[dev]"
 ```
 
-安装后会提供 `file-governance`、`file-governance-api` 和
-`file-governance-worker` 三个命令，也可以分别通过对应的
+安装后会提供 `file-governance`、`file-governance-api`、
+`file-governance-worker` 和 `file-governance-scheduler` 四个命令，也可以通过对应的
 `python -m app.entrypoints.*` 模块启动。
 
 构建 wheel 时，受控 Prompt、Skill 注册表和四个 `SKILL.md` 会随分发包进入安装
@@ -1045,9 +1080,9 @@ python -m pip install -e ".[dev]"
 python -m pip wheel . --no-deps --no-build-isolation
 ```
 
-## HTTP API 与 Background Worker
+## HTTP API、Background Worker 与 Scheduler
 
-API 和 Worker 启动前先把应用数据库升级到当前十表结构：
+API、Worker 和 Scheduler 启动前先把应用数据库升级到当前十表结构：
 
 ```bash
 python -m alembic upgrade head
@@ -1068,6 +1103,15 @@ file-governance-api \
 ```bash
 file-governance-worker \
   --database-path .artifacts/database/file-governance-app.sqlite3
+```
+
+第三个终端启动独立 Scheduler：
+
+```bash
+file-governance-scheduler \
+  --database-path .artifacts/database/file-governance-app.sqlite3 \
+  --checkpoint-path .artifacts/checkpoints/file-governance-background.sqlite3 \
+  --timezone Asia/Shanghai
 ```
 
 提交脱敏示例请求。接口持久化完成后立即返回 HTTP 202，不等待 LangGraph 执行：
@@ -1097,8 +1141,50 @@ curl http://127.0.0.1:8000/runs/jobs/<job_id>
 ```
 
 Worker 手工演示或集成测试可以增加 `--once`，只执行一次过期租约恢复和任务领取
-后退出。API 与 Worker 必须共享同一个应用数据库和 checkpoint 挂载；输入目录仍
+后退出。Scheduler 的 `--once` 只同步一次数据库计划，不触发 LangGraph。
+API、Worker 和 Scheduler 必须共享同一个应用数据库和 checkpoint 挂载；输入目录仍
 必须只读，应用数据库与 checkpoint 仍必须是两个不同的 SQLite 文件。
+
+创建并管理 Cron 计划：
+
+```bash
+curl -X POST http://127.0.0.1:8000/schedules \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_schedule.json
+
+curl http://127.0.0.1:8000/schedules
+curl http://127.0.0.1:8000/schedules/<schedule_id>
+curl -X POST http://127.0.0.1:8000/schedules/<schedule_id>/disable
+curl -X POST http://127.0.0.1:8000/schedules/<schedule_id>/enable
+```
+
+API 只修改计划表，不在请求进程运行 Scheduler。独立 Scheduler 最迟在
+`reconcile_interval_seconds` 后看到计划变化；Cron 到点后只入队，必须由 Worker
+完成治理图。
+
+## Worktree Isolation
+
+普通六阶段治理 Task 默认都是 `requires_repository_write=false`，即使工作空间中
+存在 Git 仓库路径也不会创建 Worktree。只有受信任调用方显式把当前可分派 Task
+标记为 `requires_repository_write=true`，并同时提供以下字段，团队子图才进入
+隔离分支：
+
+```json
+{
+  "workspace": {
+    "input_root": "/data/input",
+    "input_readonly": true,
+    "artifact_root": "/data/artifacts/content",
+    "report_root": "/data/artifacts/reports",
+    "temporary_root": "/data/artifacts/worktrees",
+    "project_git_root": "/workspace/repository"
+  }
+}
+```
+
+Worktree 工具只创建隔离分支、检查状态并安全关闭，不实现自动合并。关闭时若存在
+任何改动，目录和分支会保留为 `completed` 供人工检查；只有干净目录才执行不带
+`--force` 的 `git worktree remove`。
 
 ## 准备请求
 
@@ -1493,16 +1579,16 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.7.1 -t file-manage-agent:0.7.1 .
+docker build --build-arg APP_VERSION=0.7.2 -t file-manage-agent:0.7.2 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.7.1 \
+  --build-arg APP_VERSION=0.7.2 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.7.1-mainstream .
+  -t file-manage-agent:0.7.2-mainstream .
 ```
 
 镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
@@ -1511,7 +1597,7 @@ docker build \
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.1 \
+  file-manage-agent:0.7.2 \
   python -m alembic upgrade head
 ```
 
@@ -1521,7 +1607,7 @@ docker run --rm \
 docker run --rm -p 8000:8000 \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.1
+  file-manage-agent:0.7.2
 ```
 
 使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
@@ -1530,10 +1616,33 @@ docker run --rm -p 8000:8000 \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.1 \
+  file-manage-agent:0.7.2 \
   file-governance-worker \
   --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
+
+使用同一个持久化卷启动 Scheduler：
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:0.7.2 \
+  file-governance-scheduler \
+  --database-path /data/artifacts/database/file-governance-app.sqlite3 \
+  --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
+```
+
+开发演示也可以一次启动迁移、API、Worker 和 Scheduler：
+
+```bash
+docker compose up --build
+```
+
+Compose 中 `/data/input` 始终只读，三个进程共享同一个 named volume 中的应用
+数据库和 checkpoint。镜像已安装 Git，但构建上下文不包含 `.git`；如需演示显式
+仓库写入 Task，必须另外把测试 Git 仓库以可写方式挂载到
+`/workspace/repository`，并在受信任请求中显式设置 `project_git_root`。
 
 实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
 请求中的 `delivery_log_path` 应指向 `/data/evidence/delivery_log.json`；不使用
@@ -1547,7 +1656,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.7.1 \
+  file-manage-agent:0.7.2 \
   file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1560,16 +1669,16 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.7.1 \
+  file-manage-agent:0.7.2 \
   file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
 
 ## 当前未实现
 
-- APScheduler 定时任务管理与 Cron 触发；
 - PostgreSQL 等生产级 Checkpointer；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
-- 邮件 MCP 证据和 Worktree；
+- 邮件 MCP 证据；
+- Worktree 自动合并、Pull Request 或复杂冲突处理；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。
