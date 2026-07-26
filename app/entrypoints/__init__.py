@@ -1,1 +1,1 @@
-"""本包提供文件治理 CLI、HTTP API、Background Worker 和独立 Scheduler 进程入口。"""
+"""本包提供治理 CLI、HTTP API、Worker、Scheduler 与模拟邮件 MCP 独立进程入口。"""

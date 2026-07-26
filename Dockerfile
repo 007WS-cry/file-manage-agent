@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.7.2
+ARG APP_VERSION=0.8.0
 ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持后台队列、Cron Scheduler、隔离 Worktree 与十表审计的文件版本治理 Agent"
+    org.opencontainers.image.description="支持邮件 MCP 证据、统一 JSON 日志与后台多服务编排的文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,7 +14,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     FILE_GOVERNANCE_DATABASE_PATH=/data/artifacts/database/file-governance-app.sqlite3 \
     FILE_GOVERNANCE_CHECKPOINT_PATH=/data/artifacts/checkpoints/file-governance-background.sqlite3 \
     FILE_GOVERNANCE_API_HOST=0.0.0.0 \
-    FILE_GOVERNANCE_API_PORT=8000
+    FILE_GOVERNANCE_API_PORT=8000 \
+    FILE_GOVERNANCE_LOG_LEVEL=INFO \
+    FILE_GOVERNANCE_EMAIL_MCP_ENABLED=false \
+    FILE_GOVERNANCE_EMAIL_MCP_URL=http://127.0.0.1:8001/mcp \
+    FILE_GOVERNANCE_MOCK_EMAIL_MCP_HOST=0.0.0.0 \
+    FILE_GOVERNANCE_MOCK_EMAIL_MCP_PORT=8001 \
+    FILE_GOVERNANCE_MOCK_EMAIL_MCP_DATA_PATH=/app/examples/mock_email_data.json
 
 WORKDIR /app
 
@@ -53,7 +59,7 @@ USER agent
 
 VOLUME ["/data/input", "/data/artifacts", "/data/evidence"]
 
-EXPOSE 8000
+EXPOSE 8000 8001
 
-# 默认启动 HTTP API；CLI、Worker 或 Scheduler 可通过 docker run 的命令参数整体覆盖。
+# 默认启动 HTTP API；Worker、Scheduler 或模拟邮件 MCP 可通过命令参数整体覆盖。
 CMD ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]

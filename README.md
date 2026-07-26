@@ -1,8 +1,10 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.7.2` 是从 `0.7.0`
-向 `0.8.0` 演进的第二批，已经完成持久化 Cron 计划、独立 APScheduler、
-只入队触发，以及显式仓库写入 Task 的隔离 Git Worktree 生命周期。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.0` 已完成第三批：
+模拟邮件 MCP、MCP 优先且本地日志自动降级的证据链、四进程统一 JSON 日志，
+以及 API、Worker、Scheduler、模拟邮件 MCP 的 Docker Compose 编排。
+`0.7.2` 的持久化 Cron 计划、独立 APScheduler、只入队触发和隔离 Git
+Worktree 生命周期继续保持不变。
 `0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
 和 Worker 崩溃后的任务重新领取继续保持不变。
 `0.7.0` 的故障注入、有限重试重放、节点幂等复用、恢复型人工确认、
@@ -34,6 +36,10 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - Git 子命令与参数形状白名单、禁用仓库 Hook、argv 参数、超时、工作目录和
   绝对路径边界检查；
 - 干净 Worktree 安全移除、脏 Worktree 和隔离分支保留、关闭失败现场保留；
+- 官方 MCP Python SDK 的 Streamable HTTP 只读邮件证据客户端和脱敏模拟服务；
+- 邮件 MCP 成功时生成 `email_mcp` DeliveryRecord，关闭或不可用时自动使用本地日志；
+- API、Worker、Scheduler 和模拟邮件 MCP 共用字段稳定的单行 JSON 日志；
+- Docker Compose 一次编排迁移、API、Worker、Scheduler 与模拟邮件 MCP；
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
 - 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
@@ -54,7 +60,7 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - `ErrorRecord` 重试、降级、人工恢复和生命周期字段的 0.6.0 兼容扩展；
 - `RecoveryState`、`RecoveryGraphState`、`NodeExecutionRecord` 和
   `DegradationRecord` 状态协议；
-- 覆盖十六类错误的确定性策略快照、有限重试、指数退避和安全降级纯服务；
+- 覆盖十八类错误的确定性策略快照、有限重试、指数退避和安全降级纯服务；
 - 旧 0.6.0 状态在 `initialize_run` 中补齐空恢复、节点执行和降级字段；
 - transient、parse、Subagent、Memory、Skill、Context、人工恢复和幂等重放的
   0.7.0 故障注入矩阵，以及不改变治理结论的 0.6.0 checkpoint 兼容测试；
@@ -104,7 +110,7 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 四个业务子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
 Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为第七个
 编排子图统一承接失败出口。当前版本提供 Python 接口、CLI、HTTP API、独立
-Background Worker 和 Scheduler。`0.2.3` 已接入 Prompt 和 Hooks 顶层
+Background Worker、Scheduler 和模拟邮件 MCP。`0.2.3` 已接入 Prompt 和 Hooks 顶层
 节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
 一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
 `0.5.0` 由顶层图和 Version Analysis 子图构造最小 `dispatch_request`。模型只解释
@@ -129,7 +135,8 @@ direct-failure 出口统一改到 Recovery，并在不改变正常治理结论�
 五类既有回退、状态引用隔离、数据库幂等键和 0.6.0 状态升级，并统一发布版本；
 `0.7.1` 在业务图外新增 API、持久化队列和 Worker，顶层业务节点及 conditional
 router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestration 中加入
-只针对显式仓库写入 Task 的 Worktree 条件分支。
+只针对显式仓库写入 Task 的 Worktree 条件分支；`0.8.0` 在 Evidence 子图新增
+邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排。
 
 ## 安全边界
 
@@ -188,6 +195,10 @@ router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestrati
   禁止 Shell 拼接、任意参数形状、仓库 Hook、路径越界、强制删除和自动合并。
 - Worktree 检测到未提交、已暂存或未跟踪改动时必须保留目录和隔离分支；原始
   业务文件仍由独立只读目录提供。
+- 邮件 MCP 客户端只允许调用固定 `search_sent_email_evidence` Tool，不读取正文、
+  真实收件地址、附件内容或凭据，也不具备发送、修改和删除能力。
+- MCP 证据引用必须使用 `email-mcp://`，失败日志只保留异常类型和脱敏说明；
+  本地日志降级仍遵守既有只读路径和协议校验。
 - Skill 注册表只接受固定字段、Task 类型和角色；Skill 路径必须位于
   `resources/skills` 受控目录并命名为 `SKILL.md`，同时受 UTF-8 和字节上限约束。
 - 顶层只持久化 Skill 元数据；SKILL.md 正文只在当前 Task 分派期间进入子图状态，
@@ -207,15 +218,17 @@ file-manage-agent/
 │   ├── skills/                # Skill 元数据加载、注册表状态操作和 Task 选择
 │   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
 │   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
-│   ├── tools/                 # 只读治理工具及受控 Git/Worktree 生命周期
+│   ├── tools/                 # 只读治理、邮件 MCP 客户端及 Git/Worktree 生命周期
 │   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
 │   ├── runtime/               # 后台队列、请求分派、Worker 与 Scheduler
 │   ├── api/                   # 运行提交、状态查询和 Cron 计划路由
+│   ├── mcp_servers/           # 只读脱敏模拟邮件 MCP 服务
+│   ├── observability/         # 四服务统一 JSON 日志与关联上下文
 │   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
 │   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
 │   ├── graphs/                # 四业务图、Context Compact、团队图、恢复图与顶层图
-│   └── entrypoints/           # CLI、API、Worker 和 Scheduler 进程入口
+│   └── entrypoints/           # CLI、API、Worker、Scheduler 和模拟 MCP 入口
 ├── alembic/                   # 应用数据库迁移环境和版本脚本
 ├── alembic.ini                # 默认应用数据库迁移配置
 ├── configs/default.yaml       # 默认治理、生命周期、存储和数据库参数
@@ -250,12 +263,13 @@ file-manage-agent/
 ├── docs/release-0.7.0-error-recovery.md # 0.7.0 Error Recovery 正式发布说明
 ├── docs/version-0.7.1-background-runtime.md # 0.8.0 第一批后台运行说明
 ├── docs/version-0.7.2-scheduler-worktree.md # 0.8.0 第二批调度与 Worktree 说明
+├── docs/release-0.8.0-background-runtime.md # 0.8.0 第三批发布与多服务运行说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
 │   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
 ├── Dockerfile
-├── docker-compose.yml         # API、Worker、Scheduler 与迁移多进程编排
+├── docker-compose.yml         # 迁移、API、Worker、Scheduler 与模拟 MCP 编排
 ├── requirements.txt           # 基础可编辑安装入口，依赖版本统一由 pyproject.toml 管理
 └── pyproject.toml
 ```
@@ -1051,6 +1065,25 @@ direct-failure 分支统一改到恢复入口：
 详细进程边界、状态流转和安全关闭语义见
 [0.7.2 APScheduler 与 Worktree Isolation](docs/version-0.7.2-scheduler-worktree.md)。
 
+## 0.8.0 模拟邮件 MCP、结构化日志与多服务编排
+
+第三批把外部邮件事实纳入既有确定性证据链，并完成后台运行时发布收口：
+
+- Evidence 子图先调用 `load_email_mcp_evidence`，再由
+  `route_email_evidence_source` 条件路由选择邮件 MCP 匹配或本地日志降级；
+- 客户端只发现和调用固定只读 Tool，服务端只返回脱敏附件名称、摘要、时间、
+  客户标签、确认标记和稳定引用；
+- MCP 关闭或不可用时自动读取 `delivery_log_path`，并登记 `mcp` 恢复类别和
+  `partial_result` 降级，不丢失已经获得的 PDF 或本地发送证据；
+- `email_mcp` DeliveryRecord 与本地记录使用相同确定性匹配和推荐加权规则，
+  最终报告明确展示证据来源；
+- API、Worker、Scheduler 和模拟邮件 MCP 统一输出 UTC 单行 JSON 日志；
+- Compose 启动迁移及四个长期服务，API 与 Worker 通过内部
+  `http://mock-email-mcp:8001/mcp` 访问模拟证据服务。
+
+完整协议、安全边界、配置和验收矩阵见
+[0.8.0 后台运行时发布说明](docs/release-0.8.0-background-runtime.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1070,19 +1103,20 @@ python -m pip install -e ".[dev]"
 ```
 
 安装后会提供 `file-governance`、`file-governance-api`、
-`file-governance-worker` 和 `file-governance-scheduler` 四个命令，也可以通过对应的
+`file-governance-worker`、`file-governance-scheduler` 和
+`file-governance-mock-email-mcp` 五个命令，也可以通过对应的
 `python -m app.entrypoints.*` 模块启动。
 
-构建 wheel 时，受控 Prompt、Skill 注册表和四个 `SKILL.md` 会随分发包进入安装
-数据目录：
+构建 wheel 时，公开模拟邮件数据、受控 Prompt、Skill 注册表和四个 `SKILL.md`
+会随分发包进入安装数据目录：
 
 ```bash
 python -m pip wheel . --no-deps --no-build-isolation
 ```
 
-## HTTP API、Background Worker 与 Scheduler
+## HTTP API、Background Worker、Scheduler 与模拟邮件 MCP
 
-API、Worker 和 Scheduler 启动前先把应用数据库升级到当前十表结构：
+API、Worker 和 Scheduler 启动前先把应用数据库升级到当前十表结构及最新恢复约束：
 
 ```bash
 python -m alembic upgrade head
@@ -1113,6 +1147,20 @@ file-governance-scheduler \
   --checkpoint-path .artifacts/checkpoints/file-governance-background.sqlite3 \
   --timezone Asia/Shanghai
 ```
+
+第四个终端启动只读模拟邮件 MCP：
+
+```bash
+file-governance-mock-email-mcp \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --data-path examples/mock_email_data.json
+```
+
+在 API、Worker 或前台 CLI 的环境中设置
+`FILE_GOVERNANCE_EMAIL_MCP_ENABLED=true` 和
+`FILE_GOVERNANCE_EMAIL_MCP_URL=http://127.0.0.1:8001/mcp` 即可优先查询
+模拟服务；未设置时默认关闭并使用本地发送日志。
 
 提交脱敏示例请求。接口持久化完成后立即返回 HTTP 202，不等待 LangGraph 执行：
 
@@ -1314,7 +1362,12 @@ Docker 命令完成。
 mkdir -p data/input
 ```
 
-## 本地发送记录协议
+## 邮件 MCP 与本地发送记录协议
+
+`examples/mock_email_data.json` 是模拟邮件 MCP 的公开脱敏数据。服务通过
+Streamable HTTP `/mcp` 暴露固定 `search_sent_email_evidence` Tool；客户端只提交
+当前治理文件的基础文件名和结果上限。每条 MCP 记录采用与本地日志相同的字段，
+但 `evidence_ref` 必须使用 `email-mcp://` 命名空间。
 
 本地发送记录使用 `schema_version: "1.0"` 和 `deliveries` 数组。完整脱敏示例见
 `examples/sample_delivery_log.json`。每条记录包含：
@@ -1329,8 +1382,9 @@ mkdir -p data/input
 - `evidence_ref`：指向原始记录的稳定引用，不应包含正文或凭据。
 
 真实发送日志默认被 `.gitignore` 和 `.dockerignore` 排除，只允许通过用户明确
-提供的路径或只读挂载进入运行环境。当前 Evidence 子图会消费该协议，
-Recommendation 使用可靠匹配结果加权，最终治理报告展示脱敏记录和证据引用。
+提供的路径或只读挂载进入运行环境。Evidence 子图优先消费可用 MCP 记录；MCP
+关闭、连接失败、超时、缺少固定 Tool 或返回协议非法时自动消费该本地协议。
+Recommendation 使用可靠匹配结果加权，最终治理报告展示来源、脱敏记录和证据引用。
 
 ## CLI 启动治理
 
@@ -1579,16 +1633,16 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.7.2 -t file-manage-agent:0.7.2 .
+docker build --build-arg APP_VERSION=0.8.0 -t file-manage-agent:0.8.0 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.7.2 \
+  --build-arg APP_VERSION=0.8.0 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.7.2-mainstream .
+  -t file-manage-agent:0.8.0-mainstream .
 ```
 
 镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
@@ -1597,7 +1651,7 @@ docker build \
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.2 \
+  file-manage-agent:0.8.0 \
   python -m alembic upgrade head
 ```
 
@@ -1607,7 +1661,7 @@ docker run --rm \
 docker run --rm -p 8000:8000 \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.2
+  file-manage-agent:0.8.0
 ```
 
 使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
@@ -1616,7 +1670,7 @@ docker run --rm -p 8000:8000 \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.2 \
+  file-manage-agent:0.8.0 \
   file-governance-worker \
   --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
@@ -1627,20 +1681,21 @@ docker run --rm \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.7.2 \
+  file-manage-agent:0.8.0 \
   file-governance-scheduler \
   --database-path /data/artifacts/database/file-governance-app.sqlite3 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
 ```
 
-开发演示也可以一次启动迁移、API、Worker 和 Scheduler：
+开发演示可以一次启动迁移、API、Worker、Scheduler 和模拟邮件 MCP：
 
 ```bash
 docker compose up --build
 ```
 
-Compose 中 `/data/input` 始终只读，三个进程共享同一个 named volume 中的应用
-数据库和 checkpoint。镜像已安装 Git，但构建上下文不包含 `.git`；如需演示显式
+Compose 中 `/data/input` 始终只读，API、Worker 和 Scheduler 共享同一个 named
+volume 中的应用数据库和 checkpoint，模拟 MCP 只读取镜像内公开示例数据。四个
+长期进程都把日志写为单行 JSON。镜像已安装 Git，但构建上下文不包含 `.git`；如需演示显式
 仓库写入 Task，必须另外把测试 Git 仓库以可写方式挂载到
 `/workspace/repository`，并在受信任请求中显式设置 `project_git_root`。
 
@@ -1656,7 +1711,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.7.2 \
+  file-manage-agent:0.8.0 \
   file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1669,7 +1724,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.7.2 \
+  file-manage-agent:0.8.0 \
   file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
@@ -1679,6 +1734,5 @@ docker run --rm \
 - PostgreSQL 等生产级 Checkpointer；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
-- 邮件 MCP 证据；
 - Worktree 自动合并、Pull Request 或复杂冲突处理；
 - OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。

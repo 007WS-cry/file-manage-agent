@@ -134,9 +134,7 @@ def create_error_context(
             )
         else:
             selected_task_id = selected_task_id or f"{run_id}:{normalized_task_type}"
-            selected_execution_id = (
-                task_execution_id or f"{selected_task_id}:execution"
-            )
+            selected_execution_id = task_execution_id or f"{selected_task_id}:execution"
     if task_execution_id is not None:
         selected_execution_id = task_execution_id
     recovery = state.get("recovery")
@@ -198,6 +196,7 @@ def create_node_error(
         "database",
         "checkpoint",
         "worktree",
+        "mcp",
         "timeout",
         "unknown",
     ],
@@ -239,12 +238,9 @@ def create_node_error(
         task_id=task_id,
     )
     policy_enabled = bool(context["policy"]["enabled"])
-    resolved_node_execution_id = (
-        node_execution_id
-        or create_node_execution_id(
-            context,
-            node_name,
-        )
+    resolved_node_execution_id = node_execution_id or create_node_execution_id(
+        context,
+        node_name,
     )
     previous_error = next(
         (
@@ -310,10 +306,7 @@ def is_error_unresolved(error: Mapping[str, Any]) -> bool:
     Returns:
         错误为致命且尚未 recovered 或 fallback_applied 时返回 True。
     """
-    return bool(
-        error.get("fatal") is True
-        and error.get("status") not in RESOLVED_ERROR_STATUSES
-    )
+    return bool(error.get("fatal") is True and error.get("status") not in RESOLVED_ERROR_STATUSES)
 
 
 def has_unresolved_errors(errors: list[ErrorRecord] | tuple[ErrorRecord, ...]) -> bool:

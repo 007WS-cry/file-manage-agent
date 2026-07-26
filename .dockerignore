@@ -61,6 +61,7 @@ docker_request*.json
 delivery_log.json
 delivery_log*.json
 !examples/sample_delivery_log.json
+!examples/mock_email_data.json
 
 # SQLite 应用数据库、checkpoint 及其事务附属文件
 *.sqlite
@@ -174,6 +175,8 @@ worker_output*.json
 schedule*.json
 cron*.json
 worktree*.json
+email_mcp*.json
+structured_log*.json
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

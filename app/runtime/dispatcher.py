@@ -231,6 +231,7 @@ def build_runtime_initial_state(
         prompt_config=_copy_optional_mapping(envelope, "prompt"),
         hook_config=_copy_optional_mapping(envelope, "hooks"),
         llm_config=_copy_optional_mapping(envelope, "llm"),
+        email_mcp_config=_copy_optional_mapping(envelope, "email_mcp"),
         skill_registry_path=envelope.get("skill_registry_path"),
         memory_config=_copy_optional_mapping(envelope, "memory"),
         context_compact_config=_copy_optional_mapping(envelope, "context_compact"),
@@ -239,9 +240,7 @@ def build_runtime_initial_state(
             "application_database",
         ),
         recovery_config=_copy_optional_mapping(envelope, "recovery"),
-        checkpoint_path=(
-            str(checkpoint_path) if checkpoint.get("backend") == "sqlite" else None
-        ),
+        checkpoint_path=(str(checkpoint_path) if checkpoint.get("backend") == "sqlite" else None),
         thread_id=thread_id,
     )
     state["run"].update(

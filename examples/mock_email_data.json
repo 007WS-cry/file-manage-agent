@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "records": [
+    {
+      "id": "mock-email-evidence-001",
+      "attachment_name": "合同报价_v3.docx",
+      "attachment_sha256": null,
+      "normalized_digest": null,
+      "sent_at": "2026-07-18T09:30:00+08:00",
+      "recipient_label": "示例客户-A",
+      "customer_confirmed": true,
+      "evidence_ref": "email-mcp://mock/thread-001/attachment-001"
+    },
+    {
+      "id": "mock-email-evidence-002",
+      "attachment_name": "合同报价_v2.pdf",
+      "attachment_sha256": null,
+      "normalized_digest": null,
+      "sent_at": "2026-07-17T16:15:00+08:00",
+      "recipient_label": "示例客户-A",
+      "customer_confirmed": false,
+      "evidence_ref": "email-mcp://mock/thread-000/attachment-002"
+    }
+  ]
+}

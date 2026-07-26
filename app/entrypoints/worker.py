@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import socket
 from collections.abc import Sequence
 from pathlib import Path
 
+from app.observability.context import bind_log_context
+from app.observability.logging import (
+    configure_structured_logging,
+    log_runtime_event,
+)
 from app.runtime.job_queue import JobQueue
 from app.runtime.worker import BackgroundWorker
 from app.storage.database import DEFAULT_APPLICATION_DATABASE_PATH
@@ -28,6 +32,9 @@ WORKER_HEARTBEAT_INTERVAL_ENV = "FILE_GOVERNANCE_WORKER_HEARTBEAT_INTERVAL_SECON
 
 # Worker 失败重新入队等待时长使用的环境变量名称。
 WORKER_RETRY_DELAY_ENV = "FILE_GOVERNANCE_WORKER_RETRY_DELAY_SECONDS"
+
+# 四类运行时服务共享的 JSON 日志级别环境变量名称。
+LOG_LEVEL_ENV = "FILE_GOVERNANCE_LOG_LEVEL"
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -81,6 +88,12 @@ def build_argument_parser() -> argparse.ArgumentParser:
         help="执行异常后重新允许领取任务的等待秒数。",
     )
     parser.add_argument(
+        "--log-level",
+        choices=("critical", "error", "warning", "info", "debug"),
+        default=os.environ.get(LOG_LEVEL_ENV, "INFO").lower(),
+        help="Worker 与运行时依赖统一使用的 JSON 日志级别。",
+    )
+    parser.add_argument(
         "--once",
         action="store_true",
         help="只尝试领取一个任务后退出，适合集成测试和手工演示。",
@@ -107,6 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         Worker 正常退出时返回零。
     """
     arguments = build_argument_parser().parse_args(argv)
+    logger = configure_structured_logging("worker", level=arguments.log_level)
     queue = JobQueue(arguments.database_path)
     worker = BackgroundWorker(
         queue,
@@ -116,26 +130,26 @@ def main(argv: Sequence[str] | None = None) -> int:
         heartbeat_interval_seconds=arguments.heartbeat_interval,
         retry_delay_seconds=arguments.retry_delay,
     )
-    try:
-        if arguments.once:
-            processed = worker.run_once()
-            print(
-                json.dumps(
-                    {
-                        "worker_id": worker.worker_id,
-                        "processed": processed,
-                    },
-                    ensure_ascii=False,
+    with bind_log_context(worker_id=worker.worker_id):
+        log_runtime_event(logger, "service_starting", "Background Worker 正在启动。")
+        try:
+            if arguments.once:
+                processed = worker.run_once()
+                log_runtime_event(
+                    logger,
+                    "worker_once_completed",
+                    "Background Worker 已完成单次领取。",
+                    fields={"processed": processed},
                 )
-            )
+                return 0
+            worker.run_forever()
             return 0
-        worker.run_forever()
-        return 0
-    except KeyboardInterrupt:
-        worker.stop()
-        return 0
-    finally:
-        queue.close()
+        except KeyboardInterrupt:
+            worker.stop()
+            return 0
+        finally:
+            queue.close()
+            log_runtime_event(logger, "service_stopped", "Background Worker 已安全停止。")
 
 
 if __name__ == "__main__":
