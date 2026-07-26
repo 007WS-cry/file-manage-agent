@@ -108,6 +108,26 @@ evidence:
   # 近似并列的 PDF 来源候选必须至少达到该分差才允许自动匹配。
   minimum_pdf_match_margin: 0.05
 
+email_mcp:
+  # 默认关闭远程邮件证据；Compose 会通过环境变量显式启用同网络模拟服务。
+  enabled: false
+
+  # 官方 MCP Python SDK 使用的 Streamable HTTP 端点，不允许凭据、查询或片段。
+  server_url: http://127.0.0.1:8001/mcp
+
+  # 初始化、工具发现和只读证据查询共用的有限超时秒数。
+  timeout_seconds: 5.0
+
+  # 单次 MCP 调用允许返回的最大脱敏附件证据数量。
+  max_results: 200
+
+observability:
+  # API、Worker、Scheduler 和模拟邮件 MCP 统一输出单行 JSON。
+  format: json
+
+  # 入口可通过 FILE_GOVERNANCE_LOG_LEVEL 或 --log-level 覆盖。
+  level: INFO
+
 parsing:
   # 单文件读取上限，单位为字节，默认 100 MiB。
   max_file_size_bytes: 104857600
@@ -318,6 +338,12 @@ recovery:
       retryable: false
       max_retries: 0
       requires_human: true
+
+    mcp:
+      retryable: false
+      max_retries: 0
+      fallback: partial_result
+      requires_human: false
 
     timeout:
       retryable: true

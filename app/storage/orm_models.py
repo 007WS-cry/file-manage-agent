@@ -862,7 +862,8 @@ class ErrorRecoveryRecordModel(Base):
         CheckConstraint(
             "category IN ('filesystem', 'parse', 'comparison', 'evidence', "
             "'llm', 'validation', 'protocol', 'prompt', 'hook', 'memory', "
-            "'skill', 'context', 'database', 'checkpoint', 'timeout', 'unknown')",
+            "'skill', 'context', 'database', 'checkpoint', 'worktree', 'mcp', "
+            "'timeout', 'unknown')",
             name="category_allowed",
         ),
         CheckConstraint(

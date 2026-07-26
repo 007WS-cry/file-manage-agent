@@ -14,11 +14,7 @@ from app.utils.error_context import is_error_unresolved
 
 def generate_failure_report(state: FileGovernanceState) -> dict:
     """根据致命错误生成失败报告，并保留已获得的部分事实。"""
-    errors = [
-        error
-        for error in state.get("errors", [])
-        if is_error_unresolved(error)
-    ]
+    errors = [error for error in state.get("errors", []) if is_error_unresolved(error)]
     lines = [
         "# 文件版本治理失败报告",
         "",
@@ -28,10 +24,7 @@ def generate_failure_report(state: FileGovernanceState) -> dict:
         "",
     ]
     if errors:
-        lines.extend(
-            f"- `{error['node_name']}`：{error['message']}"
-            for error in errors
-        )
+        lines.extend(f"- `{error['node_name']}`：{error['message']}" for error in errors)
     else:
         lines.append("- 未记录到结构化错误，请检查运行日志。")
     lines.extend(build_recovery_report_lines(state))
@@ -44,11 +37,7 @@ def generate_failure_report(state: FileGovernanceState) -> dict:
 def generate_no_data_report(state: FileGovernanceState) -> dict:
     """在没有可分析文档时生成文件统计和解析警告报告。"""
     files = state.get("files", [])
-    errors = [
-        error
-        for error in state.get("errors", [])
-        if is_error_unresolved(error)
-    ]
+    errors = [error for error in state.get("errors", []) if is_error_unresolved(error)]
     status_counts: dict[str, int] = {}
     for file_record in files:
         status = file_record["parse_status"]
@@ -89,12 +78,8 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
         包含 Markdown 正文、摘要、警告和持久化路径的报告状态更新。
     """
     file_by_id = {item["id"]: item for item in state.get("files", [])}
-    chain_by_group = {
-        item["group_id"]: item for item in state.get("version_chains", [])
-    }
-    decision_by_group = {
-        item["group_id"]: item for item in state.get("decisions", [])
-    }
+    chain_by_group = {item["group_id"]: item for item in state.get("version_chains", [])}
+    decision_by_group = {item["group_id"]: item for item in state.get("decisions", [])}
     branches_by_group: dict[str, list] = {}
     for branch in state.get("branches", []):
         branches_by_group.setdefault(branch["group_id"], []).append(branch)
@@ -160,9 +145,7 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
                 f"| {escape_markdown_cell(file_by_id[file_id]['file_name'])} | {score:.2f} |"
             )
         recommended_id = decision["recommended_file_id"]
-        recommended_name = (
-            file_by_id[recommended_id]["file_name"] if recommended_id else "未选择"
-        )
+        recommended_name = file_by_id[recommended_id]["file_name"] if recommended_id else "未选择"
         lines.extend(
             [
                 "",
@@ -212,8 +195,8 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
         if group_deliveries:
             lines.extend(
                 [
-                    "| 文件 | 收件人 | 发送时间 | 客户确认 | 匹配方式 | 置信度 | 证据引用 |",
-                    "|---|---|---|---|---|---:|---|",
+                    "| 文件 | 来源 | 收件人 | 发送时间 | 客户确认 | 匹配方式 | 置信度 | 证据引用 |",
+                    "|---|---|---|---|---|---|---:|---|",
                 ]
             )
             for delivery in group_deliveries:
@@ -226,6 +209,7 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
                 lines.append(
                     "| "
                     f"{escape_markdown_cell(delivered_name)} | "
+                    f"{escape_markdown_cell(delivery['evidence_source'])} | "
                     f"{escape_markdown_cell(delivery['recipient_label'])} | "
                     f"{escape_markdown_cell(delivery['sent_at'] or '未知')} | "
                     f"{'是' if delivery['customer_confirmed'] else '否'} | "
@@ -244,24 +228,21 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
                 "",
                 "以下记录未可靠关联到具体文件版本，不参与自动推荐加权。",
                 "",
-                "| 收件人 | 发送时间 | 客户确认 | 证据引用 |",
-                "|---|---|---|---|",
+                "| 来源 | 收件人 | 发送时间 | 客户确认 | 证据引用 |",
+                "|---|---|---|---|---|",
             ]
         )
         for delivery in unmatched_deliveries:
             lines.append(
                 "| "
+                f"{escape_markdown_cell(delivery['evidence_source'])} | "
                 f"{escape_markdown_cell(delivery['recipient_label'])} | "
                 f"{escape_markdown_cell(delivery['sent_at'] or '未知')} | "
                 f"{'是' if delivery['customer_confirmed'] else '否'} | "
                 f"{escape_markdown_cell(delivery['evidence_ref'])} |"
             )
 
-    errors = [
-        error
-        for error in state.get("errors", [])
-        if is_error_unresolved(error)
-    ]
+    errors = [error for error in state.get("errors", []) if is_error_unresolved(error)]
     if errors:
         lines.extend(["", "## 运行警告", ""])
         lines.extend(f"- `{error['node_name']}`：{error['message']}" for error in errors)

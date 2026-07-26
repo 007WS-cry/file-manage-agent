@@ -218,6 +218,38 @@ class RequestState(TypedDict):
     # 是否允许 LLM 为内容差异生成自然语言摘要。
 
 
+class EmailMCPConfigState(TypedDict):
+    """邮件 MCP 证据源使用的受控网络端点和读取限制。"""
+
+    enabled: bool
+    # 是否优先从邮件 MCP 查询外部发送证据；关闭时直接使用本地发送日志。
+
+    server_url: str
+    # 只允许 HTTP 或 HTTPS 的 Streamable HTTP MCP 端点。
+
+    timeout_seconds: float
+    # 初始化会话、列出工具和调用只读证据工具共用的请求超时秒数。
+
+    max_results: int
+    # 单次 MCP 查询允许接收的最大脱敏邮件附件证据数量。
+
+
+class EmailMCPFetchState(TypedDict):
+    """Evidence 子图最近一次邮件 MCP 查询及本地降级状态。"""
+
+    status: Literal["disabled", "pending", "available", "fallback"]
+    # 邮件 MCP 当前关闭、等待、可用或已切换本地日志的状态。
+
+    record_count: int
+    # 最近一次成功 MCP 查询返回并通过协议校验的记录数量。
+
+    fallback_used: bool
+    # 当前 Evidence 调用是否因为关闭或不可用而使用本地发送日志。
+
+    error_summary: str | None
+    # MCP 不可用时保存的脱敏错误类型摘要；不包含 URL、响应正文或堆栈。
+
+
 class WorkspaceState(TypedDict):
     """原始文件和运行产物所在的工作空间。"""
 
@@ -637,6 +669,7 @@ class ErrorRecord(TypedDict):
         "database",
         "checkpoint",
         "worktree",
+        "mcp",
         "timeout",
         "unknown",
     ]
@@ -1021,6 +1054,34 @@ class DeliveryLogEntry(TypedDict):
     # 指向原始日志记录的稳定引用。
 
 
+class EmailMCPRecordState(TypedDict):
+    """邮件 MCP 返回、尚未匹配到治理文件版本的脱敏附件证据。"""
+
+    id: str
+    # MCP 证据记录唯一 ID，不使用邮件正文或真实收件地址生成。
+
+    attachment_name: str
+    # 已发送附件的基础文件名，不包含客户端本地目录。
+
+    attachment_sha256: str | None
+    # 可选附件 SHA-256；模拟服务没有保存时为 None。
+
+    normalized_digest: str | None
+    # 可选标准化内容摘要，用于在哈希缺失时确定性匹配。
+
+    sent_at: str | None
+    # 附件发送时间；MCP 记录未提供时为 None。
+
+    recipient_label: str
+    # 服务端已经脱敏的客户或收件人标签。
+
+    customer_confirmed: bool
+    # 邮件线程中是否存在客户确认、批准或接受的结构化标记。
+
+    evidence_ref: str
+    # 不包含正文的稳定 MCP 证据引用。
+
+
 class PdfExportRecord(TypedDict):
     """PDF 与其最可能可编辑来源版本的匹配结果。"""
 
@@ -1047,7 +1108,7 @@ class PdfExportRecord(TypedDict):
 
 
 class DeliveryRecord(TypedDict):
-    """本地发送记录与具体文件版本的匹配结果。"""
+    """邮件 MCP、本地日志或人工发送证据与具体文件版本的匹配结果。"""
 
     id: str
     # 发送证据唯一 ID。
@@ -1059,7 +1120,7 @@ class DeliveryRecord(TypedDict):
     # 匹配到的文件版本 ID；未匹配时为 None。
 
     evidence_source: Literal["local_log", "email_mcp", "manual"]
-    # 证据来源；本版只生成 local_log 类型。
+    # 证据来源；0.8.0 自动生成 local_log 或 email_mcp，manual 供受控扩展使用。
 
     sent_at: str | None
     # 文件发送时间；未知时为 None。
@@ -2189,6 +2250,9 @@ class FileGovernanceState(TypedDict):
     workspace: WorkspaceState
     # 原始文件、临时产物和报告目录。
 
+    email_mcp: EmailMCPConfigState
+    # 邮件 MCP 外部证据源的启用状态、端点和有限读取参数。
+
     prompt: PromptState
     # 本次运行加载或关闭的 System Prompt 状态。
 
@@ -2506,7 +2570,7 @@ class VersionAnalysisGraphState(TypedDict):
 
 
 class EvidenceGraphState(TypedDict):
-    """PDF 来源与本地发送记录匹配子图使用的状态。"""
+    """PDF 来源、邮件 MCP 与本地发送记录匹配子图使用的状态。"""
 
     error_context: ErrorContextState
     # Evidence 节点创建统一恢复错误所需的 Task 和策略上下文。
@@ -2516,6 +2580,12 @@ class EvidenceGraphState(TypedDict):
 
     request: RequestState
     # PDF 匹配阈值和本地发送日志路径。
+
+    email_mcp: EmailMCPConfigState
+    # 本次 Evidence 调用使用的邮件 MCP 端点和读取限制。
+
+    email_mcp_fetch: EmailMCPFetchState
+    # MCP 查询是否成功，以及是否已自动切换到本地日志。
 
     files: Annotated[list[FileRecord], merge_by_id]
     # Inventory 阶段发现的全部文件。
@@ -2538,11 +2608,14 @@ class EvidenceGraphState(TypedDict):
     delivery_log_entries: list[DeliveryLogEntry]
     # 从本地发送日志加载的原始证据记录。
 
+    email_mcp_entries: list[EmailMCPRecordState]
+    # 从邮件 MCP 读取且尚未匹配到文件版本的脱敏附件证据。
+
     pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
     # PDF 与可编辑源版本的匹配结果。
 
     deliveries: Annotated[list[DeliveryRecord], merge_by_id]
-    # 本地发送记录与文件版本的匹配结果。
+    # 邮件 MCP 或本地发送记录与文件版本的匹配结果。
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
     # PDF 来源和发送记录匹配阶段产生的错误。

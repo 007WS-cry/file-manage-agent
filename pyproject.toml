@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.7.2"
-description = "支持持久化后台队列、Cron Scheduler、隔离 Worktree 和统一错误恢复的 LangGraph 文件版本治理 Agent"
+version = "0.8.0"
+description = "支持邮件 MCP 证据、统一 JSON 日志、多服务编排与后台运行时的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -24,6 +24,8 @@ dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
     "APScheduler>=3.11,<4",
+    "httpx>=0.27,<1",
+    "mcp>=1.27,<2",
 ]
 
 [project.scripts]
@@ -31,10 +33,10 @@ file-governance = "app.entrypoints.cli:main"
 file-governance-api = "app.entrypoints.api:main"
 file-governance-worker = "app.entrypoints.worker:main"
 file-governance-scheduler = "app.entrypoints.scheduler:main"
+file-governance-mock-email-mcp = "app.entrypoints.mock_email_mcp:main"
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.27,<1",
     "pytest>=8,<10",
     "ruff>=0.12,<1",
 ]
@@ -64,6 +66,7 @@ include-package-data = true
 include = ["app*"]
 
 [tool.setuptools.data-files]
+"examples" = ["examples/mock_email_data.json"]
 "resources/prompts" = ["resources/prompts/file_governance_system_v1.md"]
 "resources/skills" = ["resources/skills/registry.yaml"]
 "resources/skills/file-content-analysis" = ["resources/skills/file-content-analysis/SKILL.md"]

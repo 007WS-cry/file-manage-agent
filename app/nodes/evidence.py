@@ -5,20 +5,24 @@ from collections import Counter
 from app.services.evidence_matching import (
     EDITABLE_EXTENSIONS,
     match_delivery_log_entries,
+    match_email_mcp_entries,
 )
 from app.services.evidence_matching import (
     match_pdf_to_source_version as match_pdf_to_source_version_service,
 )
+from app.state.factories import create_email_mcp_config_state
 from app.state.models import (
     EvidenceGraphState,
     PdfMatchJob,
     PdfMatchWorkerState,
 )
 from app.tools.delivery_log import load_local_delivery_log as load_local_delivery_log_tool
+from app.tools.email_mcp_client import fetch_email_mcp_evidence
 from app.utils.error_context import create_node_error
 from app.utils.evidence import create_pdf_match_job_id
 
-"""本模块实现独立 Evidence 子图的 PDF 来源与本地发送证据处理节点。"""
+"""本模块实现独立 Evidence 子图的 PDF 来源、邮件 MCP 与本地发送证据节点。"""
+
 
 def collect_pdf_candidates(state: EvidenceGraphState) -> dict:
     """收集具有标准化内容的非重复 PDF 文件。
@@ -89,8 +93,7 @@ def create_pdf_match_jobs(state: EvidenceGraphState) -> dict:
                     node_name="create_pdf_match_jobs",
                     category="validation",
                     message=(
-                        f"PDF {pdf_file_id} 必须且只能属于一个版本组，"
-                        f"实际为 {len(group_ids)} 个"
+                        f"PDF {pdf_file_id} 必须且只能属于一个版本组，实际为 {len(group_ids)} 个"
                     ),
                     related_file_id=pdf_file_id,
                     fatal=True,
@@ -221,6 +224,68 @@ def join_pdf_matches(state: EvidenceGraphState) -> dict:
     }
 
 
+def load_email_mcp_evidence(state: EvidenceGraphState) -> dict:
+    """优先通过受控邮件 MCP 查询当前文件集合的脱敏发送证据。
+
+    MCP 关闭时直接标记本地降级，不产生错误；端点不可用、超时或响应不符合
+    固定协议时记录非致命 ``mcp`` 错误，并把后续条件路由切换到本地日志。
+    本节点不读取邮件正文、不传输文件内容，也不会调用固定只读 Tool 之外的能力。
+
+    Args:
+        state: 包含邮件 MCP 配置和当前文件列表的 Evidence 子图状态。
+
+    Returns:
+        成功校验的 MCP 记录与查询状态，或本地降级状态和脱敏错误。
+    """
+    config = create_email_mcp_config_state(state.get("email_mcp"))
+    if not config["enabled"]:
+        return {
+            "email_mcp_entries": [],
+            "email_mcp_fetch": {
+                "status": "disabled",
+                "record_count": 0,
+                "fallback_used": True,
+                "error_summary": None,
+            },
+        }
+    try:
+        entries = fetch_email_mcp_evidence(
+            config,
+            [item["file_name"] for item in state.get("files", [])],
+        )
+        return {
+            "email_mcp_entries": entries,
+            "email_mcp_fetch": {
+                "status": "available",
+                "record_count": len(entries),
+                "fallback_used": False,
+                "error_summary": None,
+            },
+        }
+    except Exception as exc:
+        error_type = type(exc).__name__
+        return {
+            "email_mcp_entries": [],
+            "email_mcp_fetch": {
+                "status": "fallback",
+                "record_count": 0,
+                "fallback_used": True,
+                "error_summary": error_type,
+            },
+            "errors": [
+                create_node_error(
+                    state,
+                    stage="evidence",
+                    node_name="load_email_mcp_evidence",
+                    category="mcp",
+                    message=f"邮件 MCP 不可用，已切换本地发送日志（{error_type}）。",
+                    exception=exc,
+                    fatal=False,
+                )
+            ],
+        }
+
+
 def load_local_delivery_log(state: EvidenceGraphState) -> dict:
     """按请求配置只读加载本地发送记录。
 
@@ -293,11 +358,46 @@ def match_delivery_to_version(state: EvidenceGraphState) -> dict:
         }
 
 
+def match_email_delivery_to_version(state: EvidenceGraphState) -> dict:
+    """把邮件 MCP 返回的脱敏附件证据匹配到唯一文件版本。
+
+    Args:
+        state: 已成功加载邮件 MCP 证据的 Evidence 子图状态。
+
+    Returns:
+        来源标记为 ``email_mcp`` 的发送证据，或结构化一致性错误。
+    """
+    entries = state.get("email_mcp_entries", [])
+    if not entries:
+        return {}
+    try:
+        deliveries = match_email_mcp_entries(
+            entries,
+            state.get("files", []),
+            state.get("documents", []),
+            state.get("version_groups", []),
+        )
+        return {"deliveries": deliveries}
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "errors": [
+                create_node_error(
+                    state,
+                    stage="evidence",
+                    node_name="match_email_delivery_to_version",
+                    category="validation",
+                    message=str(exc),
+                    fatal=True,
+                )
+            ]
+        }
+
+
 def merge_external_evidence(state: EvidenceGraphState) -> dict:
-    """检查本地发送日志与匹配结果是否一一对应。
+    """检查当前选定的邮件 MCP 或本地日志与匹配结果是否一一对应。
 
     PDF 来源和发送证据分别保存在类型安全的 reducer 列表中，本节点不把两种
-    记录压成无类型对象，只验证每条已加载日志都产生了一个本地匹配结果。
+    记录压成无类型对象，只验证当前实际使用的外部证据都产生了一个匹配结果。
 
     Args:
         state: 已完成 PDF 和发送记录匹配的 Evidence 子图状态。
@@ -305,14 +405,18 @@ def merge_external_evidence(state: EvidenceGraphState) -> dict:
     Returns:
         证据数量一致时返回空更新，否则返回致命校验错误。
     """
-    expected_refs = Counter(
-        item["evidence_ref"] for item in state.get("delivery_log_entries", [])
+    use_email_mcp = state["email_mcp_fetch"]["status"] == "available"
+    source_entries = (
+        state.get("email_mcp_entries", [])
+        if use_email_mcp
+        else state.get("delivery_log_entries", [])
     )
+    evidence_source = "email_mcp" if use_email_mcp else "local_log"
+    expected_refs = Counter(item["evidence_ref"] for item in source_entries)
     actual_refs = Counter(
         item["evidence_ref"]
         for item in state.get("deliveries", [])
-        if item["evidence_source"] == "local_log"
-        and item["evidence_ref"] in expected_refs
+        if item["evidence_source"] == evidence_source and item["evidence_ref"] in expected_refs
     )
     if expected_refs == actual_refs:
         return {}
@@ -323,7 +427,7 @@ def merge_external_evidence(state: EvidenceGraphState) -> dict:
                 stage="evidence",
                 node_name="merge_external_evidence",
                 category="validation",
-                message="本地发送日志与匹配结果数量或引用不一致",
+                message=f"{evidence_source} 证据与匹配结果数量或引用不一致",
                 fatal=True,
             )
         ]

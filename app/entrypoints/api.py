@@ -13,6 +13,10 @@ from app.api.app import (
     DEFAULT_RUNTIME_CHECKPOINT_PATH,
     create_app,
 )
+from app.observability.logging import (
+    configure_structured_logging,
+    log_runtime_event,
+)
 from app.storage.database import DEFAULT_APPLICATION_DATABASE_PATH
 
 """本模块解析 HTTP API 进程参数并启动只暴露脱敏运行状态的 Uvicorn 服务。"""
@@ -23,6 +27,9 @@ API_HOST_ENV = "FILE_GOVERNANCE_API_HOST"
 
 # API 监听端口使用的环境变量名称。
 API_PORT_ENV = "FILE_GOVERNANCE_API_PORT"
+
+# 四类运行时服务共享的 JSON 日志级别环境变量名称。
+LOG_LEVEL_ENV = "FILE_GOVERNANCE_LOG_LEVEL"
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -71,8 +78,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--log-level",
         choices=("critical", "error", "warning", "info", "debug"),
-        default="info",
-        help="Uvicorn 日志级别。",
+        default=os.environ.get(LOG_LEVEL_ENV, "INFO").lower(),
+        help="API 与 Uvicorn 统一 JSON 日志级别。",
     )
     return parser
 
@@ -89,6 +96,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_argument_parser().parse_args(argv)
     if arguments.port < 1 or arguments.port > 65535:
         raise ValueError("port 必须位于 1 到 65535 之间")
+    logger = configure_structured_logging("api", level=arguments.log_level)
+    log_runtime_event(logger, "service_starting", "HTTP API 正在启动。")
     application = create_app(
         database_path=arguments.database_path,
         checkpoint_path=arguments.checkpoint_path,
@@ -98,7 +107,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         host=arguments.host,
         port=arguments.port,
         log_level=arguments.log_level,
+        log_config=None,
     )
+    log_runtime_event(logger, "service_stopped", "HTTP API 已安全停止。")
     return 0
 
 

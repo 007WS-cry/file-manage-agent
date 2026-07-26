@@ -145,6 +145,8 @@ worker_output*.json
 schedule*.json
 cron*.json
 worktree*.json
+email_mcp*.json
+structured_log*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/
@@ -185,6 +187,7 @@ docker_request*.json
 delivery_log.json
 delivery_log*.json
 !examples/sample_delivery_log.json
+!examples/mock_email_data.json
 
 # 本地 Docker Compose 覆盖配置
 docker-compose.override.yml

@@ -24,6 +24,7 @@ from app.services.memory_policy import copy_memory_state
 from app.state.factories import (
     copy_application_database_state,
     copy_recovery_state,
+    create_email_mcp_config_state,
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
@@ -60,6 +61,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
     started_at = previous_run.get("started_at") or utc_now_iso()
     application_database = copy_application_database_state(state.get("application_database"))
     workspace = create_workspace_state(state["workspace"])
+    email_mcp = create_email_mcp_config_state(state.get("email_mcp"))
     report = {
         "summary": "",
         "report_markdown": "",
@@ -97,6 +99,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "memory": copy_memory_state(state.get("memory")),
         "context_compact": copy_context_compact_state(state.get("context_compact")),
         "application_database": application_database,
+        "email_mcp": email_mcp,
         "recovery": copy_recovery_state(state.get("recovery")),
         "workspace": workspace,
         "worktrees": state.get("worktrees", []),
@@ -460,9 +463,7 @@ def finalize_run(state: FileGovernanceState) -> dict:
                 current_stage=run["current_stage"],
                 report_path=state.get("report", {}).get("report_path"),
                 error_summary=(
-                    "fatal="
-                    f"{sum(is_error_unresolved(item) for item in errors)};"
-                    f"total={len(errors)}"
+                    f"fatal={sum(is_error_unresolved(item) for item in errors)};total={len(errors)}"
                     if errors
                     else None
                 ),

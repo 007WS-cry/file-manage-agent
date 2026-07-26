@@ -127,7 +127,7 @@ def run_evidence_subgraph(state: FileGovernanceState) -> dict:
 
     该节点只执行确定性 PDF 来源和发送记录匹配；固定 Evidence Subagent 的解释
     分派由顶层 ``dispatch_evidence_subagent_task`` 在证据状态同步后单独执行。
-    PDF 候选和原始发送日志仍由状态转换白名单隔离，不会泄漏回顶层状态。
+    PDF 候选、MCP 原始记录和本地发送日志仍由转换白名单隔离，不泄漏回顶层状态。
 
     Args:
         state: 已具有文件、标准化文档和版本组的顶层治理状态。
