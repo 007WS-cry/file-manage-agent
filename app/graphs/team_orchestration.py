@@ -3,12 +3,14 @@ from __future__ import annotations
 from langgraph.graph import END, START, StateGraph
 
 from app.graphs.routers import (
+    needs_worktree_isolation,
     route_orchestration_action,
     route_skill_preparation_result,
     route_subagent_payload_validation,
     route_task_dag_validation,
     route_team_initialization_result,
     route_team_message_validation,
+    route_worktree_preparation_result,
     select_subagent,
 )
 from app.nodes.skills import (
@@ -21,6 +23,7 @@ from app.nodes.team_orchestration import (
     append_task_output_refs,
     assign_tasks_to_roles,
     build_fallback_result_message,
+    close_task_worktree,
     create_assignment_message,
     create_task_dag,
     fallback_to_coordinator,
@@ -29,6 +32,9 @@ from app.nodes.team_orchestration import (
     invoke_evidence_subagent_graph,
     invoke_version_subagent_graph,
     merge_subagent_artifacts,
+    prepare_readonly_workspace,
+    prepare_task_workspace,
+    prepare_task_worktree,
     update_task_status,
     update_todos_from_tasks,
     validate_orchestration_action,
@@ -60,6 +66,10 @@ def build_team_orchestration_graph():
     builder.add_node("update_task_status", update_task_status)
     builder.add_node("update_todos_from_tasks", update_todos_from_tasks)
     builder.add_node("validate_subagent_payload", validate_subagent_payload)
+    builder.add_node("prepare_task_workspace", prepare_task_workspace)
+    builder.add_node("prepare_task_worktree", prepare_task_worktree)
+    builder.add_node("prepare_readonly_workspace", prepare_readonly_workspace)
+    builder.add_node("close_task_worktree", close_task_worktree)
     builder.add_node("create_assignment_message", create_assignment_message)
     builder.add_node("invoke_content_subagent_graph", invoke_content_subagent_graph)
     builder.add_node("invoke_version_subagent_graph", invoke_version_subagent_graph)
@@ -106,10 +116,27 @@ def build_team_orchestration_graph():
         "validate_subagent_payload",
         route_subagent_payload_validation,
         {
-            "assign": "create_assignment_message",
+            "assign": "prepare_task_workspace",
             "fallback": "fallback_to_coordinator",
         },
     )
+    builder.add_conditional_edges(
+        "prepare_task_workspace",
+        needs_worktree_isolation,
+        {
+            "worktree": "prepare_task_worktree",
+            "readonly": "prepare_readonly_workspace",
+        },
+    )
+    builder.add_conditional_edges(
+        "prepare_task_worktree",
+        route_worktree_preparation_result,
+        {
+            "ready": "create_assignment_message",
+            "failed": "release_task_skills",
+        },
+    )
+    builder.add_edge("prepare_readonly_workspace", "create_assignment_message")
     builder.add_conditional_edges(
         "create_assignment_message",
         select_subagent,
@@ -137,7 +164,8 @@ def build_team_orchestration_graph():
     builder.add_edge("append_task_output_refs", "release_task_skills")
     builder.add_edge("release_task_skills", "update_todos_from_tasks")
     builder.add_edge("update_task_status", "update_todos_from_tasks")
-    builder.add_edge("update_todos_from_tasks", END)
+    builder.add_edge("update_todos_from_tasks", "close_task_worktree")
+    builder.add_edge("close_task_worktree", END)
     return builder.compile()
 
 

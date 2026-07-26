@@ -24,9 +24,11 @@ from app.services.memory_policy import copy_memory_state
 from app.state.factories import (
     copy_application_database_state,
     copy_recovery_state,
+    create_email_mcp_config_state,
     create_hook_config_state,
     create_prompt_state,
     create_team_state,
+    create_workspace_state,
 )
 from app.state.models import FileGovernanceState
 from app.storage.database import (
@@ -58,6 +60,8 @@ def initialize_run(state: FileGovernanceState) -> dict:
     thread_id = previous_run.get("thread_id") or run_id
     started_at = previous_run.get("started_at") or utc_now_iso()
     application_database = copy_application_database_state(state.get("application_database"))
+    workspace = create_workspace_state(state["workspace"])
+    email_mcp = create_email_mcp_config_state(state.get("email_mcp"))
     report = {
         "summary": "",
         "report_markdown": "",
@@ -72,6 +76,10 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "run": {
             "run_id": run_id,
             "thread_id": thread_id,
+            "trigger_source": previous_run.get("trigger_source", "manual"),
+            "execution_mode": previous_run.get("execution_mode", "foreground"),
+            "background_job_id": previous_run.get("background_job_id"),
+            "worker_id": previous_run.get("worker_id"),
             "status": "running",
             "current_stage": "initialize_run",
             "started_at": started_at,
@@ -91,7 +99,10 @@ def initialize_run(state: FileGovernanceState) -> dict:
         "memory": copy_memory_state(state.get("memory")),
         "context_compact": copy_context_compact_state(state.get("context_compact")),
         "application_database": application_database,
+        "email_mcp": email_mcp,
         "recovery": copy_recovery_state(state.get("recovery")),
+        "workspace": workspace,
+        "worktrees": state.get("worktrees", []),
         "hook_events": state.get("hook_events", []),
         "tasks": state.get("tasks", []),
         "todos": state.get("todos", []),
@@ -110,7 +121,7 @@ def initialize_run(state: FileGovernanceState) -> dict:
             raise ValueError("应用数据库已启用但未配置 database_path")
         engine = create_application_engine(
             database_path,
-            input_root=state["workspace"]["input_root"],
+            input_root=workspace["input_root"],
             checkpoint_path=application_database.get("checkpoint_path"),
             echo=application_database["echo"],
             timeout_seconds=application_database["timeout_seconds"],
@@ -452,9 +463,7 @@ def finalize_run(state: FileGovernanceState) -> dict:
                 current_stage=run["current_stage"],
                 report_path=state.get("report", {}).get("report_path"),
                 error_summary=(
-                    "fatal="
-                    f"{sum(is_error_unresolved(item) for item in errors)};"
-                    f"total={len(errors)}"
+                    f"fatal={sum(is_error_unresolved(item) for item in errors)};total={len(errors)}"
                     if errors
                     else None
                 ),

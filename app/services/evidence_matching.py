@@ -4,6 +4,7 @@ import hashlib
 from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from app.services.document_grouping import (
     calculate_key_field_similarity,
@@ -15,13 +16,14 @@ from app.state.models import (
     DeliveryLogEntry,
     DeliveryRecord,
     DocumentRecord,
+    EmailMCPRecordState,
     FileRecord,
     PdfExportRecord,
     PdfMatchJob,
     VersionGroupRecord,
 )
 
-"""本模块提供不执行文件读写的 PDF 来源和本地发送证据纯匹配规则。"""
+"""本模块提供不执行文件读写的 PDF 来源、本地日志与邮件 MCP 证据纯匹配规则。"""
 
 
 # 可以作为 PDF 导出来源和主版本候选的可编辑文件扩展名。
@@ -116,12 +118,11 @@ def _score_pdf_source_candidate(
         pdf_document["key_fields"] if pdf_document else {},
         source_document["key_fields"] if source_document else {},
     )
-    shared_topic = (
-        pdf_file["normalized_stem"] == source_file["normalized_stem"]
-        or filenames_share_topic(
-            pdf_file["normalized_stem"],
-            source_file["normalized_stem"],
-        )
+    shared_topic = pdf_file["normalized_stem"] == source_file[
+        "normalized_stem"
+    ] or filenames_share_topic(
+        pdf_file["normalized_stem"],
+        source_file["normalized_stem"],
     )
     time_plausible = _is_source_time_plausible(
         source_file["modified_at"],
@@ -215,19 +216,13 @@ def match_pdf_to_source_version(
     matched_signals: list[str] = ["当前版本组没有可编辑来源候选"]
     if ranked_candidates:
         match_score, best_candidate_id, best_signals = ranked_candidates[0]
-        margin = (
-            match_score - ranked_candidates[1][0]
-            if len(ranked_candidates) > 1
-            else 1.0
-        )
+        margin = match_score - ranked_candidates[1][0] if len(ranked_candidates) > 1 else 1.0
         matched_signals = [
             f"最佳候选：{file_by_id[best_candidate_id]['file_name']}",
             *best_signals,
         ]
         if match_score < threshold:
-            matched_signals.append(
-                f"最高分 {match_score:.2f} 低于匹配阈值 {threshold:.2f}"
-            )
+            matched_signals.append(f"最高分 {match_score:.2f} 低于匹配阈值 {threshold:.2f}")
             confidence = match_score
         elif len(ranked_candidates) > 1 and margin < MIN_PDF_MATCH_MARGIN:
             matched_signals.append(f"前两名候选分差仅为 {margin:.2f}")
@@ -263,31 +258,32 @@ def _select_unique_canonical_file(
     Returns:
         只有一个规范文件时返回该文件；零个或多个规范文件时返回 None。
     """
-    canonical_ids = {
-        candidate["duplicate_of"] or candidate["id"] for candidate in candidates
-    }
+    canonical_ids = {candidate["duplicate_of"] or candidate["id"] for candidate in candidates}
     if len(canonical_ids) != 1:
         return None
     return file_by_id.get(next(iter(canonical_ids)))
 
 
 def match_delivery_log_entry(
-    entry: DeliveryLogEntry,
+    entry: DeliveryLogEntry | EmailMCPRecordState,
     files: Iterable[FileRecord],
     documents: Iterable[DocumentRecord],
     version_groups: Iterable[VersionGroupRecord],
+    *,
+    evidence_source: Literal["local_log", "email_mcp"] = "local_log",
 ) -> DeliveryRecord:
-    """按强弱顺序把一条本地发送记录匹配到唯一文件版本。
+    """按强弱顺序把一条本地日志或邮件 MCP 记录匹配到唯一文件版本。
 
     匹配依次使用 SHA-256、标准化内容摘要、完整文件名和规范化文件名主体。
     任一级出现多个非重复候选时不会猜测，而是保留 ``unmatched`` 结果。该函数
     不读取文件、不调用网络，也不会依据收件人名称推断业务关系。
 
     Args:
-        entry: 已由本地日志工具校验的发送记录。
+        entry: 已由本地日志或邮件 MCP 工具校验的发送记录。
         files: 当前治理运行的文件记录。
         documents: 当前治理运行的标准化文档记录。
         version_groups: 当前治理运行识别出的版本组。
+        evidence_source: 当前记录的受控证据来源。
 
     Returns:
         与唯一文件匹配或明确标记为未匹配的 ``DeliveryRecord``。
@@ -295,6 +291,8 @@ def match_delivery_log_entry(
     Raises:
         ValueError: 输入记录 ID 重复或版本组引用未知文件时抛出。
     """
+    if evidence_source not in {"local_log", "email_mcp"}:
+        raise ValueError("evidence_source 必须是 local_log 或 email_mcp")
     file_list = [FileRecord(**dict(item)) for item in files]
     document_list = [DocumentRecord(**dict(item)) for item in documents]
     group_list = [VersionGroupRecord(**dict(item)) for item in version_groups]
@@ -316,11 +314,7 @@ def match_delivery_log_entry(
     confidence = 0.0
     if entry["attachment_sha256"]:
         matched_file = _select_unique_canonical_file(
-            (
-                item
-                for item in file_list
-                if item["sha256"].casefold() == entry["attachment_sha256"]
-            ),
+            (item for item in file_list if item["sha256"].casefold() == entry["attachment_sha256"]),
             file_by_id,
         )
         if matched_file:
@@ -333,11 +327,7 @@ def match_delivery_log_entry(
         for file_record in file_list:
             canonical_id = file_record["duplicate_of"] or file_record["id"]
             document = document_by_file.get(canonical_id)
-            if (
-                document
-                and document["normalized_digest"].casefold()
-                == entry["normalized_digest"]
-            ):
+            if document and document["normalized_digest"].casefold() == entry["normalized_digest"]:
                 digest_candidates.append(file_record)
         matched_file = _select_unique_canonical_file(digest_candidates, file_by_id)
         if matched_file:
@@ -357,11 +347,7 @@ def match_delivery_log_entry(
     if matched_file is None:
         attachment_stem = normalize_filename_stem(entry["attachment_name"])
         matched_file = _select_unique_canonical_file(
-            (
-                item
-                for item in file_list
-                if item["normalized_stem"] == attachment_stem
-            ),
+            (item for item in file_list if item["normalized_stem"] == attachment_stem),
             file_by_id,
         )
         if matched_file:
@@ -372,10 +358,13 @@ def match_delivery_log_entry(
     if matched_file is not None and group_id is None:
         raise ValueError(f"匹配文件未归入任何版本组：{matched_file['id']}")
     return DeliveryRecord(
-        id=_stable_record_id("delivery", entry["id"]),
+        id=_stable_record_id(
+            "delivery" if evidence_source == "local_log" else "delivery-email-mcp",
+            entry["id"],
+        ),
         group_id=group_id,
         file_id=matched_file["id"] if matched_file else None,
-        evidence_source="local_log",
+        evidence_source=evidence_source,
         sent_at=entry["sent_at"],
         recipient_label=entry["recipient_label"],
         evidence_ref=entry["evidence_ref"],
@@ -411,6 +400,49 @@ def match_delivery_log_entries(
     document_list = list(documents)
     group_list = list(version_groups)
     return [
-        match_delivery_log_entry(entry, file_list, document_list, group_list)
+        match_delivery_log_entry(
+            entry,
+            file_list,
+            document_list,
+            group_list,
+            evidence_source="local_log",
+        )
+        for entry in entry_list
+    ]
+
+
+def match_email_mcp_entries(
+    entries: Iterable[EmailMCPRecordState],
+    files: Iterable[FileRecord],
+    documents: Iterable[DocumentRecord],
+    version_groups: Iterable[VersionGroupRecord],
+) -> list[DeliveryRecord]:
+    """批量匹配邮件 MCP 发送证据并保持输入顺序。
+
+    Args:
+        entries: 已由受控 MCP 客户端校验的脱敏邮件附件证据。
+        files: 当前治理运行的文件记录。
+        documents: 当前治理运行的标准化文档记录。
+        version_groups: 当前治理运行识别出的版本组。
+
+    Returns:
+        证据来源固定为 ``email_mcp`` 的 ``DeliveryRecord`` 列表。
+
+    Raises:
+        ValueError: 邮件证据 ID 重复或底层状态引用不一致时抛出。
+    """
+    entry_list = [EmailMCPRecordState(**dict(item)) for item in entries]
+    _ensure_unique_ids(entry_list, label="邮件 MCP 证据")
+    file_list = list(files)
+    document_list = list(documents)
+    group_list = list(version_groups)
+    return [
+        match_delivery_log_entry(
+            entry,
+            file_list,
+            document_list,
+            group_list,
+            evidence_source="email_mcp",
+        )
         for entry in entry_list
     ]

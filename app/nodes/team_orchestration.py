@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from pathlib import Path
 from typing import cast
 
 from app.agents.protocol import (
@@ -43,13 +44,17 @@ from app.state.models import (
     TaskItem,
     TeamOrchestrationGraphState,
     VersionSubagentGraphState,
+    WorktreeState,
 )
+from app.tools.worktree import close_task_worktree as close_isolated_worktree
+from app.tools.worktree import create_task_worktree as create_isolated_worktree
 from app.utils.error_context import copy_error_context, create_error_context
 from app.utils.runtime import utc_now_iso
 from app.utils.task_orchestration import (
     ALLOWED_TASK_TRANSITIONS,
     create_dispatch_error,
     create_orchestration_error,
+    create_worktree_error,
     ensure_task_dependencies_ready,
     find_latest_subagent_message,
     merge_task_output_refs,
@@ -160,6 +165,155 @@ def validate_orchestration_action(state: TeamOrchestrationGraphState) -> dict:
     if state.get("dispatch_request") is None:
         return {"dispatch_result": None}
     return {}
+
+
+def prepare_readonly_workspace(state: TeamOrchestrationGraphState) -> dict:
+    """确认普通治理分派继续使用只读业务工作空间且不创建 Worktree。
+
+    Args:
+        state: 已通过分派载荷校验且目标 Task 未申请仓库写权限的编排状态。
+
+    Returns:
+        只清空当前 Worktree 指针的状态更新，不访问 Git 或创建目录。
+    """
+    return {"active_worktree_id": None}
+
+
+def prepare_task_workspace(state: TeamOrchestrationGraphState) -> dict:
+    """建立 Worktree 条件路由所需的显式图节点边界。
+
+    Args:
+        state: 已完成 Subagent 请求校验、等待选择工作空间的团队编排状态。
+
+    Returns:
+        空状态更新；后续 conditional_edge 只读取真实 Task 的仓库写权限。
+    """
+    return {}
+
+
+def prepare_task_worktree(state: TeamOrchestrationGraphState) -> dict:
+    """为显式获准写治理仓库的当前分派 Task 创建隔离 Worktree。
+
+    Args:
+        state: 包含已验证分派、真实 Task、只读业务目录和可选 Git 根目录的状态。
+
+    Returns:
+        状态为 in_use 的 Worktree 记录及当前 Worktree ID；失败时返回结构化错误。
+    """
+    try:
+        request = state.get("dispatch_request")
+        if not isinstance(request, Mapping):
+            raise ValueError("创建 Worktree 前缺少已验证 dispatch_request")
+        task_id = request.get("task_id")
+        if not isinstance(task_id, str):
+            raise ValueError("dispatch_request.task_id 必须是字符串")
+        task = resolve_subagent_task(state.get("tasks", []), task_id)
+        if task.get("requires_repository_write") is not True:
+            raise ValueError("只有显式 requires_repository_write Task 可以创建 Worktree")
+
+        workspace = state.get("workspace")
+        if not isinstance(workspace, Mapping):
+            raise ValueError("Worktree Task 缺少 workspace 状态")
+        if workspace.get("input_readonly") is not True:
+            raise ValueError("Worktree Task 必须保持原始业务文件只读")
+        repository_root = workspace.get("project_git_root")
+        temporary_root = workspace.get("temporary_root")
+        if not isinstance(repository_root, str) or not repository_root.strip():
+            raise ValueError("显式仓库写入 Task 必须提供 workspace.project_git_root")
+        if not isinstance(temporary_root, str) or not temporary_root.strip():
+            raise ValueError("显式仓库写入 Task 必须提供 workspace.temporary_root")
+
+        existing = next(
+            (
+                worktree
+                for worktree in state.get("worktrees", [])
+                if worktree.get("owner_task_id") == task_id
+                and worktree.get("status") in {"ready", "in_use"}
+            ),
+            None,
+        )
+        if existing is not None:
+            reused = cast(WorktreeState, dict(existing))
+            reused["status"] = "in_use"
+            return {
+                "worktrees": [reused],
+                "active_worktree_id": reused["id"],
+            }
+
+        worktree = create_isolated_worktree(
+            repository_root,
+            Path(temporary_root).expanduser().resolve() / "git-worktrees",
+            task_id=task_id,
+        )
+        worktree["status"] = "in_use"
+        return {
+            "worktrees": [worktree],
+            "active_worktree_id": worktree["id"],
+        }
+    except (FileNotFoundError, TimeoutError, KeyError, TypeError, ValueError, RuntimeError) as error:
+        return {
+            "active_worktree_id": None,
+            "errors": [
+                create_worktree_error(
+                    state,
+                    "prepare_task_worktree",
+                    error,
+                )
+            ],
+        }
+
+
+def close_task_worktree(state: TeamOrchestrationGraphState) -> dict:
+    """检查并安全关闭当前分派使用的隔离 Worktree。
+
+    没有 Worktree 的普通治理调用保持无副作用。存在未提交或未跟踪改动时，工具
+    会把状态保留为 completed，不强制删除目录；只有干净 Worktree 才安全移除。
+
+    Args:
+        state: 已完成 Task 状态和 Todo 同步的团队编排状态。
+
+    Returns:
+        已关闭、保留或失败的 Worktree 局部记录以及清空的当前 Worktree ID。
+    """
+    worktree_id = state.get("active_worktree_id")
+    if not isinstance(worktree_id, str) or not worktree_id:
+        return {"active_worktree_id": None}
+    try:
+        worktree = next(
+            (
+                item
+                for item in state.get("worktrees", [])
+                if item.get("id") == worktree_id
+            ),
+            None,
+        )
+        if worktree is None:
+            raise ValueError("active_worktree_id 引用了未知 Worktree")
+        closed = close_isolated_worktree(cast(WorktreeState, dict(worktree)))
+        update: dict[str, object] = {
+            "worktrees": [closed],
+            "active_worktree_id": None,
+        }
+        if closed["status"] == "failed":
+            update["errors"] = [
+                create_worktree_error(
+                    state,
+                    "close_task_worktree",
+                    RuntimeError(closed["error_summary"] or "Worktree 安全关闭失败"),
+                )
+            ]
+        return update
+    except (FileNotFoundError, TimeoutError, KeyError, TypeError, ValueError, RuntimeError) as error:
+        return {
+            "active_worktree_id": None,
+            "errors": [
+                create_worktree_error(
+                    state,
+                    "close_task_worktree",
+                    error,
+                )
+            ],
+        }
 
 
 def validate_subagent_payload(state: TeamOrchestrationGraphState) -> dict:

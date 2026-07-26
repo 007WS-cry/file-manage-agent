@@ -5,6 +5,7 @@ import sysconfig
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, cast
+from urllib.parse import urlsplit
 
 from app.llm.config import create_llm_config_state
 from app.services.context_compaction import (
@@ -25,6 +26,7 @@ from app.state.models import (
     AgentMemberState,
     ApplicationDatabaseState,
     ContextCompactState,
+    EmailMCPConfigState,
     FileGovernanceState,
     HookConfigState,
     MemoryState,
@@ -79,6 +81,21 @@ DEFAULT_MEMORY_RECALL_LIMIT = 50
 # 可覆盖长期 Memory 默认应用数据库位置的环境变量名称，与 Alembic 保持一致。
 APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
 
+# 是否默认启用邮件 MCP 证据源的环境变量名称。
+EMAIL_MCP_ENABLED_ENV = "FILE_GOVERNANCE_EMAIL_MCP_ENABLED"
+
+# 邮件 MCP Streamable HTTP 端点使用的环境变量名称。
+EMAIL_MCP_URL_ENV = "FILE_GOVERNANCE_EMAIL_MCP_URL"
+
+# 没有配置或环境覆盖时使用的本机模拟邮件 MCP 端点。
+DEFAULT_EMAIL_MCP_URL = "http://127.0.0.1:8001/mcp"
+
+# 单次邮件 MCP 查询默认超时秒数。
+DEFAULT_EMAIL_MCP_TIMEOUT_SECONDS = 5.0
+
+# 单次邮件 MCP 查询默认允许返回的最大记录数量。
+DEFAULT_EMAIL_MCP_MAX_RESULTS = 200
+
 # 顶层 RecoveryState 允许保存的恢复动作，用于旧 checkpoint 安全补齐。
 RECOVERY_STATE_ACTIONS = frozenset(
     {
@@ -120,6 +137,132 @@ def create_disabled_application_database_state() -> ApplicationDatabaseState:
         timeout_seconds=30.0,
         status="disabled",
         last_error=None,
+    )
+
+
+def create_workspace_state(workspace: Mapping[str, object]) -> WorkspaceState:
+    """复制工作空间并为 Worktree Isolation 补齐受控路径字段。
+
+    普通治理请求无需提供 Git 仓库路径；只有显式仓库写入 Task 才会在团队子图中
+    使用 ``project_git_root``。临时目录默认放在产物目录同级的 ``worktrees`` 下，
+    但本函数不会创建目录或调用 Git。
+
+    Args:
+        workspace: 包含只读输入、产物和报告目录的工作空间映射。
+
+    Returns:
+        与输入解除引用关系且包含临时目录和可选 Git 根目录的工作空间状态。
+
+    Raises:
+        ValueError: 必需路径为空、原始文件未声明只读或可选路径格式非法时抛出。
+    """
+    required_paths: dict[str, str] = {}
+    for field_name in ("input_root", "artifact_root", "report_root"):
+        value = workspace.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"workspace.{field_name} 必须是非空路径字符串")
+        required_paths[field_name] = value.strip()
+    if workspace.get("input_readonly") is not True:
+        raise ValueError("workspace.input_readonly 必须为 true")
+
+    temporary_root = workspace.get("temporary_root")
+    if temporary_root is None:
+        temporary_root = str(
+            Path(required_paths["artifact_root"]).expanduser().resolve().parent / "worktrees"
+        )
+    if not isinstance(temporary_root, str) or not temporary_root.strip():
+        raise ValueError("workspace.temporary_root 必须是非空路径字符串")
+
+    project_git_root = workspace.get("project_git_root")
+    if project_git_root is not None and (
+        not isinstance(project_git_root, str) or not project_git_root.strip()
+    ):
+        raise ValueError("workspace.project_git_root 必须是非空路径字符串或 null")
+
+    return WorkspaceState(
+        input_root=required_paths["input_root"],
+        input_readonly=True,
+        artifact_root=required_paths["artifact_root"],
+        report_root=required_paths["report_root"],
+        temporary_root=temporary_root.strip(),
+        project_git_root=(project_git_root.strip() if isinstance(project_git_root, str) else None),
+    )
+
+
+def create_email_mcp_config_state(
+    email_mcp_config: Mapping[str, object] | None,
+) -> EmailMCPConfigState:
+    """校验并复制邮件 MCP 的开关、端点、超时和结果数量限制。
+
+    配置省略时可以由容器环境变量启用，但默认保持关闭。本函数只解析配置，
+    不建立网络连接，也不调用任何 MCP Tool。
+
+    Args:
+        email_mcp_config: 可选邮件 MCP 配置映射。
+
+    Returns:
+        具有固定字段、规范化 URL 和有限请求参数的邮件 MCP 状态。
+
+    Raises:
+        TypeError: 布尔值、数值或 URL 字段类型不符合协议时抛出。
+        ValueError: 配置包含未知字段、凭据 URL 或越界数值时抛出。
+    """
+    config = dict(email_mcp_config or {})
+    _reject_unknown_fields(
+        config,
+        allowed_fields={
+            "enabled",
+            "server_url",
+            "timeout_seconds",
+            "max_results",
+        },
+        config_name="email_mcp_config",
+    )
+    environment_enabled = os.environ.get(EMAIL_MCP_ENABLED_ENV, "").strip().casefold()
+    default_enabled = environment_enabled in {"1", "true", "yes", "on"}
+    enabled = config.get("enabled", default_enabled)
+    if not isinstance(enabled, bool):
+        raise TypeError("email_mcp_config.enabled 必须是布尔值")
+
+    server_url = config.get(
+        "server_url",
+        os.environ.get(EMAIL_MCP_URL_ENV, DEFAULT_EMAIL_MCP_URL),
+    )
+    if not isinstance(server_url, str) or not server_url.strip():
+        raise TypeError("email_mcp_config.server_url 必须是非空字符串")
+    normalized_url = server_url.strip().rstrip("/")
+    parsed_url = urlsplit(normalized_url)
+    if (
+        parsed_url.scheme not in {"http", "https"}
+        or not parsed_url.hostname
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
+        raise ValueError("email_mcp_config.server_url 必须是不含凭据、查询或片段的 HTTP(S) URL")
+
+    timeout_seconds = config.get(
+        "timeout_seconds",
+        DEFAULT_EMAIL_MCP_TIMEOUT_SECONDS,
+    )
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)):
+        raise TypeError("email_mcp_config.timeout_seconds 必须是数值")
+    normalized_timeout = float(timeout_seconds)
+    if normalized_timeout < 0.1 or normalized_timeout > 60.0:
+        raise ValueError("email_mcp_config.timeout_seconds 必须位于 0.1 到 60 秒之间")
+
+    max_results = config.get("max_results", DEFAULT_EMAIL_MCP_MAX_RESULTS)
+    if isinstance(max_results, bool) or not isinstance(max_results, int):
+        raise TypeError("email_mcp_config.max_results 必须是整数")
+    if max_results < 1 or max_results > 500:
+        raise ValueError("email_mcp_config.max_results 必须位于 1 到 500 之间")
+
+    return EmailMCPConfigState(
+        enabled=enabled,
+        server_url=normalized_url,
+        timeout_seconds=normalized_timeout,
+        max_results=max_results,
     )
 
 
@@ -802,7 +945,7 @@ def create_application_database_state(
     context_compact: ContextCompactState | None = None,
     checkpoint_path: str | Path | None = None,
 ) -> ApplicationDatabaseState:
-    """创建与 Checkpointer 隔离、并供七张应用表共同使用的数据库状态。
+    """创建与 Checkpointer 隔离、并供十张应用表共同使用的数据库状态。
 
     Memory 或 Context Summary 已启用时会自动启用本状态，并要求三者使用同一个
     SQLite 文件。只启用运行历史或工具审计时，可以单独传入
@@ -914,6 +1057,7 @@ def create_initial_state(
     prompt_config: Mapping[str, object] | None = None,
     hook_config: Mapping[str, object] | None = None,
     llm_config: Mapping[str, object] | None = None,
+    email_mcp_config: Mapping[str, object] | None = None,
     skill_registry_path: str | Path | None = None,
     memory_config: Mapping[str, object] | None = None,
     context_compact_config: Mapping[str, object] | None = None,
@@ -931,10 +1075,11 @@ def create_initial_state(
         hook_config: 可选生命周期 Hook 配置；省略时保持完全关闭。
         llm_config: 可选单模型或多 Profile LLM 配置；省略时关闭真实模型并使用
             安全 Mock Profile，旧版单模型配置会自动转换为默认 Profile。
+        email_mcp_config: 可选邮件 MCP 开关、Streamable HTTP 端点和读取限制。
         skill_registry_path: 可选受控 Skill 注册表路径；省略时使用项目默认资源。
         memory_config: 可选短期与长期 Memory 配置；省略时不访问应用数据库。
         context_compact_config: 可选 Context Compact 阈值、预览与持久化配置。
-        application_database_config: 可选七表应用数据库、日志与锁等待配置。
+        application_database_config: 可选十表应用数据库、日志与锁等待配置。
         recovery_config: 可选错误分类、有限重试、退避、降级和人工恢复策略。
         checkpoint_path: 可选 SQLite Checkpointer 路径，用于与应用数据库隔离。
         thread_id: 可选 Checkpointer 线程 ID；非 CLI 调用可在初始化时回退为 run_id。
@@ -969,13 +1114,18 @@ def create_initial_state(
         run={
             "run_id": "",
             "thread_id": thread_id.strip() if thread_id is not None else "",
+            "trigger_source": "manual",
+            "execution_mode": "foreground",
+            "background_job_id": None,
+            "worker_id": None,
             "status": "created",
             "current_stage": "created",
             "started_at": None,
             "finished_at": None,
         },
         request=normalized_request,
-        workspace=dict(workspace),
+        workspace=create_workspace_state(workspace),
+        email_mcp=create_email_mcp_config_state(email_mcp_config),
         prompt=create_prompt_state(prompt_config),
         hooks=create_hook_config_state(hook_config),
         llm=create_llm_config_state(llm_config),
@@ -989,6 +1139,7 @@ def create_initial_state(
         todos=[],
         tasks=[],
         team_messages=[],
+        worktrees=[],
         llm_calls=[],
         human_review={
             "pending_group_ids": [],

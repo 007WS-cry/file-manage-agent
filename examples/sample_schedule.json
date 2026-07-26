@@ -1,0 +1,37 @@
+{
+  "name": "每晚文件版本治理",
+  "cron_expression": "0 2 * * *",
+  "timezone": "Asia/Shanghai",
+  "enabled": true,
+  "payload": {
+    "request": {
+      "root_directory": "data/input",
+      "recursive": true,
+      "allowed_extensions": [
+        ".xlsx",
+        ".docx",
+        ".pdf"
+      ],
+      "max_files": 500,
+      "grouping_similarity_threshold": 0.72,
+      "auto_select_threshold": 0.82,
+      "pdf_match_threshold": 0.82,
+      "delivery_log_path": null,
+      "use_llm_summary": false
+    },
+    "workspace": {
+      "input_root": "data/input",
+      "input_readonly": true,
+      "artifact_root": ".artifacts/content",
+      "report_root": ".artifacts/reports",
+      "temporary_root": ".artifacts/worktrees",
+      "project_git_root": null
+    },
+    "llm": {
+      "enabled": false,
+      "provider": "mock",
+      "model": "mock-structured-v1",
+      "fallback_enabled": true
+    }
+  }
+}

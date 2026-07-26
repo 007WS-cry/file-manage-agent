@@ -28,7 +28,7 @@ from app.storage.repositories import (
     create_repository_bundle,
 )
 
-"""本文件单元测试应用数据库路径边界、短事务语义和七张表 Repository 的基础读写。"""
+"""本文件单元测试应用数据库路径边界、短事务语义和十张表 Repository 的基础读写。"""
 
 
 def prepare_database(tmp_path: Path):
@@ -65,7 +65,7 @@ def make_governance_run(run_id: str = "run-001") -> GovernanceRunModel:
 
 
 def test_engine_creates_parent_and_all_application_tables(tmp_path: Path) -> None:
-    """Engine 应自动创建父目录，ORM 元数据应创建且只创建七张应用表。"""
+    """Engine 应自动创建父目录，ORM 元数据应创建且只创建十张应用表。"""
     database_path = tmp_path / "new-parent" / "application.sqlite3"
 
     engine = create_application_engine(database_path)
@@ -73,13 +73,16 @@ def test_engine_creates_parent_and_all_application_tables(tmp_path: Path) -> Non
 
     assert database_path.parent.is_dir()
     assert set(inspect(engine).get_table_names()) == {
+        "background_jobs",
         "context_summaries",
         "error_recovery_records",
         "governance_runs",
         "human_reviews",
         "memory_items",
         "node_execution_records",
+        "scheduled_jobs",
         "tool_call_audits",
+        "worker_leases",
     }
     engine.dispose()
 

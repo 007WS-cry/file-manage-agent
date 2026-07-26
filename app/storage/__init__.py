@@ -8,6 +8,7 @@ from app.storage.database import (
 )
 from app.storage.memory_repository import MemoryRepository
 from app.storage.orm_models import (
+    BackgroundJobModel,
     Base,
     ContextSummaryModel,
     ErrorRecoveryRecordModel,
@@ -15,9 +16,12 @@ from app.storage.orm_models import (
     HumanReviewModel,
     MemoryItemModel,
     NodeExecutionRecordModel,
+    ScheduledJobModel,
     ToolCallAuditModel,
+    WorkerLeaseModel,
 )
 from app.storage.repositories import (
+    BackgroundJobRepository,
     ContextSummaryRepository,
     ErrorRecoveryRecordRepository,
     GovernanceRunRepository,
@@ -25,7 +29,9 @@ from app.storage.repositories import (
     MemoryItemRepository,
     NodeExecutionRecordRepository,
     RepositoryBundle,
+    ScheduledJobRepository,
     ToolCallAuditRepository,
+    WorkerLeaseRepository,
     build_error_recovery_record_id,
     create_repository_bundle,
 )
@@ -35,6 +41,8 @@ from app.storage.repositories import (
 
 # 本包公开的应用数据库路径、ORM 模型、Session 工厂和 Repository 接口。
 __all__ = [
+    "BackgroundJobModel",
+    "BackgroundJobRepository",
     "Base",
     "ContextSummaryModel",
     "ContextSummaryRepository",
@@ -51,8 +59,12 @@ __all__ = [
     "NodeExecutionRecordModel",
     "NodeExecutionRecordRepository",
     "RepositoryBundle",
+    "ScheduledJobModel",
+    "ScheduledJobRepository",
     "ToolCallAuditModel",
     "ToolCallAuditRepository",
+    "WorkerLeaseModel",
+    "WorkerLeaseRepository",
     "build_application_database_url",
     "build_error_recovery_record_id",
     "create_application_engine",

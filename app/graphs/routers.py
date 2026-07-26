@@ -210,8 +210,7 @@ def route_recoverable_node_result(
         存在尚未处理的阻断错误时返回 ``recovery``，否则返回 ``continue``。
     """
     has_local_error = any(
-        error.get("stage") in LOCAL_RECOVERY_STAGES
-        and is_error_unresolved(error)
+        error.get("stage") in LOCAL_RECOVERY_STAGES and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "recovery" if has_local_error else "continue"
@@ -298,8 +297,7 @@ def route_evidence_result(state: FileGovernanceState) -> Literal["success", "fai
         没有致命错误时返回 ``success``，否则返回 ``failure``。
     """
     has_evidence_error = any(
-        error.get("stage") in {"evidence", "evidence_subagent"}
-        and is_error_unresolved(error)
+        error.get("stage") in {"evidence", "evidence_subagent"} and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "failure" if has_evidence_error else "success"
@@ -315,8 +313,7 @@ def route_team_orchestration_result(state: FileGovernanceState) -> Literal["succ
         存在 Team Orchestration 致命错误时返回 ``failure``，否则返回 ``success``。
     """
     has_orchestration_error = any(
-        error.get("stage")
-        in {"team_orchestration", "content_subagent", "evidence_subagent"}
+        error.get("stage") in {"team_orchestration", "content_subagent", "evidence_subagent"}
         and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
@@ -527,6 +524,20 @@ def has_pdf_match_jobs(
     return "pdf_match" if has_jobs else "done"
 
 
+def route_email_evidence_source(
+    state: EvidenceGraphState,
+) -> Literal["mcp", "local"]:
+    """根据邮件 MCP 查询状态选择 MCP 匹配或本地日志降级分支。
+
+    Args:
+        state: 已执行 ``load_email_mcp_evidence`` 的 Evidence 子图状态。
+
+    Returns:
+        MCP 响应可用时返回 ``mcp``；关闭或不可用时返回 ``local``。
+    """
+    return "mcp" if state.get("email_mcp_fetch", {}).get("status") == "available" else "local"
+
+
 def dispatch_pdf_match_jobs(state: EvidenceGraphState) -> list[Send]:
     """使用 LangGraph Send 为每个运行中 PDF 任务创建隔离 Worker 状态。
 
@@ -590,8 +601,7 @@ def route_team_initialization_result(
         团队合法时返回 ``valid``；初始化产生致命错误时返回 ``invalid``。
     """
     has_error = any(
-        error.get("node_name") == "initialize_fixed_agent_team"
-        and is_error_unresolved(error)
+        error.get("node_name") == "initialize_fixed_agent_team" and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
     return "invalid" if has_error else "valid"
@@ -633,6 +643,57 @@ def route_subagent_payload_validation(
         error.get("node_name") == "validate_subagent_payload" for error in state.get("errors", [])
     )
     return "fallback" if has_error else "assign"
+
+
+def needs_worktree_isolation(
+    state: TeamOrchestrationGraphState,
+) -> Literal["worktree", "readonly"]:
+    """根据当前已验证 Task 的显式仓库写权限选择隔离或只读工作空间。
+
+    Args:
+        state: 已通过分派载荷校验并包含完整 Task DAG 的团队编排状态。
+
+    Returns:
+        Task 明确设置 requires_repository_write 时返回 ``worktree``，
+        普通治理 Task 返回 ``readonly``。
+    """
+    request = state.get("dispatch_request")
+    task_id = request.get("task_id") if isinstance(request, dict) else None
+    task = next(
+        (item for item in state.get("tasks", []) if item.get("task_id") == task_id),
+        None,
+    )
+    return (
+        "worktree"
+        if task is not None and task.get("requires_repository_write") is True
+        else "readonly"
+    )
+
+
+def route_worktree_preparation_result(
+    state: TeamOrchestrationGraphState,
+) -> Literal["ready", "failed"]:
+    """根据 Worktree 创建节点结果选择继续分派或安全收口。
+
+    Args:
+        state: 已执行 prepare_task_worktree 的团队编排状态。
+
+    Returns:
+        当前 Worktree 已进入 in_use 时返回 ``ready``；创建失败时返回 ``failed``。
+    """
+    active_worktree_id = state.get("active_worktree_id")
+    if any(
+        error.get("node_name") == "prepare_task_worktree" and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    ):
+        return "failed"
+    if not isinstance(active_worktree_id, str) or not active_worktree_id:
+        return "failed"
+    worktree = next(
+        (item for item in state.get("worktrees", []) if item.get("id") == active_worktree_id),
+        None,
+    )
+    return "ready" if worktree is not None and worktree.get("status") == "in_use" else "failed"
 
 
 def select_subagent(

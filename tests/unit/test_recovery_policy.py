@@ -134,7 +134,7 @@ def test_apply_policy_upgrades_legacy_error_without_losing_facts() -> None:
             "未知字段",
         ),
         (
-            {"categories": {"mcp": {}}},
+            {"categories": {"smtp": {}}},
             ValueError,
             "未知错误类别",
         ),

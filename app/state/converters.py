@@ -216,6 +216,7 @@ def file_governance_to_team_orchestration_state(
             task_id=context_task_id,
         ),
         run=dict(state["run"]),
+        workspace=dict(state["workspace"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
         skill_registry=copy_skill_registry(registry),
@@ -224,15 +225,16 @@ def file_governance_to_team_orchestration_state(
         task_update=dict(task_update) if task_update is not None else None,
         dispatch_request=(dict(dispatch_request) if dispatch_request is not None else None),
         dispatch_result=None,
+        active_worktree_id=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
         team_messages=[dict(message) for message in state.get("team_messages", [])],
+        worktrees=[dict(worktree) for worktree in state.get("worktrees", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=[
             dict(error)
             for error in state.get("errors", [])
-            if context_task_id is not None
-            and error.get("task_id") == context_task_id
+            if context_task_id is not None and error.get("task_id") == context_task_id
         ],
     )
 
@@ -258,6 +260,7 @@ def team_orchestration_state_to_file_governance_update(
         "tasks": [dict(task) for task in state.get("tasks", [])],
         "todos": [dict(todo) for todo in state.get("todos", [])],
         "team_messages": [dict(message) for message in state.get("team_messages", [])],
+        "worktrees": [dict(worktree) for worktree in state.get("worktrees", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }
@@ -337,6 +340,7 @@ def file_governance_to_version_analysis_state(
         ),
         run=dict(state["run"]),
         request=dict(state["request"]),
+        workspace=dict(state["workspace"]),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
         skill_registry=copy_skill_registry(
@@ -365,6 +369,7 @@ def file_governance_to_version_analysis_state(
             "review_note": state["human_review"].get("review_note"),
         },
         team_messages=[dict(message) for message in state.get("team_messages", [])],
+        worktrees=[dict(worktree) for worktree in state.get("worktrees", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=list(state.get("errors", [])),
     )
@@ -396,6 +401,7 @@ def version_analysis_state_to_file_governance_update(
         "branches": list(state.get("branches", [])),
         "version_chains": list(state.get("version_chains", [])),
         "team_messages": [dict(message) for message in state.get("team_messages", [])],
+        "worktrees": [dict(worktree) for worktree in state.get("worktrees", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": list(state.get("errors", [])),
     }
@@ -417,6 +423,19 @@ def version_analysis_to_team_orchestration_state(
     return TeamOrchestrationGraphState(
         error_context=copy_error_context(state["error_context"]),
         run=dict(state["run"]),
+        workspace=dict(
+            state.get(
+                "workspace",
+                {
+                    "input_root": "",
+                    "input_readonly": True,
+                    "artifact_root": "",
+                    "report_root": "",
+                    "temporary_root": "",
+                    "project_git_root": None,
+                },
+            )
+        ),
         llm=dict(state["llm"]),
         team=_copy_team_state(state["team"]),
         skill_registry=copy_skill_registry(state["skill_registry"]),
@@ -425,9 +444,11 @@ def version_analysis_to_team_orchestration_state(
         task_update=None,
         dispatch_request=dict(dispatch_request),
         dispatch_result=None,
+        active_worktree_id=None,
         tasks=[dict(task) for task in state.get("tasks", [])],
         todos=[dict(todo) for todo in state.get("todos", [])],
         team_messages=[dict(message) for message in state.get("team_messages", [])],
+        worktrees=[dict(worktree) for worktree in state.get("worktrees", [])],
         llm_calls=[dict(call) for call in state.get("llm_calls", [])],
         errors=[
             dict(error)
@@ -459,6 +480,7 @@ def team_orchestration_state_to_version_analysis_update(
             output.model_copy(deep=True) if output is not None else None
         ),
         "team_messages": [dict(message) for message in state.get("team_messages", [])],
+        "worktrees": [dict(worktree) for worktree in state.get("worktrees", [])],
         "llm_calls": [dict(call) for call in state.get("llm_calls", [])],
         "errors": [dict(error) for error in state.get("errors", [])],
     }
@@ -469,8 +491,8 @@ def file_governance_to_evidence_state(
 ) -> EvidenceGraphState:
     """把顶层治理状态转换为 Evidence 子图的完整输入状态。
 
-    请求、文件、标准化文档、版本组及已有证据按值传入；PDF 候选、匹配任务和
-    原始发送日志属于单次子图调用的私有状态，每次调用时显式初始化为空。
+    请求、文件、标准化文档、版本组及已有证据按值传入；PDF 候选、匹配任务、
+    MCP 原始记录和本地发送日志属于单次子图调用的私有状态。
 
     Args:
         state: 已完成 Inventory 和 Version Analysis 阶段的顶层治理状态。
@@ -482,6 +504,13 @@ def file_governance_to_evidence_state(
         error_context=create_error_context(state, task_type="evidence"),
         run=dict(state["run"]),
         request=dict(state["request"]),
+        email_mcp=dict(state["email_mcp"]),
+        email_mcp_fetch={
+            "status": "pending" if state["email_mcp"]["enabled"] else "disabled",
+            "record_count": 0,
+            "fallback_used": not state["email_mcp"]["enabled"],
+            "error_summary": None,
+        },
         files=list(state.get("files", [])),
         documents=list(state.get("documents", [])),
         version_groups=list(state.get("version_groups", [])),
@@ -489,6 +518,7 @@ def file_governance_to_evidence_state(
         pdf_candidate_ids=[],
         pdf_match_jobs=[],
         delivery_log_entries=[],
+        email_mcp_entries=[],
         pdf_exports=list(state.get("pdf_exports", [])),
         deliveries=list(state.get("deliveries", [])),
         errors=list(state.get("errors", [])),
@@ -500,8 +530,8 @@ def evidence_state_to_file_governance_update(
 ) -> dict:
     """把 Evidence 子图结果转换为允许合并回顶层状态的更新。
 
-    只返回 PDF 来源、发送证据和结构化错误。PDF 候选 ID、匹配任务以及原始
-    本地日志记录不会进入顶层状态，避免扩大 checkpoint 和后续 LLM 上下文。
+    只返回 PDF 来源、发送证据和结构化错误。PDF 候选 ID、匹配任务、MCP 原始
+    记录以及本地日志不会进入顶层状态，避免扩大 checkpoint 和后续 LLM 上下文。
 
     Args:
         state: 已完成执行的 Evidence 子图状态。

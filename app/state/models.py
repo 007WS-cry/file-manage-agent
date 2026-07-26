@@ -11,7 +11,7 @@ from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_i
 
 
 class RunState(TypedDict):
-    """一次文件版本治理运行的生命周期状态。"""
+    """一次前台或后台文件版本治理运行的生命周期状态。"""
 
     run_id: str
     # 本次运行的唯一标识。
@@ -19,8 +19,21 @@ class RunState(TypedDict):
     thread_id: str
     # LangGraph Checkpointer 使用的线程 ID；非 CLI 调用可回退为 run_id。
 
+    trigger_source: Literal["manual", "cron"]
+    # 运行由用户手动请求还是由 Cron 计划触发。
+
+    execution_mode: Literal["foreground", "background"]
+    # 运行在请求进程内立即执行还是交给独立后台 Worker。
+
+    background_job_id: str | None
+    # 对应的持久化后台任务 ID；前台运行时为 None。
+
+    worker_id: str | None
+    # 当前执行运行的 Worker ID；前台运行或尚未领取时为 None。
+
     status: Literal[
         "created",
+        "queued",
         "running",
         "recovering",
         "waiting_human",
@@ -38,6 +51,140 @@ class RunState(TypedDict):
 
     finished_at: str | None
     # 运行结束时间；任务未结束时为 None。
+
+
+class BackgroundJobState(TypedDict):
+    """持久化后台任务队列中的一项文件治理任务。"""
+
+    id: str
+    # 后台任务唯一 ID，与治理运行 run_id 和 Task DAG task_id 分开。
+
+    run_id: str
+    # 当前后台任务对应的治理运行 ID。
+
+    thread_id: str
+    # 跨进程恢复 LangGraph checkpoint 使用的线程 ID。
+
+    trigger_source: Literal["manual", "cron"]
+    # 后台任务由手动 API 请求还是 Cron 计划创建。
+
+    status: Literal[
+        "queued",
+        "leased",
+        "running",
+        "waiting_human",
+        "completed",
+        "partial",
+        "failed",
+    ]
+    # 后台任务在排队、领取、执行、中断和终结阶段的状态。
+
+    request_payload: dict[str, Any]
+    # 已规范化的治理请求信封；不得包含 API Key 实际值或完整文档正文。
+
+    current_worker_id: str | None
+    # 当前持有任务租约的 Worker ID；未领取或已经释放时为 None。
+
+    attempt_count: int
+    # Worker 实际领取并尝试执行该任务的累计次数。
+
+    max_attempts: int
+    # Worker 崩溃或运行失败后允许重新领取的最大次数。
+
+    available_at: str
+    # 当前任务最早允许再次领取的 ISO 8601 时间。
+
+    claimed_at: str | None
+    # 最近一次被 Worker 成功领取的时间。
+
+    started_at: str | None
+    # 最近一次开始执行 LangGraph 的时间。
+
+    report_path: str | None
+    # 成功或部分成功后生成的治理报告路径。
+
+    error_summary: str | None
+    # 最近一次后台执行失败或租约过期的脱敏摘要。
+
+    created_at: str
+    # 后台任务首次入队时间。
+
+    updated_at: str
+    # 后台任务最近一次状态变化时间。
+
+    finished_at: str | None
+    # 后台任务进入最终状态的时间。
+
+
+class ScheduledJobState(TypedDict):
+    """应用数据库中一项可由 APScheduler 恢复的 Cron 计划。"""
+
+    id: str
+    # 定时计划唯一 ID。
+
+    name: str
+    # 面向用户展示的定时计划名称。
+
+    cron_expression: str
+    # 经过调度层校验的 Cron 表达式。
+
+    timezone: str
+    # 解释 Cron 表达式所使用的时区名称。
+
+    enabled: bool
+    # 当前计划是否允许继续触发后台任务。
+
+    request_payload: dict[str, Any]
+    # 计划触发时复制使用的治理请求模板。
+
+    last_triggered_at: str | None
+    # 最近一次实际触发计划的时间。
+
+    last_run_id: str | None
+    # 最近一次触发创建的治理运行 ID。
+
+    next_run_at: str | None
+    # Scheduler 最近计算的下一次预计触发时间。
+
+    last_error: str | None
+    # 最近一次注册或触发失败的脱敏摘要。
+
+    created_at: str
+    # 定时计划创建时间。
+
+    updated_at: str
+    # 定时计划最近一次修改时间。
+
+
+class WorkerLeaseState(TypedDict):
+    """Worker 对一个后台任务持有的限时执行租约。"""
+
+    id: str
+    # 当前租约唯一 ID，每次重新领取都会生成新值。
+
+    job_id: str
+    # 被当前租约锁定的后台任务 ID。
+
+    worker_id: str
+    # 持有当前租约的 Worker 唯一 ID。
+
+    status: Literal["active", "released", "expired"]
+    # 租约当前处于有效、主动释放或已经过期状态。
+
+    acquired_at: str
+    # Worker 成功领取任务的时间。
+
+    heartbeat_at: str
+    # Worker 最近一次续租心跳时间。
+
+    expires_at: str
+    # 超过该时间未续租时允许其他 Worker 重新领取。
+
+    released_at: str | None
+    # Worker 完成、暂停、失败或租约过期后的释放时间。
+
+    updated_at: str
+    # 租约最近一次心跳或状态变化时间。
 
 
 class RequestState(TypedDict):
@@ -71,6 +218,38 @@ class RequestState(TypedDict):
     # 是否允许 LLM 为内容差异生成自然语言摘要。
 
 
+class EmailMCPConfigState(TypedDict):
+    """邮件 MCP 证据源使用的受控网络端点和读取限制。"""
+
+    enabled: bool
+    # 是否优先从邮件 MCP 查询外部发送证据；关闭时直接使用本地发送日志。
+
+    server_url: str
+    # 只允许 HTTP 或 HTTPS 的 Streamable HTTP MCP 端点。
+
+    timeout_seconds: float
+    # 初始化会话、列出工具和调用只读证据工具共用的请求超时秒数。
+
+    max_results: int
+    # 单次 MCP 查询允许接收的最大脱敏邮件附件证据数量。
+
+
+class EmailMCPFetchState(TypedDict):
+    """Evidence 子图最近一次邮件 MCP 查询及本地降级状态。"""
+
+    status: Literal["disabled", "pending", "available", "fallback"]
+    # 邮件 MCP 当前关闭、等待、可用或已切换本地日志的状态。
+
+    record_count: int
+    # 最近一次成功 MCP 查询返回并通过协议校验的记录数量。
+
+    fallback_used: bool
+    # 当前 Evidence 调用是否因为关闭或不可用而使用本地发送日志。
+
+    error_summary: str | None
+    # MCP 不可用时保存的脱敏错误类型摘要；不包含 URL、响应正文或堆栈。
+
+
 class WorkspaceState(TypedDict):
     """原始文件和运行产物所在的工作空间。"""
 
@@ -85,6 +264,12 @@ class WorkspaceState(TypedDict):
 
     report_root: str
     # 可选治理报告的输出目录。
+
+    temporary_root: str
+    # 运行时临时目录；Worktree 只能创建在该受控目录的专用子目录中。
+
+    project_git_root: str | None
+    # Agent 治理项目自身的可选 Git 根目录；普通文件治理任务保持为 None。
 
 
 class FileRecord(TypedDict):
@@ -483,6 +668,8 @@ class ErrorRecord(TypedDict):
         "context",
         "database",
         "checkpoint",
+        "worktree",
+        "mcp",
         "timeout",
         "unknown",
     ]
@@ -867,6 +1054,34 @@ class DeliveryLogEntry(TypedDict):
     # 指向原始日志记录的稳定引用。
 
 
+class EmailMCPRecordState(TypedDict):
+    """邮件 MCP 返回、尚未匹配到治理文件版本的脱敏附件证据。"""
+
+    id: str
+    # MCP 证据记录唯一 ID，不使用邮件正文或真实收件地址生成。
+
+    attachment_name: str
+    # 已发送附件的基础文件名，不包含客户端本地目录。
+
+    attachment_sha256: str | None
+    # 可选附件 SHA-256；模拟服务没有保存时为 None。
+
+    normalized_digest: str | None
+    # 可选标准化内容摘要，用于在哈希缺失时确定性匹配。
+
+    sent_at: str | None
+    # 附件发送时间；MCP 记录未提供时为 None。
+
+    recipient_label: str
+    # 服务端已经脱敏的客户或收件人标签。
+
+    customer_confirmed: bool
+    # 邮件线程中是否存在客户确认、批准或接受的结构化标记。
+
+    evidence_ref: str
+    # 不包含正文的稳定 MCP 证据引用。
+
+
 class PdfExportRecord(TypedDict):
     """PDF 与其最可能可编辑来源版本的匹配结果。"""
 
@@ -893,7 +1108,7 @@ class PdfExportRecord(TypedDict):
 
 
 class DeliveryRecord(TypedDict):
-    """本地发送记录与具体文件版本的匹配结果。"""
+    """邮件 MCP、本地日志或人工发送证据与具体文件版本的匹配结果。"""
 
     id: str
     # 发送证据唯一 ID。
@@ -905,7 +1120,7 @@ class DeliveryRecord(TypedDict):
     # 匹配到的文件版本 ID；未匹配时为 None。
 
     evidence_source: Literal["local_log", "email_mcp", "manual"]
-    # 证据来源；本版只生成 local_log 类型。
+    # 证据来源；0.8.0 自动生成 local_log 或 email_mcp，manual 供受控扩展使用。
 
     sent_at: str | None
     # 文件发送时间；未知时为 None。
@@ -1068,7 +1283,7 @@ class ContextCompactState(TypedDict):
 
 
 class ApplicationDatabaseState(TypedDict):
-    """应用数据库的启用状态、SQLite 隔离配置和运行期连接结果。"""
+    """十张应用表共用的启用状态、SQLite 隔离配置和运行期连接结果。"""
 
     enabled: bool
     # 是否持久化运行、Memory、审计、人工选择、错误恢复和节点执行；默认关闭。
@@ -1077,7 +1292,7 @@ class ApplicationDatabaseState(TypedDict):
     # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
 
     database_path: str | None
-    # 七张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+    # 十张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
 
     checkpoint_path: str | None
     # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。
@@ -1182,6 +1397,16 @@ class HookConfigState(TypedDict):
     # Hook 名称到失败策略的映射；覆盖默认失败策略。
 
 
+class HookResult(TypedDict):
+    """单个 Hook 返回的简短说明和受限顶层状态更新。"""
+
+    message: str
+    # Hook 执行结果的简短说明，不得包含文档正文或敏感工具输出。
+
+    state_update: dict[str, Any]
+    # Hook 建议合并到顶层状态的字段；runner 会校验允许修改的范围。
+
+
 class HookEvent(TypedDict):
     """Hook 执行事件：记录单个 Hook 的顺序、状态和处理策略。"""
 
@@ -1243,6 +1468,119 @@ class TodoItem(TypedDict):
     # Todo 在用户界面或 CLI 输出中的固定显示顺序。
 
 
+class TaskDefinition(TypedDict):
+    """固定文件治理 Task DAG 中一个不可变任务模板。"""
+
+    task_type: str
+    # Task 的稳定类型名称。
+
+    title: str
+    # Task 面向用户和日志展示的中文标题。
+
+    dependency_types: tuple[str, ...]
+    # 当前 Task 依赖的其他 Task 类型。
+
+    input_refs: tuple[str, ...]
+    # Task 默认读取的顶层状态字段引用。
+
+    requires_repository_write: bool
+    # 模板是否明确要求修改治理项目仓库；普通治理模板固定为 False。
+
+
+class TodoDefinition(TypedDict):
+    """由若干 Task 状态共同推导的固定 Todo 模板。"""
+
+    key: str
+    # Todo ID 使用的稳定短名称。
+
+    title: str
+    # Todo 面向用户展示的中文标题。
+
+    task_types: tuple[str, ...]
+    # 决定 Todo 状态的 Task 类型。
+
+    order: int
+    # Todo 的固定展示顺序。
+
+
+class GitProcessResultState(TypedDict):
+    """一次受控 Git 子进程调用的有限输出和退出状态。"""
+
+    subcommand: str
+    # 通过白名单校验后实际执行的 Git 子命令。
+
+    arguments: list[str]
+    # 未经 Shell 拼接、按元素传给 Git 的参数副本。
+
+    working_directory: str
+    # 已完成边界校验的 Git 进程工作目录。
+
+    return_code: int
+    # Git 进程退出码；零表示命令成功完成。
+
+    stdout: str
+    # 截断到安全上限的标准输出，不包含完整业务文件正文。
+
+    stderr: str
+    # 截断到安全上限的标准错误输出。
+
+
+class WorktreeInspectionState(TypedDict):
+    """对一个隔离 Worktree 执行只读检查后得到的状态摘要。"""
+
+    path: str
+    # 已确认位于受控临时根目录中的 Worktree 绝对路径。
+
+    head: str
+    # Worktree 当前 HEAD 提交的完整对象 ID。
+
+    clean: bool
+    # 工作区和索引是否均无已跟踪或未跟踪改动。
+
+    status_porcelain: list[str]
+    # Git porcelain 状态的逐行有限摘要，不读取文件正文。
+
+
+class WorktreeState(TypedDict):
+    """隔离显式仓库写入 Task 的 Git Worktree 生命周期状态。"""
+
+    id: str
+    # Worktree 唯一 ID，由所属 Task 和仓库路径生成。
+
+    owner_task_id: str
+    # 唯一允许使用该 Worktree 的 Task ID。
+
+    repository_root: str
+    # Worktree 所属主 Git 仓库的规范化绝对路径。
+
+    path: str
+    # Worktree 自身位于受控临时根目录中的绝对路径。
+
+    branch: str
+    # Worktree 对应的隔离分支；关闭 Worktree 时不会自动删除或合并。
+
+    base_ref: str
+    # 创建隔离分支时使用的受控基础引用。
+
+    status: Literal["ready", "in_use", "completed", "closed", "failed"]
+    # Worktree 当前准备、使用、保留成果、安全关闭或失败状态。
+
+    original_files_readonly: bool
+    # 原始业务文件是否保持只读；该字段必须始终为 True。
+
+    created_at: str
+    # Worktree 成功创建的 ISO 8601 时间。
+
+    closed_at: str | None
+    # Worktree 被 Git 安全移除的时间；保留或失败时为 None。
+
+    clean: bool | None
+    # 最近一次状态检查结果；尚未检查时为 None。
+
+    error_summary: str | None
+    # 创建、检查或关闭失败时保存的脱敏错误摘要。
+
+
 class TaskItem(TypedDict):
     """Task System 中的真实执行状态，是 Todo 和执行进度的唯一事实来源。"""
 
@@ -1289,6 +1627,9 @@ class TaskItem(TypedDict):
         "evidence",
     ]
     # 当前 Task 的固定负责角色；0.4.4 由 Team Orchestration 实际选择并调用。
+
+    requires_repository_write: bool
+    # 是否明确授权该 Task 修改治理项目仓库；默认治理 Task 必须为 False。
 
     input_refs: list[str]
     # Task 使用的状态字段、文件记录或产物引用，不保存完整文档正文。
@@ -1909,6 +2250,9 @@ class FileGovernanceState(TypedDict):
     workspace: WorkspaceState
     # 原始文件、临时产物和报告目录。
 
+    email_mcp: EmailMCPConfigState
+    # 邮件 MCP 外部证据源的启用状态、端点和有限读取参数。
+
     prompt: PromptState
     # 本次运行加载或关闭的 System Prompt 状态。
 
@@ -1931,7 +2275,7 @@ class FileGovernanceState(TypedDict):
     # Context Compact 配置、最近估算结果和有界摘要索引。
 
     application_database: ApplicationDatabaseState
-    # 七张应用表共用的独立数据库配置和当前连接状态。
+    # 十张应用表共用的独立数据库配置和当前连接状态。
 
     recovery: RecoveryState
     # 当前运行的恢复策略、待处理错误和恢复动作。
@@ -1959,6 +2303,12 @@ class FileGovernanceState(TypedDict):
         merge_by_message_id,
     ]
     # 按 message_id 合并的 Team Protocol 结构化消息。
+
+    worktrees: Annotated[
+        list[WorktreeState],
+        merge_by_id,
+    ]
+    # 显式仓库写入 Task 创建、保留或安全关闭的 Worktree 记录。
 
     llm_calls: Annotated[
         list[LLMCallRecord],
@@ -2021,6 +2371,9 @@ class TeamOrchestrationGraphState(TypedDict):
     run: RunState
     # 当前顶层治理运行信息，用于生成稳定 Task ID。
 
+    workspace: WorkspaceState
+    # 原始只读目录、受控临时目录和可选治理项目 Git 根目录。
+
     llm: LLMConfigState
     # 固定 Subagent 共用的模型配置。
 
@@ -2045,6 +2398,9 @@ class TeamOrchestrationGraphState(TypedDict):
     dispatch_result: ContentSubagentOutput | VersionSubagentOutput | EvidenceSubagentOutput | None
     # 当前 Subagent 调用产生的 Pydantic 结构化结果。
 
+    active_worktree_id: str | None
+    # 当前单次分派准备的 Worktree ID；普通治理分派和状态同步时为 None。
+
     tasks: Annotated[
         list[TaskItem],
         merge_by_task_id,
@@ -2062,6 +2418,12 @@ class TeamOrchestrationGraphState(TypedDict):
         merge_by_message_id,
     ]
     # 当前编排调用读取或产生的 Team Protocol 消息。
+
+    worktrees: Annotated[
+        list[WorktreeState],
+        merge_by_id,
+    ]
+    # 当前治理运行已创建、保留或关闭的隔离 Worktree。
 
     llm_calls: Annotated[
         list[LLMCallRecord],
@@ -2127,6 +2489,9 @@ class VersionAnalysisGraphState(TypedDict):
 
     request: RequestState
     # 分组相似度和自动选择置信度等参数。
+
+    workspace: WorkspaceState
+    # Version Subagent 嵌套编排继承的只读工作空间和可选 Worktree 根目录。
 
     llm: LLMConfigState
     # Version Subagent 后续使用的统一模型配置。
@@ -2194,6 +2559,9 @@ class VersionAnalysisGraphState(TypedDict):
     team_messages: Annotated[list[TeamMessage], merge_by_message_id]
     # Version Subagent 后续产生的 assignment、result 或 error 消息。
 
+    worktrees: Annotated[list[WorktreeState], merge_by_id]
+    # 嵌套 Team Orchestration 返回的 Worktree 生命周期记录。
+
     llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
     # Version Subagent 后续产生的模型调用审计记录。
 
@@ -2202,7 +2570,7 @@ class VersionAnalysisGraphState(TypedDict):
 
 
 class EvidenceGraphState(TypedDict):
-    """PDF 来源与本地发送记录匹配子图使用的状态。"""
+    """PDF 来源、邮件 MCP 与本地发送记录匹配子图使用的状态。"""
 
     error_context: ErrorContextState
     # Evidence 节点创建统一恢复错误所需的 Task 和策略上下文。
@@ -2212,6 +2580,12 @@ class EvidenceGraphState(TypedDict):
 
     request: RequestState
     # PDF 匹配阈值和本地发送日志路径。
+
+    email_mcp: EmailMCPConfigState
+    # 本次 Evidence 调用使用的邮件 MCP 端点和读取限制。
+
+    email_mcp_fetch: EmailMCPFetchState
+    # MCP 查询是否成功，以及是否已自动切换到本地日志。
 
     files: Annotated[list[FileRecord], merge_by_id]
     # Inventory 阶段发现的全部文件。
@@ -2234,11 +2608,14 @@ class EvidenceGraphState(TypedDict):
     delivery_log_entries: list[DeliveryLogEntry]
     # 从本地发送日志加载的原始证据记录。
 
+    email_mcp_entries: list[EmailMCPRecordState]
+    # 从邮件 MCP 读取且尚未匹配到文件版本的脱敏附件证据。
+
     pdf_exports: Annotated[list[PdfExportRecord], merge_by_id]
     # PDF 与可编辑源版本的匹配结果。
 
     deliveries: Annotated[list[DeliveryRecord], merge_by_id]
-    # 本地发送记录与文件版本的匹配结果。
+    # 邮件 MCP 或本地发送记录与文件版本的匹配结果。
 
     errors: Annotated[list[ErrorRecord], merge_by_id]
     # PDF 来源和发送记录匹配阶段产生的错误。

@@ -168,6 +168,7 @@ RECOVERABLE_NODE_TASK_TYPES = {
 # 计算子图输入摘要时允许读取的顶层状态字段。
 RECOVERABLE_INPUT_FIELDS = (
     "request",
+    "email_mcp",
     "prompt",
     "context_compact",
     "files",

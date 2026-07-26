@@ -67,8 +67,7 @@ def select_recovery_error(state: RecoveryGraphState) -> dict:
                 for error in reversed(state.get("errors", []))
                 if is_error_unresolved(error)
                 or (
-                    error.get("status")
-                    in {"pending", "retrying", "waiting_human", "failed"}
+                    error.get("status") in {"pending", "retrying", "waiting_human", "failed"}
                     and error.get("status") not in {"recovered", "fallback_applied"}
                 )
             ),
@@ -393,16 +392,27 @@ def apply_recovery_fallback(state: RecoveryGraphState) -> dict:
             f"{state['run']['run_id']}\x1f{error['id']}\x1f{fallback}".encode()
         ).hexdigest()
     )
+    mcp_local_fallback = error.get("category") == "mcp" and fallback == "partial_result"
+    degradation_summary = (
+        "邮件 MCP 不可用，Evidence 已自动使用本地发送日志。"
+        if mcp_local_fallback
+        else f"恢复流程已应用安全降级：{fallback}。"
+    )
+    degradation_impact = (
+        "邮件发送证据来自本地日志；最终报告保留 MCP 不可用的降级说明。"
+        if mcp_local_fallback
+        else "当前阶段保留可用结果，最终报告将标记为部分完成。"
+    )
     degradation = DegradationRecord(
         id=degradation_id,
         error_id=str(error["id"]),
         stage=str(error["stage"]),
         action=cast(Any, fallback),
-        summary=f"恢复流程已应用安全降级：{fallback}。",
+        summary=degradation_summary,
         affected_file_ids=(
             [str(error["related_file_id"])] if error.get("related_file_id") is not None else []
         ),
-        impact="当前阶段保留可用结果，最终报告将标记为部分完成。",
+        impact=degradation_impact,
         created_at=created_at,
     )
     fallback_error = cast(
@@ -450,13 +460,17 @@ def apply_recovery_fallback(state: RecoveryGraphState) -> dict:
                 error_id=related_error_id,
                 stage=str(related_error["stage"]),
                 action=cast(Any, fallback),
-                summary=f"恢复流程已应用安全降级：{fallback}。",
+                summary=degradation_summary,
                 affected_file_ids=(
                     [str(related_error["related_file_id"])]
                     if related_error.get("related_file_id") is not None
                     else []
                 ),
-                impact="同一 Task 的关联错误已统一收敛，最终报告将标记为部分完成。",
+                impact=(
+                    degradation_impact
+                    if mcp_local_fallback
+                    else "同一 Task 的关联错误已统一收敛，最终报告将标记为部分完成。"
+                ),
                 created_at=created_at,
             )
         )
@@ -489,9 +503,7 @@ def apply_recovery_fallback(state: RecoveryGraphState) -> dict:
         )
     )
     recovery["pending_error_ids"] = [
-        error_id
-        for error_id in recovery["pending_error_ids"]
-        if error_id not in cohort_error_ids
+        error_id for error_id in recovery["pending_error_ids"] if error_id not in cohort_error_ids
     ]
     recovery["last_policy_reason"] = f"已应用固定安全降级 {fallback}。"
     run = dict(state["run"])

@@ -63,6 +63,8 @@ def create_error_record(
         "context",
         "database",
         "checkpoint",
+        "worktree",
+        "mcp",
         "timeout",
         "unknown",
     ],
@@ -103,7 +105,7 @@ def create_error_record(
         stage: 错误所属的主流程阶段或子图名称。
         node_name: 产生错误的节点函数名。
         category: 文件系统、解析、比较、证据、LLM、校验、协议、Prompt、Hook、
-            Memory、Skill、Context Compact、数据库、checkpoint、超时或未知类别。
+            Memory、Skill、Context Compact、数据库、checkpoint、Worktree、MCP、超时或未知类别。
         message: 可供报告展示的脱敏错误说明。
         related_file_id: 可选关联文件 ID，不应放入原始文件正文。
         task_id: 可选关联 Task ID；Task DAG 创建前可以为 None。

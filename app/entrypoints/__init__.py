@@ -1,1 +1,1 @@
-"""本包提供文件版本治理 Agent 的命令行与安全 Task 进度摘要入口。"""
+"""本包提供治理 CLI、HTTP API、Worker、Scheduler 与模拟邮件 MCP 独立进程入口。"""

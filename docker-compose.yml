@@ -1,0 +1,92 @@
+name: file-manage-agent
+
+x-file-governance-service: &file-governance-service
+  build:
+    context: .
+    args:
+      APP_VERSION: 0.8.0
+  image: file-manage-agent:0.8.0
+  environment:
+    FILE_GOVERNANCE_DATABASE_PATH: /data/artifacts/database/file-governance-app.sqlite3
+    FILE_GOVERNANCE_CHECKPOINT_PATH: /data/artifacts/checkpoints/file-governance-background.sqlite3
+    FILE_GOVERNANCE_SCHEDULER_TIMEZONE: Asia/Shanghai
+    FILE_GOVERNANCE_SCHEDULER_RECONCILE_INTERVAL_SECONDS: "15.0"
+    FILE_GOVERNANCE_EMAIL_MCP_ENABLED: "true"
+    FILE_GOVERNANCE_EMAIL_MCP_URL: http://mock-email-mcp:8001/mcp
+    FILE_GOVERNANCE_LOG_LEVEL: INFO
+  volumes:
+    - ./data/input:/data/input:ro
+    - file-governance-artifacts:/data/artifacts
+  restart: unless-stopped
+
+services:
+  migrate:
+    <<: *file-governance-service
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    restart: "no"
+
+  api:
+    <<: *file-governance-service
+    command: ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mock-email-mcp:
+        condition: service_started
+    ports:
+      - "8000:8000"
+
+  worker:
+    <<: *file-governance-service
+    command:
+      [
+        "file-governance-worker",
+        "--database-path",
+        "/data/artifacts/database/file-governance-app.sqlite3",
+      ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mock-email-mcp:
+        condition: service_started
+
+  scheduler:
+    <<: *file-governance-service
+    command:
+      [
+        "file-governance-scheduler",
+        "--database-path",
+        "/data/artifacts/database/file-governance-app.sqlite3",
+        "--checkpoint-path",
+        "/data/artifacts/checkpoints/file-governance-background.sqlite3",
+      ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      mock-email-mcp:
+        condition: service_started
+
+  mock-email-mcp:
+    build:
+      context: .
+      args:
+        APP_VERSION: 0.8.0
+    image: file-manage-agent:0.8.0
+    command:
+      [
+        "file-governance-mock-email-mcp",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8001",
+        "--data-path",
+        "/app/examples/mock_email_data.json",
+      ]
+    environment:
+      FILE_GOVERNANCE_LOG_LEVEL: INFO
+    ports:
+      - "8001:8001"
+    restart: unless-stopped
+
+volumes:
+  file-governance-artifacts:
