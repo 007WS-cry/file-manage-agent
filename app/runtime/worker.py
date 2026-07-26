@@ -115,6 +115,7 @@ class BackgroundWorker:
             run_id=job["run_id"],
             thread_id=job["thread_id"],
             execution_mode="background",
+            trigger_source=job["trigger_source"],
             background_job_id=job["id"],
             worker_id=self.worker_id,
         )

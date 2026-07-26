@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.7.1 Task、恢复、后台任务、租约和发布验收快照含运行信息
+# 0.7.2 Task、恢复、后台任务、计划、Worktree 和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -142,6 +142,9 @@ runtime_submission*.json
 runtime_status*.json
 api_response*.json
 worker_output*.json
+schedule*.json
+cron*.json
+worktree*.json
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

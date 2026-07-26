@@ -9,8 +9,10 @@ from fastapi import FastAPI
 
 from app import __version__
 from app.api.routes.runs import router as runs_router
+from app.api.routes.schedules import router as schedules_router
 from app.api.schemas import HealthResponse
 from app.runtime.job_queue import JobQueue
+from app.runtime.scheduler import SchedulerService
 from app.storage.database import DEFAULT_APPLICATION_DATABASE_PATH
 
 """本模块创建 FastAPI 应用，并在 lifespan 内管理持久化后台任务队列连接池。"""
@@ -40,7 +42,7 @@ def create_app(
         checkpoint_path: 可选后台 checkpoint 路径；省略时读取环境变量或默认值。
 
     Returns:
-        已注册健康检查、后台提交和状态查询路由的 FastAPI 应用。
+        已注册健康检查、后台运行和定时计划管理路由的 FastAPI 应用。
     """
     resolved_database_path = Path(
         database_path
@@ -70,9 +72,16 @@ def create_app(
         queue = JobQueue(resolved_database_path)
         application.state.job_queue = queue
         application.state.checkpoint_path = str(resolved_checkpoint_path)
+        scheduler_service = SchedulerService(
+            resolved_database_path,
+            resolved_checkpoint_path,
+            queue=queue,
+        )
+        application.state.scheduler_service = scheduler_service
         try:
             yield
         finally:
+            scheduler_service.close()
             queue.close()
 
     application = FastAPI(
@@ -81,6 +90,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.include_router(runs_router)
+    application.include_router(schedules_router)
 
     @application.get("/health", response_model=HealthResponse)
     def health() -> HealthResponse:

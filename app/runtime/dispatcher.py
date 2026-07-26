@@ -33,6 +33,9 @@ REQUEST_PATH_FIELDS = ("root_directory",)
 # 相对路径统一相对 API 或 Worker 当前工作目录解析的工作区字段。
 WORKSPACE_PATH_FIELDS = ("input_root", "artifact_root", "report_root")
 
+# Worktree 隔离按需使用、允许省略的工作区路径字段。
+OPTIONAL_WORKSPACE_PATH_FIELDS = ("temporary_root", "project_git_root")
+
 
 def _copy_optional_mapping(
     envelope: Mapping[str, Any],
@@ -133,6 +136,12 @@ def normalize_runtime_envelope(
             workspace.get(field_name),
             field_name=f"workspace.{field_name}",
         )
+    for field_name in OPTIONAL_WORKSPACE_PATH_FIELDS:
+        if workspace.get(field_name) is not None:
+            workspace[field_name] = _resolve_required_path(
+                workspace[field_name],
+                field_name=f"workspace.{field_name}",
+            )
     request["delivery_log_path"] = _resolve_optional_path(
         request.get("delivery_log_path"),
         field_name="request.delivery_log_path",
@@ -187,6 +196,7 @@ def build_runtime_initial_state(
     run_id: str,
     thread_id: str,
     execution_mode: Literal["foreground", "background"],
+    trigger_source: Literal["manual", "cron"] = "manual",
     background_job_id: str | None,
     worker_id: str | None,
 ) -> FileGovernanceState:
@@ -197,6 +207,7 @@ def build_runtime_initial_state(
         run_id: 外层提交阶段预先生成的治理运行 ID。
         thread_id: 持久化 Checkpointer 使用的线程 ID。
         execution_mode: 当前运行以前台还是后台方式执行。
+        trigger_source: 当前运行由手动请求还是 Cron 计划触发。
         background_job_id: 后台任务 ID；前台运行时为 None。
         worker_id: 实际执行任务的 Worker ID；前台运行时为 None。
 
@@ -208,6 +219,8 @@ def build_runtime_initial_state(
     """
     if execution_mode not in EXECUTION_MODES:
         raise ValueError("execution_mode 只能是 foreground 或 background")
+    if trigger_source not in {"manual", "cron"}:
+        raise ValueError("trigger_source 只能是 manual 或 cron")
     request = cast(RequestState, dict(envelope["request"]))
     workspace = cast(WorkspaceState, dict(envelope["workspace"]))
     checkpoint = _copy_optional_mapping(envelope, "checkpoint") or {}
@@ -235,7 +248,7 @@ def build_runtime_initial_state(
         {
             "run_id": run_id,
             "thread_id": thread_id,
-            "trigger_source": "manual",
+            "trigger_source": trigger_source,
             "execution_mode": execution_mode,
             "background_job_id": background_job_id,
             "worker_id": worker_id,
@@ -251,6 +264,7 @@ def create_background_submission(
     queue: JobQueue,
     checkpoint_path: str | Path,
     max_attempts: int = 3,
+    trigger_source: Literal["manual", "cron"] = "manual",
 ) -> BackgroundJobState:
     """创建后台运行身份、验证状态配置并持久化入队。
 
@@ -259,6 +273,7 @@ def create_background_submission(
         queue: 已连接迁移后应用数据库的持久化队列。
         checkpoint_path: 后台 Worker 共用的 SQLite checkpoint 文件。
         max_attempts: Worker 崩溃或执行失败后允许的总领取次数。
+        trigger_source: 后台任务由手动请求还是 Cron 计划触发。
 
     Returns:
         已提交数据库且状态为 queued 的后台任务。
@@ -280,6 +295,7 @@ def create_background_submission(
         run_id=run_id,
         thread_id=thread_id,
         execution_mode="background",
+        trigger_source=trigger_source,
         background_job_id=job_id,
         worker_id=None,
     )
@@ -288,7 +304,7 @@ def create_background_submission(
         id=job_id,
         run_id=run_id,
         thread_id=thread_id,
-        trigger_source="manual",
+        trigger_source=trigger_source,
         status="queued",
         request_payload=envelope,
         current_worker_id=None,

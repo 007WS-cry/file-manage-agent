@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.7.1
+ARG APP_VERSION=0.7.2
 ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持持久化后台队列、HTTP 提交查询、Worker 租约恢复与十表审计的只读文件版本治理 Agent"
+    org.opencontainers.image.description="支持后台队列、Cron Scheduler、隔离 Worktree 与十表审计的文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,7 +18,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN groupadd --system agent \
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system agent \
     && useradd --system --gid agent --create-home agent
 
 COPY pyproject.toml README.md ./
@@ -43,7 +46,7 @@ RUN test -f /app/resources/prompts/file_governance_system_v1.md \
     fi \
     && mkdir -p /data/input /data/artifacts/content \
         /data/artifacts/reports /data/artifacts/checkpoints \
-        /data/artifacts/database /data/evidence \
+        /data/artifacts/database /data/artifacts/worktrees /data/evidence \
     && chown -R agent:agent /data/input /data/artifacts /data/evidence
 
 USER agent
@@ -52,5 +55,5 @@ VOLUME ["/data/input", "/data/artifacts", "/data/evidence"]
 
 EXPOSE 8000
 
-# 默认启动 HTTP API；CLI 或 Worker 可通过 docker run 的命令参数整体覆盖。
+# 默认启动 HTTP API；CLI、Worker 或 Scheduler 可通过 docker run 的命令参数整体覆盖。
 CMD ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]

@@ -123,6 +123,58 @@ def create_disabled_application_database_state() -> ApplicationDatabaseState:
     )
 
 
+def create_workspace_state(workspace: Mapping[str, object]) -> WorkspaceState:
+    """复制工作空间并为 Worktree Isolation 补齐受控路径字段。
+
+    普通治理请求无需提供 Git 仓库路径；只有显式仓库写入 Task 才会在团队子图中
+    使用 ``project_git_root``。临时目录默认放在产物目录同级的 ``worktrees`` 下，
+    但本函数不会创建目录或调用 Git。
+
+    Args:
+        workspace: 包含只读输入、产物和报告目录的工作空间映射。
+
+    Returns:
+        与输入解除引用关系且包含临时目录和可选 Git 根目录的工作空间状态。
+
+    Raises:
+        ValueError: 必需路径为空、原始文件未声明只读或可选路径格式非法时抛出。
+    """
+    required_paths: dict[str, str] = {}
+    for field_name in ("input_root", "artifact_root", "report_root"):
+        value = workspace.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"workspace.{field_name} 必须是非空路径字符串")
+        required_paths[field_name] = value.strip()
+    if workspace.get("input_readonly") is not True:
+        raise ValueError("workspace.input_readonly 必须为 true")
+
+    temporary_root = workspace.get("temporary_root")
+    if temporary_root is None:
+        temporary_root = str(
+            Path(required_paths["artifact_root"]).expanduser().resolve().parent
+            / "worktrees"
+        )
+    if not isinstance(temporary_root, str) or not temporary_root.strip():
+        raise ValueError("workspace.temporary_root 必须是非空路径字符串")
+
+    project_git_root = workspace.get("project_git_root")
+    if project_git_root is not None and (
+        not isinstance(project_git_root, str) or not project_git_root.strip()
+    ):
+        raise ValueError("workspace.project_git_root 必须是非空路径字符串或 null")
+
+    return WorkspaceState(
+        input_root=required_paths["input_root"],
+        input_readonly=True,
+        artifact_root=required_paths["artifact_root"],
+        report_root=required_paths["report_root"],
+        temporary_root=temporary_root.strip(),
+        project_git_root=(
+            project_git_root.strip() if isinstance(project_git_root, str) else None
+        ),
+    )
+
+
 def copy_application_database_state(
     application_database: Mapping[str, object] | None,
 ) -> ApplicationDatabaseState:
@@ -979,7 +1031,7 @@ def create_initial_state(
             "finished_at": None,
         },
         request=normalized_request,
-        workspace=dict(workspace),
+        workspace=create_workspace_state(workspace),
         prompt=create_prompt_state(prompt_config),
         hooks=create_hook_config_state(hook_config),
         llm=create_llm_config_state(llm_config),
@@ -993,6 +1045,7 @@ def create_initial_state(
         todos=[],
         tasks=[],
         team_messages=[],
+        worktrees=[],
         llm_calls=[],
         human_review={
             "pending_group_ids": [],

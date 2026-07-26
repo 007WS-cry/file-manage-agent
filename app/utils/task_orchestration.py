@@ -108,6 +108,35 @@ def create_dispatch_error(
     )
 
 
+def create_worktree_error(
+    state: Mapping[str, Any],
+    node_name: str,
+    error: Exception,
+) -> ErrorRecord:
+    """把 Worktree 创建、检查或关闭异常转换为保留现场的结构化错误。
+
+    Args:
+        state: 当前 Team Orchestration 状态，用于绑定真实 Task 和恢复策略。
+        node_name: 捕获 Worktree 异常的实际图节点函数名。
+        error: 已由节点捕获且不会向 LangGraph 外传播的异常。
+
+    Returns:
+        类别为 worktree、不会包含 Git 输出或文件正文的致命错误记录。
+    """
+    return create_node_error(
+        state,
+        stage="team_orchestration",
+        node_name=node_name,
+        category="worktree",
+        message=(
+            f"{type(error).__name__}: Worktree 生命周期操作失败；"
+            "已保留现有目录和隔离分支供人工检查。"
+        ),
+        exception=error,
+        fatal=True,
+    )
+
+
 def normalize_fixed_team(team: TeamState | None) -> TeamState:
     """初始化或校验协调者和三个固定 Subagent 组成的团队状态。
 

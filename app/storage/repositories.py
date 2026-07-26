@@ -847,6 +847,133 @@ class ScheduledJobRepository(BaseRepository[ScheduledJobModel]):
         )
         return self._list(statement, limit=limit)
 
+    def list_all(self, *, limit: int = 500) -> list[ScheduledJobModel]:
+        """读取启用和停用的全部持久化计划。
+
+        Args:
+            limit: 允许返回的最大计划数量。
+
+        Returns:
+            按创建时间和计划 ID 稳定排序的计划。
+        """
+        statement = select(ScheduledJobModel).order_by(
+            ScheduledJobModel.created_at.asc(),
+            ScheduledJobModel.schedule_id.asc(),
+        )
+        return self._list(statement, limit=limit)
+
+    def set_enabled(
+        self,
+        schedule_id: str,
+        *,
+        enabled: bool,
+        next_run_at: datetime | None,
+        updated_at: datetime,
+    ) -> ScheduledJobModel:
+        """启用或停用一项计划，并同步其下一次预计触发时间。
+
+        Args:
+            schedule_id: 等待修改的定时计划 ID。
+            enabled: 修改后的启用状态。
+            next_run_at: 启用时计算的下一次触发时间；停用时必须为 None。
+            updated_at: 本次状态变化时间。
+
+        Returns:
+            已更新并完成 flush 的定时计划。
+
+        Raises:
+            ValueError: 停用计划仍提供下一次触发时间时抛出。
+        """
+        if not enabled and next_run_at is not None:
+            raise ValueError("停用计划的 next_run_at 必须为 None")
+        schedule = self.get_required(schedule_id)
+        schedule.enabled = enabled
+        schedule.next_run_at = next_run_at
+        schedule.last_error = None
+        schedule.updated_at = updated_at
+        self._session.flush()
+        return schedule
+
+    def update_registration(
+        self,
+        schedule_id: str,
+        *,
+        next_run_at: datetime | None,
+        error_summary: str | None,
+        updated_at: datetime,
+    ) -> ScheduledJobModel:
+        """保存 Scheduler 最近一次注册检查结果。
+
+        Args:
+            schedule_id: 已持久化计划 ID。
+            next_run_at: APScheduler 当前计算的下一次触发时间。
+            error_summary: 注册失败的脱敏摘要；成功时为 None。
+            updated_at: 本次注册检查时间。
+
+        Returns:
+            已更新下一次运行和错误字段的计划。
+        """
+        schedule = self.get_required(schedule_id)
+        schedule.next_run_at = next_run_at
+        schedule.last_error = error_summary
+        schedule.updated_at = updated_at
+        self._session.flush()
+        return schedule
+
+    def record_trigger(
+        self,
+        schedule_id: str,
+        *,
+        triggered_at: datetime,
+        run_id: str,
+        next_run_at: datetime | None,
+    ) -> ScheduledJobModel:
+        """登记 Cron 最近一次成功入队的治理运行。
+
+        Args:
+            schedule_id: 实际触发的定时计划 ID。
+            triggered_at: Cron 回调开始创建后台任务的时间。
+            run_id: 成功入队后得到的治理运行 ID。
+            next_run_at: 当前 Cron 规则计算的下一次触发时间。
+
+        Returns:
+            已更新最近运行事实的定时计划。
+        """
+        schedule = self.get_required(schedule_id)
+        schedule.last_triggered_at = triggered_at
+        schedule.last_run_id = _normalize_required_identifier(
+            run_id,
+            field_name="run_id",
+        )
+        schedule.next_run_at = next_run_at
+        schedule.last_error = None
+        schedule.updated_at = triggered_at
+        self._session.flush()
+        return schedule
+
+    def record_error(
+        self,
+        schedule_id: str,
+        *,
+        error_summary: str,
+        updated_at: datetime,
+    ) -> ScheduledJobModel:
+        """保存计划注册或触发失败的脱敏摘要。
+
+        Args:
+            schedule_id: 发生错误的定时计划 ID。
+            error_summary: 不包含请求正文、堆栈或凭据的有限错误说明。
+            updated_at: 错误发生时间。
+
+        Returns:
+            已更新最近错误字段的计划。
+        """
+        schedule = self.get_required(schedule_id)
+        schedule.last_error = error_summary[:1_000]
+        schedule.updated_at = updated_at
+        self._session.flush()
+        return schedule
+
 
 class WorkerLeaseRepository(BaseRepository[WorkerLeaseModel]):
     """读写 worker_leases 表中的当前任务租约。"""

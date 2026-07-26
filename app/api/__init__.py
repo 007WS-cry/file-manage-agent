@@ -1,2 +1,1 @@
-"""本包提供只返回脱敏运行摘要的 HTTP API，不直接暴露 LangGraph 完整状态。"""
-
+"""本包提供后台运行与 Cron 计划 HTTP API，不直接暴露 LangGraph 完整状态。"""
