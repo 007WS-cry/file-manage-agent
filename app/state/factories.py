@@ -38,7 +38,11 @@ from app.state.models import (
     WorkspaceState,
 )
 from app.storage.database import (
+    APPLICATION_DATABASE_PATH_ENV,
+    APPLICATION_DATABASE_URL_ENV,
     DEFAULT_APPLICATION_DATABASE_PATH,
+    normalize_application_database_url,
+    resolve_application_database_state_target,
     validate_application_database_path,
 )
 
@@ -77,9 +81,6 @@ DEFAULT_MAX_PARALLEL_AGENTS = 3
 
 # 每次新运行默认最多召回的长期 Memory 条目数量。
 DEFAULT_MEMORY_RECALL_LIMIT = 50
-
-# 可覆盖长期 Memory 默认应用数据库位置的环境变量名称，与 Alembic 保持一致。
-APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
 
 # 是否默认启用邮件 MCP 证据源的环境变量名称。
 EMAIL_MCP_ENABLED_ENV = "FILE_GOVERNANCE_EMAIL_MCP_ENABLED"
@@ -131,6 +132,7 @@ def create_disabled_application_database_state() -> ApplicationDatabaseState:
         enabled=False,
         backend="sqlite",
         database_path=None,
+        database_url_env=None,
         checkpoint_path=None,
         auto_create_parent=True,
         echo=False,
@@ -285,12 +287,19 @@ def copy_application_database_state(
         "pending" if enabled else "disabled",
     )
     status = raw_status if raw_status in {"disabled", "pending", "ready", "failed"} else "failed"
+    raw_backend = application_database.get("backend", "sqlite")
+    backend = raw_backend if raw_backend in {"sqlite", "postgresql"} else "sqlite"
     return ApplicationDatabaseState(
         enabled=enabled,
-        backend="sqlite",
+        backend=cast(Literal["sqlite", "postgresql"], backend),
         database_path=(
             str(application_database["database_path"])
             if application_database.get("database_path") is not None
+            else None
+        ),
+        database_url_env=(
+            str(application_database["database_url_env"])
+            if application_database.get("database_url_env") is not None
             else None
         ),
         checkpoint_path=(
@@ -767,7 +776,14 @@ def create_memory_state(
     config = dict(memory_config or {})
     _reject_unknown_fields(
         config,
-        allowed_fields={"enabled", "namespace", "database_path", "recall_limit"},
+        allowed_fields={
+            "enabled",
+            "namespace",
+            "backend",
+            "database_path",
+            "database_url_env",
+            "recall_limit",
+        },
         config_name="memory_config",
     )
 
@@ -788,26 +804,53 @@ def create_memory_state(
     if not enabled:
         namespace = ""
 
-    raw_database_path = config.get(
-        "database_path",
-        os.environ.get(
-            APPLICATION_DATABASE_PATH_ENV,
-            str(DEFAULT_APPLICATION_DATABASE_PATH),
-        ),
-    )
-    if not isinstance(raw_database_path, (str, Path)):
-        raise TypeError("memory_config.database_path 必须是字符串或 Path")
-    database_path = (
-        str(
+    backend = config.get("backend", "sqlite")
+    if backend not in {"sqlite", "postgresql"}:
+        raise ValueError("memory_config.backend 只能是 sqlite 或 postgresql")
+    database_path: str | None = None
+    database_url_env: str | None = None
+    if enabled and backend == "sqlite":
+        raw_database_path = config.get(
+            "database_path",
+            os.environ.get(
+                APPLICATION_DATABASE_PATH_ENV,
+                str(DEFAULT_APPLICATION_DATABASE_PATH),
+            ),
+        )
+        if not isinstance(raw_database_path, (str, Path)):
+            raise TypeError("memory_config.database_path 必须是字符串或 Path")
+        database_path = str(
             validate_application_database_path(
                 raw_database_path,
                 input_root=request["root_directory"],
                 checkpoint_path=checkpoint_path,
             )
         )
-        if enabled
-        else None
-    )
+        if config.get("database_url_env") is not None:
+            raise ValueError("SQLite Memory 不得配置 database_url_env")
+    elif enabled:
+        if config.get("database_path") is not None:
+            raise ValueError("PostgreSQL Memory 不得把 URL 写入 database_path")
+        raw_database_url_env = config.get(
+            "database_url_env",
+            APPLICATION_DATABASE_URL_ENV,
+        )
+        if raw_database_url_env != APPLICATION_DATABASE_URL_ENV:
+            raise ValueError(
+                f"PostgreSQL Memory 只能引用 {APPLICATION_DATABASE_URL_ENV}"
+            )
+        database_url_env = APPLICATION_DATABASE_URL_ENV
+        database_target = resolve_application_database_state_target(
+            {
+                "backend": "postgresql",
+                "database_path": None,
+                "database_url_env": database_url_env,
+            }
+        )
+        if normalize_application_database_url(database_target).drivername != (
+            "postgresql+psycopg"
+        ):
+            raise ValueError("Memory PostgreSQL 环境变量未指向 PostgreSQL")
 
     recall_limit = config.get("recall_limit", DEFAULT_MEMORY_RECALL_LIMIT)
     if isinstance(recall_limit, bool) or not isinstance(recall_limit, int):
@@ -818,7 +861,9 @@ def create_memory_state(
     return MemoryState(
         enabled=enabled,
         namespace=namespace,
+        backend=cast(Literal["sqlite", "postgresql"], backend),
         database_path=database_path,
+        database_url_env=database_url_env,
         checkpoint_path=(
             str(Path(checkpoint_path).expanduser().resolve())
             if enabled and checkpoint_path is not None
@@ -862,7 +907,9 @@ def create_context_compact_state(
             "trigger_token_threshold",
             "retained_preview_characters",
             "persist_summaries",
+            "backend",
             "database_path",
+            "database_url_env",
         },
         config_name="context_compact_config",
     )
@@ -897,33 +944,62 @@ def create_context_compact_state(
             "context_compact_config.retained_preview_characters 必须位于 0 到 1000 之间"
         )
 
-    raw_database_path = config.get(
-        "database_path",
-        os.environ.get(
-            APPLICATION_DATABASE_PATH_ENV,
-            str(DEFAULT_APPLICATION_DATABASE_PATH),
-        ),
-    )
-    if not isinstance(raw_database_path, (str, Path)):
-        raise TypeError("context_compact_config.database_path 必须是字符串或 Path")
     use_database = enabled and persist_summaries
-    database_path = (
-        str(
+    backend = config.get("backend", "sqlite")
+    if backend not in {"sqlite", "postgresql"}:
+        raise ValueError("context_compact_config.backend 只能是 sqlite 或 postgresql")
+    database_path: str | None = None
+    database_url_env: str | None = None
+    if use_database and backend == "sqlite":
+        raw_database_path = config.get(
+            "database_path",
+            os.environ.get(
+                APPLICATION_DATABASE_PATH_ENV,
+                str(DEFAULT_APPLICATION_DATABASE_PATH),
+            ),
+        )
+        if not isinstance(raw_database_path, (str, Path)):
+            raise TypeError("context_compact_config.database_path 必须是字符串或 Path")
+        database_path = str(
             validate_application_database_path(
                 raw_database_path,
                 input_root=request["root_directory"],
                 checkpoint_path=checkpoint_path,
             )
         )
-        if use_database
-        else None
-    )
+        if config.get("database_url_env") is not None:
+            raise ValueError("SQLite Context Compact 不得配置 database_url_env")
+    elif use_database:
+        if config.get("database_path") is not None:
+            raise ValueError("PostgreSQL Context Compact 不得把 URL 写入 database_path")
+        raw_database_url_env = config.get(
+            "database_url_env",
+            APPLICATION_DATABASE_URL_ENV,
+        )
+        if raw_database_url_env != APPLICATION_DATABASE_URL_ENV:
+            raise ValueError(
+                f"PostgreSQL Context Compact 只能引用 {APPLICATION_DATABASE_URL_ENV}"
+            )
+        database_url_env = APPLICATION_DATABASE_URL_ENV
+        database_target = resolve_application_database_state_target(
+            {
+                "backend": "postgresql",
+                "database_path": None,
+                "database_url_env": database_url_env,
+            }
+        )
+        if normalize_application_database_url(database_target).drivername != (
+            "postgresql+psycopg"
+        ):
+            raise ValueError("Context Compact PostgreSQL 环境变量未指向 PostgreSQL")
     return ContextCompactState(
         enabled=enabled,
         trigger_token_threshold=trigger_token_threshold,
         retained_preview_characters=retained_preview_characters,
         persist_summaries=persist_summaries if enabled else False,
+        backend=cast(Literal["sqlite", "postgresql"], backend),
         database_path=database_path,
+        database_url_env=database_url_env,
         checkpoint_path=(
             str(Path(checkpoint_path).expanduser().resolve())
             if use_database and checkpoint_path is not None
@@ -972,6 +1048,7 @@ def create_application_database_state(
             "enabled",
             "backend",
             "database_path",
+            "database_url_env",
             "auto_create_parent",
             "echo",
             "timeout_seconds",
@@ -982,8 +1059,10 @@ def create_application_database_state(
     if not isinstance(configured_enabled, bool):
         raise TypeError("application_database_config.enabled 必须是布尔值")
     backend = config.get("backend", "sqlite")
-    if backend != "sqlite":
-        raise ValueError("application_database_config.backend 目前只能是 sqlite")
+    if backend not in {"sqlite", "postgresql"}:
+        raise ValueError(
+            "application_database_config.backend 只能是 sqlite 或 postgresql"
+        )
     auto_create_parent = config.get("auto_create_parent", True)
     if not isinstance(auto_create_parent, bool):
         raise TypeError("application_database_config.auto_create_parent 必须是布尔值")
@@ -1002,41 +1081,90 @@ def create_application_database_state(
     if normalized_timeout <= 0 or normalized_timeout > 300:
         raise ValueError("application_database_config.timeout_seconds 必须位于 0 到 300 之间")
 
-    dependent_paths = [
-        value
-        for value in (
-            memory.get("database_path") if memory is not None else None,
-            (context_compact.get("database_path") if context_compact is not None else None),
+    dependent_states = [
+        state
+        for state in (memory, context_compact)
+        if state is not None
+        and bool(state.get("enabled"))
+        and (
+            state is memory
+            or bool(state.get("persist_summaries"))
         )
-        if value is not None
     ]
-    enabled = configured_enabled or bool(dependent_paths)
+    enabled = configured_enabled or bool(dependent_states)
     if not enabled:
         return create_disabled_application_database_state()
 
-    raw_database_path = config.get(
-        "database_path",
-        dependent_paths[0]
-        if dependent_paths
-        else os.environ.get(
-            APPLICATION_DATABASE_PATH_ENV,
-            str(DEFAULT_APPLICATION_DATABASE_PATH),
-        ),
-    )
-    if not isinstance(raw_database_path, (str, Path)):
-        raise TypeError("application_database_config.database_path 必须是字符串或 Path")
-    database_path = validate_application_database_path(
-        raw_database_path,
-        input_root=request["root_directory"],
-        checkpoint_path=checkpoint_path,
-    )
-    for dependent_path in dependent_paths:
-        if Path(dependent_path).expanduser().resolve() != database_path:
-            raise ValueError("应用数据库、Memory 与 Context Summary 必须共用同一个 SQLite 文件")
+    for dependent_state in dependent_states:
+        if dependent_state.get("backend", "sqlite") != backend:
+            raise ValueError("应用数据库、Memory 与 Context Summary 必须使用同一后端")
+
+    database_path: Path | None = None
+    database_url_env: str | None = None
+    if backend == "sqlite":
+        dependent_paths = [
+            state["database_path"]
+            for state in dependent_states
+            if state.get("database_path") is not None
+        ]
+        raw_database_path = config.get(
+            "database_path",
+            dependent_paths[0]
+            if dependent_paths
+            else os.environ.get(
+                APPLICATION_DATABASE_PATH_ENV,
+                str(DEFAULT_APPLICATION_DATABASE_PATH),
+            ),
+        )
+        if not isinstance(raw_database_path, (str, Path)):
+            raise TypeError(
+                "application_database_config.database_path 必须是字符串或 Path"
+            )
+        database_path = validate_application_database_path(
+            raw_database_path,
+            input_root=request["root_directory"],
+            checkpoint_path=checkpoint_path,
+        )
+        if config.get("database_url_env") is not None:
+            raise ValueError("SQLite 应用数据库不得配置 database_url_env")
+        for dependent_path in dependent_paths:
+            if Path(str(dependent_path)).expanduser().resolve() != database_path:
+                raise ValueError(
+                    "应用数据库、Memory 与 Context Summary 必须共用同一个 SQLite 文件"
+                )
+    else:
+        if config.get("database_path") is not None:
+            raise ValueError("PostgreSQL 应用数据库不得把 URL 写入 database_path")
+        raw_database_url_env = config.get(
+            "database_url_env",
+            APPLICATION_DATABASE_URL_ENV,
+        )
+        if raw_database_url_env != APPLICATION_DATABASE_URL_ENV:
+            raise ValueError(
+                f"PostgreSQL 只能引用固定环境变量 {APPLICATION_DATABASE_URL_ENV}"
+            )
+        database_url_env = APPLICATION_DATABASE_URL_ENV
+        database_target = resolve_application_database_state_target(
+            {
+                "backend": "postgresql",
+                "database_path": None,
+                "database_url_env": database_url_env,
+            }
+        )
+        if normalize_application_database_url(database_target).drivername != (
+            "postgresql+psycopg"
+        ):
+            raise ValueError("应用数据库环境变量未指向 PostgreSQL")
+        for dependent_state in dependent_states:
+            if dependent_state.get("database_url_env") != database_url_env:
+                raise ValueError(
+                    "应用数据库、Memory 与 Context Summary 必须引用同一 PostgreSQL 环境变量"
+                )
     return ApplicationDatabaseState(
         enabled=True,
-        backend="sqlite",
-        database_path=str(database_path),
+        backend=cast(Literal["sqlite", "postgresql"], backend),
+        database_path=str(database_path) if database_path is not None else None,
+        database_url_env=database_url_env,
         checkpoint_path=(
             str(Path(checkpoint_path).expanduser().resolve())
             if checkpoint_path is not None

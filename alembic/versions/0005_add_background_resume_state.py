@@ -45,9 +45,12 @@ LEGACY_COUNT_CONSTRAINT = (
 
 def upgrade() -> None:
     """新增恢复列，并允许任务进入独立的恢复排队状态。"""
+    recreate_mode = (
+        "always" if op.get_bind().dialect.name == "sqlite" else "auto"
+    )
     with op.batch_alter_table(
         "background_jobs",
-        recreate="always",
+        recreate=recreate_mode,
     ) as batch_op:
         batch_op.drop_constraint(
             "ck_background_jobs_status_allowed",
@@ -79,9 +82,12 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """删除恢复列，并还原 0.8.0 后台任务状态与计数约束。"""
+    recreate_mode = (
+        "always" if op.get_bind().dialect.name == "sqlite" else "auto"
+    )
     with op.batch_alter_table(
         "background_jobs",
-        recreate="always",
+        recreate=recreate_mode,
     ) as batch_op:
         batch_op.drop_constraint(
             "ck_background_jobs_status_allowed",

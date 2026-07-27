@@ -15,6 +15,7 @@ from app.storage.database import (
     create_application_engine,
     create_session_factory,
     open_application_session,
+    resolve_application_database_state_target,
 )
 from app.storage.orm_models import ContextSummaryModel
 from app.storage.repositories import create_repository_bundle
@@ -224,10 +225,13 @@ def persist_context_summary(state: ContextCompactGraphState) -> dict:
             "context_compact": result_context,
             "summary_draft": None,
         }
-    database_path = context_compact.get("database_path")
-    if database_path is None:
+    try:
+        database_target = resolve_application_database_state_target(
+            context_compact
+        )
+    except (RuntimeError, TypeError, ValueError):
         result_context["status"] = "failed"
-        result_context["last_error"] = "Context Summary 数据库路径未配置。"
+        result_context["last_error"] = "Context Summary 数据库连接引用未配置。"
         return {
             "context_compact": result_context,
             "summary_draft": None,
@@ -237,7 +241,7 @@ def persist_context_summary(state: ContextCompactGraphState) -> dict:
                     stage=f"context_compact_{state['stage']}",
                     node_name="persist_context_summary",
                     category="context",
-                    message="Context Summary 数据库路径未配置，已跳过持久化。",
+                    message="Context Summary 数据库连接引用未配置，已跳过持久化。",
                     fatal=False,
                 )
             ],
@@ -246,7 +250,7 @@ def persist_context_summary(state: ContextCompactGraphState) -> dict:
     engine = None
     try:
         engine = create_application_engine(
-            database_path,
+            database_target,
             input_root=state["workspace"]["input_root"],
             checkpoint_path=context_compact.get("checkpoint_path"),
         )

@@ -38,7 +38,9 @@ def create_disabled_context_compact_state() -> ContextCompactState:
         trigger_token_threshold=DEFAULT_CONTEXT_COMPACT_TRIGGER_TOKENS,
         retained_preview_characters=DEFAULT_RETAINED_PREVIEW_CHARACTERS,
         persist_summaries=False,
+        backend="sqlite",
         database_path=None,
+        database_url_env=None,
         checkpoint_path=None,
         status="disabled",
         current_stage=None,
@@ -101,9 +103,18 @@ def copy_context_compact_state(
             )
         ),
         persist_summaries=bool(context_compact.get("persist_summaries", False)),
+        backend=cast(
+            Literal["sqlite", "postgresql"],
+            context_compact.get("backend", "sqlite"),
+        ),
         database_path=(
             str(context_compact["database_path"])
             if context_compact.get("database_path") is not None
+            else None
+        ),
+        database_url_env=(
+            str(context_compact["database_url_env"])
+            if context_compact.get("database_url_env") is not None
             else None
         ),
         checkpoint_path=(

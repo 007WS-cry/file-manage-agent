@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.8.1"
-description = "支持后台人工恢复、安全报告下载与主图收口的 LangGraph 文件版本治理 Agent"
+version = "0.8.2"
+description = "支持 SQLite/PostgreSQL 双后端与完整多服务部署拓扑的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,6 +20,7 @@ dependencies = [
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-sqlite>=3.1,<4",
     "SQLAlchemy>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
     "alembic>=1.15,<2",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",

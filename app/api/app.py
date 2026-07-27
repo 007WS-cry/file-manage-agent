@@ -13,13 +13,14 @@ from app.api.routes.schedules import router as schedules_router
 from app.api.schemas import HealthResponse
 from app.runtime.job_queue import JobQueue
 from app.runtime.scheduler import SchedulerService
-from app.storage.database import DEFAULT_APPLICATION_DATABASE_PATH
+from app.storage.database import (
+    APPLICATION_DATABASE_URL_ENV,
+    get_application_database_backend,
+    resolve_application_database_target,
+)
 
 """本模块创建 FastAPI 应用，并在 lifespan 内管理持久化后台任务队列连接池。"""
 
-
-# API 默认使用的应用数据库环境变量名称。
-APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
 
 # API 和 Worker 默认共享的 SQLite checkpoint 环境变量名称。
 CHECKPOINT_PATH_ENV = "FILE_GOVERNANCE_CHECKPOINT_PATH"
@@ -33,24 +34,25 @@ DEFAULT_RUNTIME_CHECKPOINT_PATH = Path(
 def create_app(
     *,
     database_path: str | Path | None = None,
+    database_url: str | None = None,
     checkpoint_path: str | Path | None = None,
 ) -> FastAPI:
     """创建具有独立队列生命周期和固定运行路由的 FastAPI 应用。
 
     Args:
-        database_path: 可选应用数据库路径；省略时读取环境变量或默认值。
+        database_path: 可选 SQLite 应用数据库路径。
+        database_url: 可选 PostgreSQL 或 SQLite SQLAlchemy URL；优先级高于环境变量。
         checkpoint_path: 可选后台 checkpoint 路径；省略时读取环境变量或默认值。
 
     Returns:
         已注册健康检查、后台运行和定时计划管理路由的 FastAPI 应用。
     """
-    resolved_database_path = Path(
-        database_path
-        or os.environ.get(
-            APPLICATION_DATABASE_PATH_ENV,
-            str(DEFAULT_APPLICATION_DATABASE_PATH),
-        )
-    ).expanduser().resolve()
+    resolved_database_target = resolve_application_database_target(
+        database_url=database_url,
+        database_path=database_path,
+    )
+    if get_application_database_backend(resolved_database_target) == "postgresql":
+        os.environ[APPLICATION_DATABASE_URL_ENV] = str(resolved_database_target)
     resolved_checkpoint_path = Path(
         checkpoint_path
         or os.environ.get(
@@ -69,11 +71,11 @@ def create_app(
         Yields:
             队列可用期间的应用生命周期控制权。
         """
-        queue = JobQueue(resolved_database_path)
+        queue = JobQueue(resolved_database_target)
         application.state.job_queue = queue
         application.state.checkpoint_path = str(resolved_checkpoint_path)
         scheduler_service = SchedulerService(
-            resolved_database_path,
+            resolved_database_target,
             resolved_checkpoint_path,
             queue=queue,
         )

@@ -667,8 +667,14 @@ class MemoryState(TypedDict):
     namespace: str
     # 当前工作空间的隔离命名空间，默认由输入根目录哈希生成。
 
+    backend: Literal["sqlite", "postgresql"]
+    # 长期 Memory 使用的应用数据库后端。
+
     database_path: str | None
-    # 独立应用数据库文件路径；关闭 Memory 时为 None。
+    # SQLite 应用数据库文件路径；关闭或使用 PostgreSQL 时为 None。
+
+    database_url_env: str | None
+    # PostgreSQL URL 的固定环境变量引用；状态中不得保存含凭据 URL。
 
     checkpoint_path: str | None
     # 可选 SQLite checkpoint 文件路径，用于强制校验两类数据库不共用文件。
@@ -1314,8 +1320,14 @@ class ContextCompactState(TypedDict):
     persist_summaries: bool
     # 是否把有界 Context Summary 写入独立应用数据库。
 
+    backend: Literal["sqlite", "postgresql"]
+    # Context Summary 持久化使用的应用数据库后端。
+
     database_path: str | None
-    # Context Summary 使用的应用数据库文件路径；关闭时为 None。
+    # Context Summary 使用的 SQLite 文件路径；关闭或使用 PostgreSQL 时为 None。
+
+    database_url_env: str | None
+    # PostgreSQL URL 的固定环境变量引用；状态中不得保存含凭据 URL。
 
     checkpoint_path: str | None
     # 可选 SQLite checkpoint 路径，用于强制数据库文件隔离。
@@ -1337,16 +1349,19 @@ class ContextCompactState(TypedDict):
 
 
 class ApplicationDatabaseState(TypedDict):
-    """十张应用表共用的启用状态、SQLite 隔离配置和运行期连接结果。"""
+    """十张应用表共用的启用状态、安全连接引用和运行期连接结果。"""
 
     enabled: bool
     # 是否持久化运行、Memory、审计、人工选择、错误恢复和节点执行；默认关闭。
 
-    backend: Literal["sqlite"]
-    # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
+    backend: Literal["sqlite", "postgresql"]
+    # 当前应用数据库后端；SQLite 为默认值，PostgreSQL 通过 Docker 拓扑启用。
 
     database_path: str | None
-    # 十张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+    # 十张应用表共用的 SQLite 文件绝对路径；关闭或使用 PostgreSQL 时为 None。
+
+    database_url_env: str | None
+    # PostgreSQL URL 的固定环境变量引用；禁止把用户名或密码写入图状态。
 
     checkpoint_path: str | None
     # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。

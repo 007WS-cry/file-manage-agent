@@ -18,9 +18,11 @@ from app.runtime.dispatcher import (
 from app.runtime.job_queue import JobQueue, utc_now
 from app.state.models import BackgroundJobState, ScheduledJobState
 from app.storage.database import (
+    ApplicationDatabaseTarget,
     create_application_engine,
     create_session_factory,
     open_application_session,
+    render_safe_application_database_target,
 )
 from app.storage.orm_models import ScheduledJobModel
 from app.storage.repositories import create_repository_bundle
@@ -148,7 +150,7 @@ class SchedulerService:
 
     def __init__(
         self,
-        database_path: str | Path,
+        database_path: ApplicationDatabaseTarget,
         checkpoint_path: str | Path,
         *,
         timezone_name: str = DEFAULT_SCHEDULER_TIMEZONE,
@@ -163,7 +165,7 @@ class SchedulerService:
         回调也只调用持久化入队函数。
 
         Args:
-            database_path: 已执行 0003 迁移的应用数据库路径。
+            database_path: 已执行最新迁移的 SQLite 路径或 PostgreSQL URL。
             checkpoint_path: Cron 创建的后台任务与 Worker 共用的 checkpoint 路径。
             timezone_name: Scheduler 内部同步任务使用的 IANA 时区。
             reconcile_interval_seconds: 从数据库同步新增、启停计划的间隔秒数。
@@ -189,8 +191,11 @@ class SchedulerService:
         if max_attempts < 1 or max_attempts > 20:
             raise ValueError("max_attempts 必须位于 1 到 20 之间")
 
-        self.database_path = str(Path(database_path).expanduser().resolve())
-        # 当前 Scheduler 使用的应用数据库绝对路径。
+        self.database_target = database_path
+        # 当前进程内用于创建连接的数据库目标；不得写入持久化请求或日志。
+
+        self.database_path = render_safe_application_database_target(database_path)
+        # 兼容诊断属性；PostgreSQL 值会隐藏密码。
 
         self.checkpoint_path = str(Path(checkpoint_path).expanduser().resolve())
         # Cron 创建的后台任务交给 Worker 使用的 checkpoint 绝对路径。
@@ -201,7 +206,7 @@ class SchedulerService:
         self.max_attempts = max_attempts
         # Cron 创建的每个后台任务允许的 Worker 总尝试次数。
 
-        self._engine: Engine = create_application_engine(self.database_path)
+        self._engine: Engine = create_application_engine(self.database_target)
         # 计划 CRUD 和最近触发状态使用的独立 SQLAlchemy Engine。
 
         self._session_factory: sessionmaker = create_session_factory(self._engine)
@@ -210,7 +215,7 @@ class SchedulerService:
         self._owns_queue = queue is None
         # 服务关闭时是否需要同时关闭内部创建的 JobQueue。
 
-        self._queue = queue or JobQueue(self.database_path)
+        self._queue = queue or JobQueue(self.database_target)
         # Cron 回调唯一允许写入的持久化后台队列。
 
         self._scheduler = BlockingScheduler(timezone=scheduler_timezone)
@@ -261,7 +266,7 @@ class SchedulerService:
         trigger = create_cron_trigger(cron_expression, timezone_name)
         normalized_payload = normalize_runtime_envelope(
             request_payload,
-            application_database_path=self.database_path,
+            application_database_path=self.database_target,
             checkpoint_path=self.checkpoint_path,
         )
         created_at = _ensure_aware_utc(now or utc_now())

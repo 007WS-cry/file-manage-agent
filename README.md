@@ -1,9 +1,10 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.1` 已完成向 `1.0.0`
-演进的第一批：主图最终顺序收口、两类后台人工中断的 API 幂等恢复，以及受控
-Markdown 报告下载。`0.8.0` 的模拟邮件 MCP、证据降级、统一 JSON 日志和
-多服务 Docker Compose 编排继续保持不变。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.2` 已完成向 `1.0.0`
+演进的第二批：应用数据库支持 SQLite/PostgreSQL 双后端，PostgreSQL 任务领取
+使用 `FOR UPDATE SKIP LOCKED`，并提供默认 SQLite、按需 PostgreSQL 的完整
+Docker Compose 拓扑。`0.8.1` 的主图最终顺序收口、两类后台人工中断 API 幂等
+恢复和受控 Markdown 报告下载继续保持不变。
 `0.7.2` 的持久化 Cron 计划、独立 APScheduler、只入队触发和隔离 Git
 Worktree 生命周期继续保持不变。
 `0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
@@ -281,6 +282,7 @@ file-manage-agent/
 │   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
 ├── Dockerfile
 ├── docker-compose.yml         # 迁移、API、Worker、Scheduler 与模拟 MCP 编排
+├── docker-compose.postgresql.yml # 仅通过 Docker 启用 PostgreSQL 的 override
 ├── requirements.txt           # 基础可编辑安装入口，依赖版本统一由 pyproject.toml 管理
 └── pyproject.toml
 ```
@@ -1115,6 +1117,19 @@ python -m alembic upgrade head
 完整状态转换、接口契约与验收矩阵见
 [0.8.1 主图收口、后台人工恢复与报告获取](docs/version-0.8.1-main-closure-runtime-resume.md)。
 
+## 0.8.2 PostgreSQL 与完整部署拓扑
+
+应用数据库现在接受 SQLite 文件路径或 `postgresql+psycopg` URL。默认
+`docker-compose.yml` 仍只启动 SQLite，普通用户的启动方式和资源成本不变；
+只有显式叠加 `docker-compose.postgresql.yml` 时才启动官方 PostgreSQL 容器。
+Alembic、API、Worker 和 Scheduler 读取同一个 `FILE_GOVERNANCE_DATABASE_URL`，
+迁移服务等待数据库健康后执行，三个长期服务继续等待迁移成功。
+
+PostgreSQL URL 只存在于进程环境中。后台任务、Cron 模板和 LangGraph checkpoint
+仅保存 `FILE_GOVERNANCE_DATABASE_URL` 这一固定环境变量引用，不会持久化用户名或
+密码。多个 Worker 领取任务时使用 PostgreSQL 行锁和 `SKIP LOCKED`；SQLite
+仍使用原有条件更新，两个后端保持同一任务状态协议。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1645,6 +1660,9 @@ python -m compileall -q app tests
 - SQLite checkpoint 恢复状态和原始数据库字节均不包含 API Key 实际值、私有 Prompt
   或长正文尾部；
 - 应用数据库路径与 checkpoint 文件隔离、七个 Repository 的事务提交和异常回滚；
+- Docker PostgreSQL 从空库迁移、0005 回退重放、Repository JSON 往返、
+  `SKIP LOCKED` 双 Worker 领取和后台任务收口；
+- 默认 SQLite Compose 与 PostgreSQL override 合并模型、健康依赖和迁移门禁；
 - Alembic `upgrade head`、0002 单独回退、`downgrade base`、再次升级及 ORM
   元数据一致性；
 - 错误恢复跨运行隔离、重试次数倒退拒绝、节点输入摘要不可变和结果复用查询；
@@ -1679,16 +1697,16 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.8.1 -t file-manage-agent:0.8.1 .
+docker build --build-arg APP_VERSION=0.8.2 -t file-manage-agent:0.8.2 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.8.1 \
+  --build-arg APP_VERSION=0.8.2 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.8.1-mainstream .
+  -t file-manage-agent:0.8.2-mainstream .
 ```
 
 镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
@@ -1697,7 +1715,7 @@ docker build \
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.1 \
+  file-manage-agent:0.8.2 \
   python -m alembic upgrade head
 ```
 
@@ -1707,7 +1725,7 @@ docker run --rm \
 docker run --rm -p 8000:8000 \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.1
+  file-manage-agent:0.8.2
 ```
 
 使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
@@ -1716,7 +1734,7 @@ docker run --rm -p 8000:8000 \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.1 \
+  file-manage-agent:0.8.2 \
   file-governance-worker \
   --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
@@ -1727,7 +1745,7 @@ docker run --rm \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.1 \
+  file-manage-agent:0.8.2 \
   file-governance-scheduler \
   --database-path /data/artifacts/database/file-governance-app.sqlite3 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -1739,8 +1757,34 @@ docker run --rm \
 docker compose up --build
 ```
 
-Compose 中 `/data/input` 始终只读，API、Worker 和 Scheduler 共享同一个 named
-volume 中的应用数据库和 checkpoint，模拟 MCP 只读取镜像内公开示例数据。四个
+默认命令继续使用 named volume 中的 SQLite 应用数据库。要仅通过 Docker 启用
+PostgreSQL，先从示例创建本地环境文件并修改密码；Compose URL 插值不做编码，
+因此本拓扑要求用户名、密码和数据库名只使用 `A-Z/a-z/0-9/._~-`：
+
+```bash
+cp .env.example .env
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  up --build
+```
+
+PostgreSQL 数据保存在独立的 `file-governance-postgresql-data` named volume。
+迁移容器会等待 `pg_isready` 健康检查通过再执行 `alembic upgrade head`，API、
+Worker 和 Scheduler 随后等待迁移成功。需要停止服务但保留数据库时执行：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  down
+```
+
+只有明确需要删除演示数据库时才额外添加 `--volumes`。应用数据库切换为
+PostgreSQL 后，LangGraph checkpoint 仍保存在共享产物卷中的独立 SQLite 文件。
+
+Compose 中 `/data/input` 始终只读，API、Worker 和 Scheduler 共享同一个应用
+数据库和 checkpoint，模拟 MCP 只读取镜像内公开示例数据。四个
 长期进程都把日志写为单行 JSON。镜像已安装 Git，但构建上下文不包含 `.git`；如需演示显式
 仓库写入 Task，必须另外把测试 Git 仓库以可写方式挂载到
 `/workspace/repository`，并在受信任请求中显式设置 `project_git_root`。
@@ -1757,7 +1801,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.8.1 \
+  file-manage-agent:0.8.2 \
   file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1770,14 +1814,15 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.8.1 \
+  file-manage-agent:0.8.2 \
   file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
 
 ## 当前未实现
 
-- PostgreSQL 等生产级 Checkpointer；
+- PostgreSQL LangGraph Checkpointer；应用数据库已经支持 PostgreSQL，
+  checkpoint 本批仍使用独立 SQLite 文件；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
 - Worktree 自动合并、Pull Request 或复杂冲突处理；
