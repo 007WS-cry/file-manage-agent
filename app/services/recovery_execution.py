@@ -45,9 +45,9 @@ from app.utils.runtime import create_error_record, utc_now_iso
 RECOVERY_NODE_TRANSITIONS = {
     "execute_before_run_hooks": "validate_request",
     "validate_request": "load_system_prompt",
-    "load_system_prompt": "load_skill_registry",
-    "load_skill_registry": "recall_long_term_memory",
-    "recall_long_term_memory": "plan_run_tasks",
+    "load_system_prompt": "recall_long_term_memory",
+    "recall_long_term_memory": "load_skill_registry",
+    "load_skill_registry": "plan_run_tasks",
     "plan_run_tasks": "run_inventory_subgraph",
     "run_inventory_subgraph": "sync_inventory_task_status",
     "sync_inventory_task_status": "run_context_compact_after_inventory",
@@ -62,7 +62,9 @@ RECOVERY_NODE_TRANSITIONS = {
     "run_recommendation_subgraph": "sync_recommendation_task_status",
     "sync_recommendation_task_status": "generate_governance_report",
     "sync_human_review_task_status": "generate_governance_report",
-    "persist_long_term_memory": "execute_after_run_hooks",
+    "validate_report_result": "persist_long_term_memory",
+    "persist_long_term_memory": "finalize_run_tasks",
+    "finalize_run_tasks": "execute_after_run_hooks",
     "execute_after_run_hooks": "finalize_run",
 }
 
@@ -101,7 +103,7 @@ RECOVERY_TASK_NODES = {
     "evidence": "run_evidence_subgraph",
     "recommendation": "run_recommendation_subgraph",
     "human_review": "sync_human_review_task_status",
-    "report": "generate_failure_report",
+    "report": "validate_report_result",
 }
 
 # Team Orchestration 内部子图调用错误到顶层分派包装节点的固定映射。
@@ -163,6 +165,8 @@ RECOVERABLE_NODE_TASK_TYPES = {
     "run_recommendation_subgraph": "recommendation",
     "recall_long_term_memory": "inventory",
     "persist_long_term_memory": "report",
+    "validate_report_result": "report",
+    "finalize_run_tasks": "report",
 }
 
 # 计算子图输入摘要时允许读取的顶层状态字段。

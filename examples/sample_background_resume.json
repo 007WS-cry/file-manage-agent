@@ -1,0 +1,11 @@
+{
+  "request_id": "resume-request-001",
+  "interrupt_id": "请替换为状态接口当前返回的 interrupt_id",
+  "kind": "file_governance_review",
+  "value": {
+    "selections": {
+      "请替换为 group_id": "请替换为组内 file_id"
+    },
+    "review_note": "通过后台 API 完成人工确认"
+  }
+}

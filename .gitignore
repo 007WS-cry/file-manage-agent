@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.7.2 Task、恢复、后台任务、计划、Worktree 和发布验收快照含运行信息
+# 0.8.1 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -178,6 +178,10 @@ review_response.json
 review_response*.json
 recovery_response.json
 recovery_response*.json
+background_resume_request.json
+background_resume_request*.json
+background_resume_response.json
+background_resume_response*.json
 
 # 本地 Docker 手工测试请求包含运行路径，不提交到仓库
 docker_request.json

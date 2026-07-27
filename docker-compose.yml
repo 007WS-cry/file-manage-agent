@@ -4,8 +4,8 @@ x-file-governance-service: &file-governance-service
   build:
     context: .
     args:
-      APP_VERSION: 0.8.0
-  image: file-manage-agent:0.8.0
+      APP_VERSION: 0.8.1
+  image: file-manage-agent:0.8.1
   environment:
     FILE_GOVERNANCE_DATABASE_PATH: /data/artifacts/database/file-governance-app.sqlite3
     FILE_GOVERNANCE_CHECKPOINT_PATH: /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -70,8 +70,8 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: 0.8.0
-    image: file-manage-agent:0.8.0
+        APP_VERSION: 0.8.1
+    image: file-manage-agent:0.8.1
     command:
       [
         "file-governance-mock-email-mcp",

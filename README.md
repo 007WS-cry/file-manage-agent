@@ -1,8 +1,9 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.0` 已完成第三批：
-模拟邮件 MCP、MCP 优先且本地日志自动降级的证据链、四进程统一 JSON 日志，
-以及 API、Worker、Scheduler、模拟邮件 MCP 的 Docker Compose 编排。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.1` 已完成向 `1.0.0`
+演进的第一批：主图最终顺序收口、两类后台人工中断的 API 幂等恢复，以及受控
+Markdown 报告下载。`0.8.0` 的模拟邮件 MCP、证据降级、统一 JSON 日志和
+多服务 Docker Compose 编排继续保持不变。
 `0.7.2` 的持久化 Cron 计划、独立 APScheduler、只入队触发和隔离 Git
 Worktree 生命周期继续保持不变。
 `0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
@@ -28,6 +29,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 进程内或 SQLite LangGraph checkpoint；
 - 独立 SQLAlchemy 应用数据库、十表 ORM/迁移和 Repository 数据访问边界；
 - `POST /runs` 持久化后台提交，以及按 `run_id`、`job_id` 查询的脱敏 HTTP API；
+- `POST /runs/{run_id}/resume` 通过当前 `interrupt_id` 幂等恢复主版本审核或错误恢复；
+- `GET /runs/{run_id}/report` 在 `report_root`、符号链接、扩展名和大小边界内下载报告；
+- 首次执行/异常重试与正常人工恢复分别使用 `attempt_count`、`resume_count` 计数；
 - 独立 Worker 事务领取、限时租约、短事务心跳、失败重新入队和尝试次数上限；
 - Worker 异常退出后的过期租约扫描、任务重新领取和最终失败收口；
 - 持久化 Cron 计划的创建、查看、启用和停用 HTTP API；
@@ -136,7 +140,8 @@ direct-failure 出口统一改到 Recovery，并在不改变正常治理结论�
 `0.7.1` 在业务图外新增 API、持久化队列和 Worker，顶层业务节点及 conditional
 router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestration 中加入
 只针对显式仓库写入 Task 的 Worktree 条件分支；`0.8.0` 在 Evidence 子图新增
-邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排。
+邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排；
+`0.8.1` 固定主图准备与收口顺序，并让两类 interrupt 可以由后台 API 安全续跑。
 
 ## 安全边界
 
@@ -152,6 +157,10 @@ router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestrati
 - 产物 ID 不允许包含路径分隔符，JSON 使用同目录临时文件和原子替换写入。
 - 分叉、链不完整、候选近似并列或低置信度结果必须人工确认。
 - `interrupt()` 载荷只包含文件 ID、文件名、评分和理由，不包含完整正文。
+- 后台恢复必须同时匹配当前 `interrupt_id` 与 `kind`；过期 ID、幂等键冲突和
+  非 waiting_human 任务均被拒绝，正常恢复不会消耗异常重试次数。
+- 报告下载重新解析任务声明的 `workspace.report_root`，拒绝路径越界、符号链接、
+  非 Markdown 文件和超过大小上限的文件。
 - 本地发送日志工具只读取用户明确提供的普通 UTF-8 JSON 文件，拒绝符号链接、
   超限文件和未知协议版本，不打开附件、不访问网络且不执行日志内容。
 - 证据匹配遇到多个非重复候选时保留未匹配结果，不依靠排序猜测文件版本。
@@ -222,7 +231,7 @@ file-manage-agent/
 │   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
 │   ├── runtime/               # 后台队列、请求分派、Worker 与 Scheduler
-│   ├── api/                   # 运行提交、状态查询和 Cron 计划路由
+│   ├── api/                   # 运行提交、状态、恢复、报告和 Cron 计划路由
 │   ├── mcp_servers/           # 只读脱敏模拟邮件 MCP 服务
 │   ├── observability/         # 四服务统一 JSON 日志与关联上下文
 │   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
@@ -240,6 +249,7 @@ file-manage-agent/
 ├── examples/sample_delivery_log.json
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
 ├── examples/sample_background_submission.json # 0.7.1 HTTP 后台提交示例
+├── examples/sample_background_resume.json # 0.8.1 后台 interrupt 幂等恢复示例
 ├── examples/sample_schedule.json # 0.7.2 持久化 Cron 计划示例
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
@@ -264,6 +274,7 @@ file-manage-agent/
 ├── docs/version-0.7.1-background-runtime.md # 0.8.0 第一批后台运行说明
 ├── docs/version-0.7.2-scheduler-worktree.md # 0.8.0 第二批调度与 Worktree 说明
 ├── docs/release-0.8.0-background-runtime.md # 0.8.0 第三批发布与多服务运行说明
+├── docs/version-0.8.1-main-closure-runtime-resume.md # 1.0.0 第一批主图、恢复与报告说明
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
@@ -1084,6 +1095,26 @@ direct-failure 分支统一改到恢复入口：
 完整协议、安全边界、配置和验收矩阵见
 [0.8.0 后台运行时发布说明](docs/release-0.8.0-background-runtime.md)。
 
+## 0.8.1 主图收口、后台人工恢复与报告获取
+
+第一批把主图准备阶段固定为 `System Prompt → Memory Recall → Skill Registry →
+Task DAG`，把所有业务报告统一收敛到 `validate_report_result → Memory Persist →
+finalize_run_tasks → after_run hooks`。`graphs/routers.py` 中的新增路由均由
+`add_conditional_edges` 直接调用，`nodes/` 中的新增函数也都由主图显式注册。
+
+后台 Worker 会把单个 `file_governance_review` 或 `error_recovery` 中断的稳定
+`interrupt_id` 和最小载荷写入 `background_jobs.pending_interrupt`。API 接受恢复
+请求后进入 `resume_queued`，Worker 从同一 SQLite checkpoint 使用
+`Command(resume=...)` 续跑；相同 `request_id`、中断身份和值摘要的重复请求返回
+同一结果，不会重复入队。迁移前必须执行：
+
+```bash
+python -m alembic upgrade head
+```
+
+完整状态转换、接口契约与验收矩阵见
+[0.8.1 主图收口、后台人工恢复与报告获取](docs/version-0.8.1-main-closure-runtime-resume.md)。
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1186,6 +1217,21 @@ curl -X POST http://127.0.0.1:8000/runs \
 ```bash
 curl http://127.0.0.1:8000/runs/<run_id>
 curl http://127.0.0.1:8000/runs/jobs/<job_id>
+```
+
+当状态中的 `background_job.pending_interrupt` 非空时，使用其中的
+`interrupt_id`、`kind` 和协议载荷构造恢复请求：
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/<run_id>/resume \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_background_resume.json
+```
+
+报告生成后使用受控接口下载，不应直接拼接响应中的本地路径：
+
+```bash
+curl -OJ http://127.0.0.1:8000/runs/<run_id>/report
 ```
 
 Worker 手工演示或集成测试可以增加 `--once`，只执行一次过期租约恢复和任务领取
@@ -1633,16 +1679,16 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.8.0 -t file-manage-agent:0.8.0 .
+docker build --build-arg APP_VERSION=0.8.1 -t file-manage-agent:0.8.1 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.8.0 \
+  --build-arg APP_VERSION=0.8.1 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.8.0-mainstream .
+  -t file-manage-agent:0.8.1-mainstream .
 ```
 
 镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
@@ -1651,7 +1697,7 @@ docker build \
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:0.8.1 \
   python -m alembic upgrade head
 ```
 
@@ -1661,7 +1707,7 @@ docker run --rm \
 docker run --rm -p 8000:8000 \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0
+  file-manage-agent:0.8.1
 ```
 
 使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
@@ -1670,7 +1716,7 @@ docker run --rm -p 8000:8000 \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:0.8.1 \
   file-governance-worker \
   --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
@@ -1681,7 +1727,7 @@ docker run --rm \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:0.8.1 \
   file-governance-scheduler \
   --database-path /data/artifacts/database/file-governance-app.sqlite3 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -1711,7 +1757,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:0.8.1 \
   file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1724,7 +1770,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:0.8.1 \
   file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```

@@ -40,9 +40,7 @@ RUNTIME_APPLICATION_TABLES = {
 
 # 当前迁移 head 应包含的十张应用表。
 APPLICATION_TABLES = (
-    BASE_APPLICATION_TABLES
-    | RECOVERY_APPLICATION_TABLES
-    | RUNTIME_APPLICATION_TABLES
+    BASE_APPLICATION_TABLES | RECOVERY_APPLICATION_TABLES | RUNTIME_APPLICATION_TABLES
 )
 
 
@@ -147,6 +145,51 @@ def test_runtime_migration_downgrades_without_removing_recovery_tables(
     command.upgrade(config, "head")
 
     assert APPLICATION_TABLES <= read_table_names(database_path)
+    command.check(config)
+
+
+def test_background_resume_migration_adds_and_removes_resume_columns(
+    tmp_path: Path,
+) -> None:
+    """0005 应新增后台恢复列，并可完整回退到 0.8.0 的 0004 结构。"""
+    database_path = tmp_path / "application.sqlite3"
+    config = create_alembic_config(database_path)
+
+    command.upgrade(config, "head")
+    engine = create_engine(build_application_database_url(database_path))
+    try:
+        inspector = inspect(engine)
+        upgraded_columns = {
+            item["name"] for item in inspector.get_columns("background_jobs")
+        }
+        upgraded_constraints = inspector.get_check_constraints("background_jobs")
+    finally:
+        engine.dispose()
+
+    assert {"resume_count", "pending_interrupt", "resume_state"} <= upgraded_columns
+    assert any(
+        "resume_queued" in str(item.get("sqltext", ""))
+        for item in upgraded_constraints
+    )
+
+    command.downgrade(config, "0004_mcp_recovery_category")
+    engine = create_engine(build_application_database_url(database_path))
+    try:
+        inspector = inspect(engine)
+        legacy_columns = {
+            item["name"] for item in inspector.get_columns("background_jobs")
+        }
+        legacy_constraints = inspector.get_check_constraints("background_jobs")
+    finally:
+        engine.dispose()
+
+    assert {"resume_count", "pending_interrupt", "resume_state"}.isdisjoint(legacy_columns)
+    assert all(
+        "resume_queued" not in str(item.get("sqltext", ""))
+        for item in legacy_constraints
+    )
+
+    command.upgrade(config, "head")
     command.check(config)
 
 

@@ -1,4 +1,4 @@
-# 0.8.0 邮件 MCP、JSON 日志、多服务编排与治理图依赖统一来自 pyproject.toml。
+# 0.8.1 后台人工恢复、安全报告下载与治理图收口依赖统一来自 pyproject.toml。
 -e .
 
 # Claude、Gemini、DeepSeek、Qwen、OpenRouter 和 LiteLLM 请按 README 使用 extras 按需安装。

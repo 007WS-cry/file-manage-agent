@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.8.0"
-description = "支持邮件 MCP 证据、统一 JSON 日志、多服务编排与后台运行时的 LangGraph 文件版本治理 Agent"
+version = "0.8.1"
+description = "支持后台人工恢复、安全报告下载与主图收口的 LangGraph 文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

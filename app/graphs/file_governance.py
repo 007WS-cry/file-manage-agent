@@ -12,10 +12,11 @@ from app.graphs.routers import (
     route_after_run_hooks_result,
     route_before_run_hooks_result,
     route_evidence_result,
-    route_failure_report_task_sync,
     route_recoverable_node_result,
+    route_report_result,
     route_skill_registry_result,
     route_system_prompt_result,
+    route_task_finalization_result,
     route_team_orchestration_result,
     route_version_analysis_result,
 )
@@ -34,6 +35,7 @@ from app.nodes.report import (
     generate_governance_report,
     generate_lifecycle_failure_report,
     generate_no_data_report,
+    validate_report_result,
 )
 from app.nodes.review import (
     apply_human_selection,
@@ -53,12 +55,12 @@ from app.nodes.subgraphs_nodes import (
 from app.nodes.task_tracking import (
     dispatch_content_subagent_task,
     dispatch_evidence_subagent_task,
+    finalize_run_tasks,
     plan_run_tasks,
     sync_evidence_task_status,
     sync_human_review_task_status,
     sync_inventory_task_status,
     sync_recommendation_task_status,
-    sync_report_task_status,
     sync_version_task_status,
 )
 from app.services.recovery_execution import (
@@ -146,8 +148,9 @@ def build_file_governance_graph(
     builder.add_node("generate_failure_report", generate_failure_report)
     builder.add_node("generate_no_data_report", generate_no_data_report)
     builder.add_node("generate_governance_report", generate_governance_report)
-    builder.add_node("sync_report_task_status", sync_report_task_status)
+    builder.add_node("validate_report_result", validate_report_result)
     builder.add_node("persist_long_term_memory", persist_long_term_memory)
+    builder.add_node("finalize_run_tasks", finalize_run_tasks)
     builder.add_node("execute_after_run_hooks", execute_after_run_hooks)
     builder.add_node("generate_lifecycle_failure_report", generate_lifecycle_failure_report)
     builder.add_node("finalize_run", finalize_run)
@@ -171,15 +174,7 @@ def build_file_governance_graph(
         "load_system_prompt",
         route_system_prompt_result,
         {
-            "continue": "load_skill_registry",
-            "failure": "run_error_recovery_subgraph",
-        },
-    )
-    builder.add_conditional_edges(
-        "load_skill_registry",
-        route_skill_registry_result,
-        {
-            "ready": "recall_long_term_memory",
+            "continue": "recall_long_term_memory",
             "failure": "run_error_recovery_subgraph",
         },
     )
@@ -187,8 +182,16 @@ def build_file_governance_graph(
         "recall_long_term_memory",
         route_recoverable_node_result,
         {
-            "continue": "plan_run_tasks",
+            "continue": "load_skill_registry",
             "recovery": "run_error_recovery_subgraph",
+        },
+    )
+    builder.add_conditional_edges(
+        "load_skill_registry",
+        route_skill_registry_result,
+        {
+            "ready": "plan_run_tasks",
+            "failure": "run_error_recovery_subgraph",
         },
     )
     builder.add_conditional_edges(
@@ -302,20 +305,28 @@ def build_file_governance_graph(
         resume_after_failed_stage,
         resume_after_targets,
     )
+    builder.add_edge("generate_failure_report", "validate_report_result")
+    builder.add_edge("generate_no_data_report", "validate_report_result")
+    builder.add_edge("generate_governance_report", "validate_report_result")
     builder.add_conditional_edges(
-        "generate_failure_report",
-        route_failure_report_task_sync,
+        "validate_report_result",
+        route_report_result,
         {
-            "sync": "sync_report_task_status",
-            "skip": "persist_long_term_memory",
+            "continue": "persist_long_term_memory",
+            "recovery": "run_error_recovery_subgraph",
         },
     )
-    builder.add_edge("generate_no_data_report", "sync_report_task_status")
-    builder.add_edge("generate_governance_report", "sync_report_task_status")
-    builder.add_edge("sync_report_task_status", "persist_long_term_memory")
     builder.add_conditional_edges(
         "persist_long_term_memory",
         route_recoverable_node_result,
+        {
+            "continue": "finalize_run_tasks",
+            "recovery": "run_error_recovery_subgraph",
+        },
+    )
+    builder.add_conditional_edges(
+        "finalize_run_tasks",
+        route_task_finalization_result,
         {
             "continue": "execute_after_run_hooks",
             "recovery": "run_error_recovery_subgraph",

@@ -144,7 +144,7 @@ class BackgroundJobModel(Base):
     # 后台任务由手动请求还是 Cron 计划触发。
 
     status: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    # 后台任务在排队、领取、执行、中断和终结阶段的状态。
+    # 后台任务在首次排队、恢复排队、领取、执行、中断和终结阶段的状态。
 
     request_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     # 已规范化的治理请求信封，不得包含密钥实际值或完整文档正文。
@@ -161,6 +161,20 @@ class BackgroundJobModel(Base):
 
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     # Worker 崩溃或运行失败后允许重新领取的最大次数。
+
+    resume_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
+    # 已成功应用的人工恢复次数，不计入异常重试次数。
+
+    pending_interrupt: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 当前等待 API 恢复的中断 ID、协议类型和最小载荷。
+
+    resume_state: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 最近一次幂等恢复请求；等待执行时包含恢复值，应用后仅保留元数据。
 
     available_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -217,12 +231,13 @@ class BackgroundJobModel(Base):
             name="trigger_source_allowed",
         ),
         CheckConstraint(
-            "status IN ('queued', 'leased', 'running', 'waiting_human', "
+            "status IN ('queued', 'resume_queued', 'leased', 'running', 'waiting_human', "
             "'completed', 'partial', 'failed')",
             name="status_allowed",
         ),
         CheckConstraint(
-            "attempt_count >= 0 AND max_attempts >= 1 AND attempt_count <= max_attempts",
+            "attempt_count >= 0 AND max_attempts >= 1 AND attempt_count <= max_attempts "
+            "AND resume_count >= 0",
             name="attempt_counts_valid",
         ),
         Index(
@@ -232,7 +247,7 @@ class BackgroundJobModel(Base):
             "created_at",
         ),
     )
-    # 限制来源、生命周期和尝试次数，并优化 Worker 的领取查询。
+    # 限制来源、生命周期、异常尝试和恢复计数，并优化 Worker 的领取查询。
 
 
 class ScheduledJobModel(Base):
