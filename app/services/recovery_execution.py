@@ -29,6 +29,7 @@ from app.storage.database import (
     create_application_engine,
     create_session_factory,
     open_application_session,
+    resolve_application_database_state_target,
 )
 from app.storage.repositories import create_repository_bundle
 from app.utils.error_context import (
@@ -399,7 +400,10 @@ def _database_is_ready(state: Mapping[str, Any]) -> bool:
     return bool(
         database.get("enabled")
         and database.get("status") == "ready"
-        and database.get("database_path")
+        and (
+            database.get("database_path")
+            or database.get("database_url_env")
+        )
     )
 
 
@@ -419,8 +423,9 @@ def load_persisted_node_execution(
     if not _database_is_ready(state):
         return None
     database = state["application_database"]
+    database_target = resolve_application_database_state_target(database)
     engine = create_application_engine(
-        database["database_path"],
+        database_target,
         input_root=state.get("workspace", {}).get("input_root"),
         checkpoint_path=database.get("checkpoint_path"),
         echo=bool(database.get("echo", False)),
@@ -448,8 +453,9 @@ def persist_node_execution(
     if not _database_is_ready(state):
         return
     database = state["application_database"]
+    database_target = resolve_application_database_state_target(database)
     engine = create_application_engine(
-        database["database_path"],
+        database_target,
         input_root=state.get("workspace", {}).get("input_root"),
         checkpoint_path=database.get("checkpoint_path"),
         echo=bool(database.get("echo", False)),
@@ -487,8 +493,9 @@ def persist_recovery_error(
     if not _database_is_ready(state):
         return
     database = state["application_database"]
+    database_target = resolve_application_database_state_target(database)
     engine = create_application_engine(
-        database["database_path"],
+        database_target,
         input_root=state.get("workspace", {}).get("input_root"),
         checkpoint_path=database.get("checkpoint_path"),
         echo=bool(database.get("echo", False)),

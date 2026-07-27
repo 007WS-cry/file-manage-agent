@@ -16,6 +16,7 @@ from app.state.models import (
     FileGovernanceState,
     RecommendationGraphState,
 )
+from app.storage.database import resolve_application_database_state_target
 from app.storage.memory_repository import MemoryRepository
 from app.utils.error_context import create_node_error
 
@@ -37,10 +38,11 @@ def recall_long_term_memory(state: FileGovernanceState) -> dict:
     memory = copy_memory_state(state.get("memory"))
     if not memory["enabled"]:
         return {"memory": memory}
-    database_path = memory.get("database_path")
-    if database_path is None:
+    try:
+        database_target = resolve_application_database_state_target(memory)
+    except (RuntimeError, TypeError, ValueError):
         memory["status"] = "failed"
-        memory["last_error"] = "长期 Memory 数据库路径未配置。"
+        memory["last_error"] = "长期 Memory 数据库连接引用未配置。"
         return {
             "memory": memory,
             "errors": [
@@ -49,7 +51,7 @@ def recall_long_term_memory(state: FileGovernanceState) -> dict:
                     stage="memory_recall",
                     node_name="recall_long_term_memory",
                     category="memory",
-                    message="长期 Memory 数据库路径未配置，已跳过历史召回。",
+                    message="长期 Memory 数据库连接引用未配置，已跳过历史召回。",
                     fatal=False,
                 )
             ],
@@ -58,7 +60,7 @@ def recall_long_term_memory(state: FileGovernanceState) -> dict:
     repository: MemoryRepository | None = None
     try:
         repository = MemoryRepository(
-            database_path,
+            database_target,
             input_root=state["workspace"]["input_root"],
             checkpoint_path=memory.get("checkpoint_path"),
         )
@@ -208,10 +210,11 @@ def persist_long_term_memory(state: FileGovernanceState) -> dict:
         memory["last_error"] = None
         return {"memory": memory}
 
-    database_path = memory.get("database_path")
-    if database_path is None:
+    try:
+        database_target = resolve_application_database_state_target(memory)
+    except (RuntimeError, TypeError, ValueError):
         memory["status"] = "failed"
-        memory["last_error"] = "长期 Memory 数据库路径未配置。"
+        memory["last_error"] = "长期 Memory 数据库连接引用未配置。"
         return {
             "memory": memory,
             "errors": [
@@ -220,7 +223,7 @@ def persist_long_term_memory(state: FileGovernanceState) -> dict:
                     stage="memory_persist",
                     node_name="persist_long_term_memory",
                     category="memory",
-                    message="长期 Memory 数据库路径未配置，已跳过持久化。",
+                    message="长期 Memory 数据库连接引用未配置，已跳过持久化。",
                     fatal=False,
                 )
             ],
@@ -229,7 +232,7 @@ def persist_long_term_memory(state: FileGovernanceState) -> dict:
     repository: MemoryRepository | None = None
     try:
         repository = MemoryRepository(
-            database_path,
+            database_target,
             input_root=state["workspace"]["input_root"],
             checkpoint_path=memory.get("checkpoint_path"),
         )

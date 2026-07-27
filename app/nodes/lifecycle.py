@@ -35,6 +35,7 @@ from app.storage.database import (
     create_application_engine,
     create_session_factory,
     open_application_session,
+    resolve_application_database_state_target,
 )
 from app.storage.orm_models import HumanReviewModel
 from app.storage.repositories import create_repository_bundle
@@ -116,11 +117,11 @@ def initialize_run(state: FileGovernanceState) -> dict:
 
     engine = None
     try:
-        database_path = application_database.get("database_path")
-        if database_path is None:
-            raise ValueError("应用数据库已启用但未配置 database_path")
+        database_target = resolve_application_database_state_target(
+            application_database
+        )
         engine = create_application_engine(
-            database_path,
+            database_target,
             input_root=workspace["input_root"],
             checkpoint_path=application_database.get("checkpoint_path"),
             echo=application_database["echo"],
@@ -438,11 +439,11 @@ def finalize_run(state: FileGovernanceState) -> dict:
 
     engine = None
     try:
-        database_path = application_database.get("database_path")
-        if database_path is None:
-            raise ValueError("应用数据库已启用但未配置 database_path")
+        database_target = resolve_application_database_state_target(
+            application_database
+        )
         engine = create_application_engine(
-            database_path,
+            database_target,
             input_root=state["workspace"]["input_root"],
             checkpoint_path=application_database.get("checkpoint_path"),
             echo=application_database["echo"],

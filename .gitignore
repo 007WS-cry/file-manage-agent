@@ -168,6 +168,13 @@ database/
 *.db
 *.db-*
 
+# PostgreSQL 导出、临时凭据和本地容器数据不得提交
+*.sql
+*.dump
+*.backup
+postgres-data/
+postgresql-data/
+
 # 真实业务输入文件不提交；允许使用 .gitkeep 保留空目录
 data/input/*
 !data/input/.gitkeep

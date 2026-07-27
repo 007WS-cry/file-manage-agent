@@ -9,6 +9,7 @@ from sqlalchemy.engine import Engine
 from app.services.memory_policy import validate_memory_item
 from app.state.models import MemoryItemState
 from app.storage.database import (
+    ApplicationDatabaseTarget,
     create_application_engine,
     create_session_factory,
     open_application_session,
@@ -24,7 +25,7 @@ class MemoryRepository:
 
     def __init__(
         self,
-        database_path: str | Path,
+        database_path: ApplicationDatabaseTarget,
         *,
         input_root: str | Path | None = None,
         checkpoint_path: str | Path | None = None,
@@ -32,7 +33,7 @@ class MemoryRepository:
         """创建专用于短生命周期事务的应用数据库 Engine。
 
         Args:
-            database_path: 已由配置指定的应用数据库 SQLite 文件路径。
+            database_path: 已由进程配置解析的 SQLite 路径或 PostgreSQL URL。
             input_root: 可选只读业务输入目录，用于数据库路径隔离校验。
             checkpoint_path: 可选 LangGraph Checkpointer 数据库路径。
         """

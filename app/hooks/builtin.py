@@ -11,6 +11,7 @@ from app.storage.database import (
     create_application_engine,
     create_session_factory,
     open_application_session,
+    resolve_application_database_state_target,
 )
 from app.storage.orm_models import ToolCallAuditModel
 from app.storage.repositories import create_repository_bundle
@@ -420,12 +421,12 @@ def flush_tool_audit_hook(state: FileGovernanceState) -> HookResult:
             message="应用数据库不可用，已跳过工具审计持久化。",
             state_update={},
         )
-    database_path = application_database.get("database_path")
-    if not isinstance(database_path, str) or not database_path.strip():
-        raise ValueError("工具审计缺少应用数据库路径")
+    database_target = resolve_application_database_state_target(
+        application_database
+    )
 
     engine = create_application_engine(
-        database_path,
+        database_target,
         input_root=workspace.get("input_root"),
         checkpoint_path=application_database.get("checkpoint_path"),
         echo=bool(application_database.get("echo", False)),

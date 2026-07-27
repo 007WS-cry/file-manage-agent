@@ -35,14 +35,17 @@ LEGACY_CATEGORY_CONSTRAINT = (
 
 
 def _replace_category_constraint(expression: str) -> None:
-    """通过 SQLite batch 重建替换错误类别 CheckConstraint。
+    """按数据库方言替换错误类别 CheckConstraint。
 
     Args:
         expression: 迁移目标版本允许的完整 category SQL 表达式。
     """
+    recreate_mode = (
+        "always" if op.get_bind().dialect.name == "sqlite" else "auto"
+    )
     with op.batch_alter_table(
         "error_recovery_records",
-        recreate="always",
+        recreate=recreate_mode,
     ) as batch_op:
         batch_op.drop_constraint(
             "ck_error_recovery_records_category_allowed",

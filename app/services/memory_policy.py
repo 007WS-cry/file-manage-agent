@@ -131,7 +131,9 @@ def create_disabled_memory_state() -> MemoryState:
     return MemoryState(
         enabled=False,
         namespace="",
+        backend="sqlite",
         database_path=None,
+        database_url_env=None,
         checkpoint_path=None,
         recall_limit=50,
         status="disabled",
@@ -184,9 +186,18 @@ def copy_memory_state(
     return MemoryState(
         enabled=enabled,
         namespace=str(memory.get("namespace", "")),
+        backend=cast(
+            Literal["sqlite", "postgresql"],
+            memory.get("backend", "sqlite"),
+        ),
         database_path=(
             str(memory["database_path"])
             if memory.get("database_path") is not None
+            else None
+        ),
+        database_url_env=(
+            str(memory["database_url_env"])
+            if memory.get("database_url_env") is not None
             else None
         ),
         checkpoint_path=(

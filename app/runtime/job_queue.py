@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy.engine import Engine
@@ -14,9 +13,11 @@ from app.state.models import (
     WorkerLeaseState,
 )
 from app.storage.database import (
+    ApplicationDatabaseTarget,
     create_application_engine,
     create_session_factory,
     open_application_session,
+    render_safe_application_database_target,
 )
 from app.storage.orm_models import BackgroundJobModel, GovernanceRunModel, WorkerLeaseModel
 from app.storage.repositories import create_repository_bundle
@@ -142,7 +143,7 @@ class JobQueue:
 
     def __init__(
         self,
-        database_path: str | Path,
+        database_path: ApplicationDatabaseTarget,
         *,
         timeout_seconds: float = 30.0,
         echo: bool = False,
@@ -153,7 +154,7 @@ class JobQueue:
         在启动 API/Worker 前执行 ``alembic upgrade head``。
 
         Args:
-            database_path: 十张应用表共用的 SQLite 数据库路径。
+            database_path: 十张应用表共用的 SQLite 路径或 PostgreSQL URL。
             timeout_seconds: SQLite 等待短暂写锁释放的最大秒数。
             echo: 是否输出 SQLAlchemy SQL 日志。
         """
@@ -167,8 +168,11 @@ class JobQueue:
         self._session_factory: sessionmaker = create_session_factory(self._engine)
         # 绑定当前 Engine 且禁止跨线程共享 Session 的工厂。
 
-        self.database_path = str(Path(database_path).expanduser().resolve())
-        # 当前队列服务使用的应用数据库绝对路径。
+        self.database_target = database_path
+        # 当前进程内用于创建连接的数据库目标；不得写入日志或持久化状态。
+
+        self.database_path = render_safe_application_database_target(database_path)
+        # 兼容诊断属性；PostgreSQL 值会隐藏密码，业务连接不得使用该属性。
 
     def close(self) -> None:
         """释放当前队列服务持有的 SQLAlchemy 连接池。"""

@@ -169,7 +169,7 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(
             ["node_execution_id"],
             ["node_execution_records.idempotency_key"],
-            name=("fk_error_recovery_records_node_execution_id_node_execution_records"),
+            name="fk_error_recovery_node_execution",
             ondelete="SET NULL",
         ),
         sa.ForeignKeyConstraint(

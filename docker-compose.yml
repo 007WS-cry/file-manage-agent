@@ -4,8 +4,8 @@ x-file-governance-service: &file-governance-service
   build:
     context: .
     args:
-      APP_VERSION: 0.8.1
-  image: file-manage-agent:0.8.1
+      APP_VERSION: 0.8.2
+  image: file-manage-agent:0.8.2
   environment:
     FILE_GOVERNANCE_DATABASE_PATH: /data/artifacts/database/file-governance-app.sqlite3
     FILE_GOVERNANCE_CHECKPOINT_PATH: /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -28,6 +28,18 @@ services:
   api:
     <<: *file-governance-service
     command: ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -38,12 +50,7 @@ services:
 
   worker:
     <<: *file-governance-service
-    command:
-      [
-        "file-governance-worker",
-        "--database-path",
-        "/data/artifacts/database/file-governance-app.sqlite3",
-      ]
+    command: ["file-governance-worker"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -52,14 +59,7 @@ services:
 
   scheduler:
     <<: *file-governance-service
-    command:
-      [
-        "file-governance-scheduler",
-        "--database-path",
-        "/data/artifacts/database/file-governance-app.sqlite3",
-        "--checkpoint-path",
-        "/data/artifacts/checkpoints/file-governance-background.sqlite3",
-      ]
+    command: ["file-governance-scheduler"]
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -70,8 +70,8 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: 0.8.1
-    image: file-manage-agent:0.8.1
+        APP_VERSION: 0.8.2
+    image: file-manage-agent:0.8.2
     command:
       [
         "file-governance-mock-email-mcp",

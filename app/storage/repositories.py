@@ -582,10 +582,11 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
         worker_id: str,
         claimed_at: datetime,
     ) -> BackgroundJobModel | None:
-        """使用条件更新领取一个已经到达可执行时间的排队任务。
+        """按数据库方言原子领取一个已经到达可执行时间的排队任务。
 
-        候选读取后仍以 ``status='queued'`` 和 ``available_at`` 作为更新条件，
-        因此多个 Worker 即使读到同一候选，也只有一个事务能够成功推进状态。
+        PostgreSQL 在当前短事务中使用 ``FOR UPDATE SKIP LOCKED``，允许多个
+        Worker 并行跳过已锁候选；SQLite 保留候选读取后的条件更新，确保只有
+        一个事务可以推进同一任务。人工恢复领取不会增加异常尝试次数。
 
         Args:
             worker_id: 尝试领取任务的 Worker ID。
@@ -598,8 +599,8 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             worker_id,
             field_name="worker_id",
         )
-        candidate = self._session.execute(
-            select(BackgroundJobModel.job_id, BackgroundJobModel.status)
+        claimable_statement = (
+            select(BackgroundJobModel)
             .where(
                 BackgroundJobModel.status.in_({"queued", "resume_queued"}),
                 BackgroundJobModel.available_at <= claimed_at,
@@ -613,7 +614,27 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
                 BackgroundJobModel.created_at.asc(),
                 BackgroundJobModel.job_id.asc(),
             )
-            .limit(1)
+        )
+        if self._session.get_bind().dialect.name == "postgresql":
+            job = self._session.scalars(
+                claimable_statement.with_for_update(skip_locked=True).limit(1)
+            ).first()
+            if job is None:
+                return None
+            if job.status == "queued":
+                job.attempt_count += 1
+            job.status = "leased"
+            job.current_worker_id = normalized_worker_id
+            job.claimed_at = claimed_at
+            job.updated_at = claimed_at
+            self._session.flush()
+            return job
+
+        candidate = self._session.execute(
+            claimable_statement.with_only_columns(
+                BackgroundJobModel.job_id,
+                BackgroundJobModel.status,
+            ).limit(1)
         ).first()
         if candidate is None:
             return None

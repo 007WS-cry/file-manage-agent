@@ -75,6 +75,13 @@ delivery_log*.json
 *.db
 *.db-*
 
+# PostgreSQL 导出、临时凭据和本地容器数据不得进入镜像构建上下文
+*.sql
+*.dump
+*.backup
+postgres-data
+postgresql-data
+
 # 本地配置、日志、文档源码及静态站点产物
 .env
 .env.*
