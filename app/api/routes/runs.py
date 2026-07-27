@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import FileResponse
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.api.schemas import (
     BackgroundJobResponse,
+    BackgroundResumeRequest,
     RunStatusResponse,
     RunSubmissionRequest,
     RunSubmissionResponse,
 )
 from app.runtime.dispatcher import create_background_submission
 from app.runtime.job_queue import JobQueue
+from app.utils.report_access import resolve_safe_report_path
 
-"""本模块提供后台治理运行的提交、按 run_id 查询和按 job_id 查询路由。"""
+"""本模块提供后台治理运行提交、查询、人工恢复和受控报告下载路由。"""
 
 
 # 所有运行接口共享的固定 URL 前缀和 OpenAPI 标签。
@@ -112,7 +115,107 @@ def get_run_status(run_id: str, request: Request) -> RunStatusResponse:
     job = queue.get_job_by_run_id(run_id)
     return RunStatusResponse(
         **run,
+        report_available=job is not None and bool(job.get("report_path")),
+        report_url=(
+            f"/runs/{run_id}/report" if job is not None and bool(job.get("report_path")) else None
+        ),
         background_job=BackgroundJobResponse.from_state(job) if job is not None else None,
+    )
+
+
+@router.post(
+    "/{run_id}/resume",
+    response_model=BackgroundJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def resume_background_run(
+    run_id: str,
+    resume_request: BackgroundResumeRequest,
+    request: Request,
+) -> BackgroundJobResponse:
+    """按照当前 interrupt_id 幂等提交一次后台人工恢复。
+
+    Args:
+        run_id: 状态接口返回的治理运行 ID。
+        resume_request: 包含幂等键、中断身份、协议类型和恢复值的请求。
+        request: 用于读取共享持久化队列的 HTTP 请求。
+
+    Returns:
+        已进入 ``resume_queued``，或已由同一幂等请求推进后的任务摘要。
+
+    Raises:
+        HTTPException: 运行不存在返回 404，过期中断或状态冲突返回 409，
+            恢复值不合法返回 422，数据库不可用返回 503。
+    """
+    queue = get_job_queue(request)
+    try:
+        job = queue.enqueue_resume(
+            run_id,
+            request_id=resume_request.request_id,
+            interrupt_id=resume_request.interrupt_id,
+            kind=resume_request.kind,
+            value=resume_request.value,
+        )
+    except LookupError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="后台任务数据库不可用，请确认已经执行 Alembic 迁移。",
+        ) from exc
+    return BackgroundJobResponse.from_state(job)
+
+
+@router.get("/{run_id}/report", response_class=FileResponse)
+def get_run_report(run_id: str, request: Request) -> FileResponse:
+    """下载后台运行在受控 report_root 内生成的 Markdown 报告。
+
+    Args:
+        run_id: 已生成报告的治理运行 ID。
+        request: 用于读取共享持久化队列的 HTTP 请求。
+
+    Returns:
+        带固定下载文件名和 Markdown 媒体类型的文件响应。
+
+    Raises:
+        HTTPException: 运行或报告不存在返回 404，路径越界等安全问题返回 409。
+    """
+    queue = get_job_queue(request)
+    job = queue.get_job_by_run_id(run_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="治理运行不存在",
+        )
+    try:
+        report_path = resolve_safe_report_path(job)
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return FileResponse(
+        report_path,
+        media_type="text/markdown; charset=utf-8",
+        filename=f"{run_id}.md",
     )
 
 

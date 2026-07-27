@@ -1,20 +1,27 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from uuid import uuid4
 
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
-from app.state.models import BackgroundJobState, WorkerLeaseState
+from app.state.models import (
+    BackgroundJobState,
+    BackgroundResumeState,
+    PendingInterruptState,
+    WorkerLeaseState,
+)
 from app.storage.database import (
+    ApplicationDatabaseTarget,
     create_application_engine,
     create_session_factory,
     open_application_session,
+    render_safe_application_database_target,
 )
 from app.storage.orm_models import BackgroundJobModel, GovernanceRunModel, WorkerLeaseModel
 from app.storage.repositories import create_repository_bundle
+from app.utils.background_resume import build_background_resume_state
 
 """本模块在短数据库事务中编排后台任务入队、领取、心跳、完成和租约恢复。"""
 
@@ -70,6 +77,11 @@ def background_job_to_state(job: BackgroundJobModel) -> BackgroundJobState:
         current_worker_id=job.current_worker_id,
         attempt_count=job.attempt_count,
         max_attempts=job.max_attempts,
+        resume_count=job.resume_count,
+        pending_interrupt=(
+            dict(job.pending_interrupt) if job.pending_interrupt is not None else None
+        ),
+        resume=dict(job.resume_state) if job.resume_state is not None else None,
         available_at=_datetime_to_iso(job.available_at) or "",
         claimed_at=_datetime_to_iso(job.claimed_at),
         started_at=_datetime_to_iso(job.started_at),
@@ -131,7 +143,7 @@ class JobQueue:
 
     def __init__(
         self,
-        database_path: str | Path,
+        database_path: ApplicationDatabaseTarget,
         *,
         timeout_seconds: float = 30.0,
         echo: bool = False,
@@ -142,7 +154,7 @@ class JobQueue:
         在启动 API/Worker 前执行 ``alembic upgrade head``。
 
         Args:
-            database_path: 十张应用表共用的 SQLite 数据库路径。
+            database_path: 十张应用表共用的 SQLite 路径或 PostgreSQL URL。
             timeout_seconds: SQLite 等待短暂写锁释放的最大秒数。
             echo: 是否输出 SQLAlchemy SQL 日志。
         """
@@ -156,8 +168,11 @@ class JobQueue:
         self._session_factory: sessionmaker = create_session_factory(self._engine)
         # 绑定当前 Engine 且禁止跨线程共享 Session 的工厂。
 
-        self.database_path = str(Path(database_path).expanduser().resolve())
-        # 当前队列服务使用的应用数据库绝对路径。
+        self.database_target = database_path
+        # 当前进程内用于创建连接的数据库目标；不得写入日志或持久化状态。
+
+        self.database_path = render_safe_application_database_target(database_path)
+        # 兼容诊断属性；PostgreSQL 值会隐藏密码，业务连接不得使用该属性。
 
     def close(self) -> None:
         """释放当前队列服务持有的 SQLAlchemy 连接池。"""
@@ -229,6 +244,60 @@ class JobQueue:
             record = create_repository_bundle(session).governance_runs.get(run_id)
             return governance_run_to_dict(record) if record is not None else None
 
+    def enqueue_resume(
+        self,
+        run_id: str,
+        *,
+        request_id: str,
+        interrupt_id: str,
+        kind: str,
+        value: dict,
+        now: datetime | None = None,
+    ) -> BackgroundJobState:
+        """校验当前中断并幂等提交一次后台人工恢复请求。
+
+        Args:
+            run_id: 等待恢复的治理运行 ID。
+            request_id: 调用方为本次恢复提供的幂等键。
+            interrupt_id: 必须与当前 waiting_human 快照一致的中断 ID。
+            kind: 人工审核或错误恢复协议类型。
+            value: 交给 ``Command(resume=...)`` 的 JSON 对象。
+            now: 测试可注入的当前 UTC 时间。
+
+        Returns:
+            已进入 ``resume_queued`` 或已由相同请求推进后的后台任务状态。
+
+        Raises:
+            LookupError: run_id 不存在后台任务时抛出。
+            RuntimeError: 中断过期、状态冲突或幂等键冲突时抛出。
+            ValueError: 恢复请求不符合 JSON、大小或协议类型约束时抛出。
+        """
+        submitted_at = now or utc_now()
+        resume_state: BackgroundResumeState = build_background_resume_state(
+            request_id=request_id,
+            interrupt_id=interrupt_id,
+            kind=kind,
+            value=value,
+            submitted_at=submitted_at.isoformat(),
+        )
+        with open_application_session(self._session_factory) as session:
+            repositories = create_repository_bundle(session)
+            existing = repositories.background_jobs.find_by_run_id(run_id)
+            if existing is None:
+                raise LookupError(f"后台运行不存在: {run_id}")
+            record = repositories.background_jobs.queue_resume(
+                existing.job_id,
+                resume_state=dict(resume_state),
+                queued_at=submitted_at,
+            )
+            if record.status == "resume_queued":
+                repositories.governance_runs.update_status(
+                    record.run_id,
+                    status="queued",
+                    current_stage="background_resume_queued",
+                )
+            return background_job_to_state(record)
+
     def claim(
         self,
         worker_id: str,
@@ -276,7 +345,12 @@ class JobQueue:
             repositories.governance_runs.update_status(
                 job.run_id,
                 status="queued",
-                current_stage="background_leased",
+                current_stage=(
+                    "background_resume_leased"
+                    if isinstance(job.resume_state, dict)
+                    and job.resume_state.get("status") == "pending"
+                    else "background_leased"
+                ),
             )
             return background_job_to_state(job)
 
@@ -352,6 +426,7 @@ class JobQueue:
         status: str,
         report_path: str | None = None,
         error_summary: str | None = None,
+        pending_interrupt: PendingInterruptState | None = None,
         now: datetime | None = None,
     ) -> BackgroundJobState:
         """在一个事务中收口后台任务、治理运行并释放 Worker 租约。
@@ -362,6 +437,7 @@ class JobQueue:
             status: ``waiting_human``、``completed``、``partial`` 或 ``failed``。
             report_path: 可选治理报告路径。
             error_summary: 可选脱敏错误摘要。
+            pending_interrupt: waiting_human 时必须保存的当前中断快照。
             now: 测试可注入的当前 UTC 时间。
 
         Returns:
@@ -379,6 +455,9 @@ class JobQueue:
                 finished_at=finished_at,
                 report_path=report_path,
                 error_summary=error_summary,
+                pending_interrupt=(
+                    dict(pending_interrupt) if pending_interrupt is not None else None
+                ),
             )
             repositories.worker_leases.release(
                 job_id,
@@ -425,20 +504,30 @@ class JobQueue:
             job = repositories.background_jobs.get_required(job_id)
             if job.current_worker_id != worker_id:
                 raise RuntimeError("只有当前租约 Worker 可以处理任务失败")
-            if job.attempt_count < job.max_attempts:
+            is_resume_attempt = (
+                isinstance(job.resume_state, dict) and job.resume_state.get("status") == "pending"
+            )
+            effective_attempt_count = job.attempt_count + int(is_resume_attempt)
+            if effective_attempt_count < job.max_attempts:
                 record = repositories.background_jobs.requeue(
                     job_id,
                     available_at=failed_at + timedelta(seconds=retry_delay_seconds),
                     updated_at=failed_at,
                     error_summary=error_summary,
+                    increment_attempt_count=is_resume_attempt,
                 )
                 run_status = "queued"
-                run_stage = "background_retry_queued"
+                run_stage = (
+                    "background_resume_retry_queued"
+                    if is_resume_attempt
+                    else "background_retry_queued"
+                )
             else:
                 record = repositories.background_jobs.fail_expired(
                     job_id,
                     failed_at=failed_at,
                     error_summary=error_summary,
+                    increment_attempt_count=is_resume_attempt,
                 )
                 run_status = "failed"
                 run_stage = "background_failed"
@@ -494,20 +583,31 @@ class JobQueue:
                     )
                     processed += 1
                     continue
-                if job.attempt_count < job.max_attempts:
+                is_resume_attempt = (
+                    isinstance(job.resume_state, dict)
+                    and job.resume_state.get("status") == "pending"
+                )
+                effective_attempt_count = job.attempt_count + int(is_resume_attempt)
+                if effective_attempt_count < job.max_attempts:
                     repositories.background_jobs.requeue(
                         job.job_id,
                         available_at=recovered_at,
                         updated_at=recovered_at,
                         error_summary=summary,
+                        increment_attempt_count=is_resume_attempt,
                     )
                     run_status = "queued"
-                    run_stage = "worker_lease_requeued"
+                    run_stage = (
+                        "worker_resume_lease_requeued"
+                        if is_resume_attempt
+                        else "worker_lease_requeued"
+                    )
                 else:
                     repositories.background_jobs.fail_expired(
                         job.job_id,
                         failed_at=recovered_at,
                         error_summary=summary,
+                        increment_attempt_count=is_resume_attempt,
                     )
                     run_status = "failed"
                     run_stage = "worker_lease_failed"

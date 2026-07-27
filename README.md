@@ -1,8 +1,10 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.0` 已完成第三批：
-模拟邮件 MCP、MCP 优先且本地日志自动降级的证据链、四进程统一 JSON 日志，
-以及 API、Worker、Scheduler、模拟邮件 MCP 的 Docker Compose 编排。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `1.0.0` 为稳定版本，已完成
+Python/CLI 前台、API 后台、Cron、两类人工恢复、MCP 成功与本地降级、Worker
+checkpoint 重启、SQLite/PostgreSQL Docker 拓扑、数十文件有界执行、输入 SHA-256
+不变性及数据库迁移/备份/恢复的端到端验收。默认部署继续使用 SQLite；PostgreSQL
+仅通过 Docker Compose override 按需启用。
 `0.7.2` 的持久化 Cron 计划、独立 APScheduler、只入队触发和隔离 Git
 Worktree 生命周期继续保持不变。
 `0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
@@ -28,6 +30,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 进程内或 SQLite LangGraph checkpoint；
 - 独立 SQLAlchemy 应用数据库、十表 ORM/迁移和 Repository 数据访问边界；
 - `POST /runs` 持久化后台提交，以及按 `run_id`、`job_id` 查询的脱敏 HTTP API；
+- `POST /runs/{run_id}/resume` 通过当前 `interrupt_id` 幂等恢复主版本审核或错误恢复；
+- `GET /runs/{run_id}/report` 在 `report_root`、符号链接、扩展名和大小边界内下载报告；
+- 首次执行/异常重试与正常人工恢复分别使用 `attempt_count`、`resume_count` 计数；
 - 独立 Worker 事务领取、限时租约、短事务心跳、失败重新入队和尝试次数上限；
 - Worker 异常退出后的过期租约扫描、任务重新领取和最终失败收口；
 - 持久化 Cron 计划的创建、查看、启用和停用 HTTP API；
@@ -40,6 +45,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 邮件 MCP 成功时生成 `email_mcp` DeliveryRecord，关闭或不可用时自动使用本地日志；
 - API、Worker、Scheduler 和模拟邮件 MCP 共用字段稳定的单行 JSON 日志；
 - Docker Compose 一次编排迁移、API、Worker、Scheduler 与模拟邮件 MCP；
+- 32 个真实 DOCX、32 个并发 PDF 任务及最高 500 文件演示生成能力；
+- 运行前后文件数量、相对路径、大小和 SHA-256 完全一致的发布验收；
+- SQLite 一致性副本及 Docker PostgreSQL 临时恢复库的备份恢复演示；
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
 - 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
@@ -136,7 +144,10 @@ direct-failure 出口统一改到 Recovery，并在不改变正常治理结论�
 `0.7.1` 在业务图外新增 API、持久化队列和 Worker，顶层业务节点及 conditional
 router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestration 中加入
 只针对显式仓库写入 Task 的 Worktree 条件分支；`0.8.0` 在 Evidence 子图新增
-邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排。
+邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排；
+`0.8.1` 固定主图准备与收口顺序，并让两类 interrupt 可以由后台 API 安全续跑；
+`0.8.2` 接入 SQLite/PostgreSQL 双应用数据库后端及完整部署拓扑；`1.0.0` 增加
+端到端验收、演示脚本、备份恢复闭环和正式交付文档。
 
 ## 安全边界
 
@@ -152,6 +163,10 @@ router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestrati
 - 产物 ID 不允许包含路径分隔符，JSON 使用同目录临时文件和原子替换写入。
 - 分叉、链不完整、候选近似并列或低置信度结果必须人工确认。
 - `interrupt()` 载荷只包含文件 ID、文件名、评分和理由，不包含完整正文。
+- 后台恢复必须同时匹配当前 `interrupt_id` 与 `kind`；过期 ID、幂等键冲突和
+  非 waiting_human 任务均被拒绝，正常恢复不会消耗异常重试次数。
+- 报告下载重新解析任务声明的 `workspace.report_root`，拒绝路径越界、符号链接、
+  非 Markdown 文件和超过大小上限的文件。
 - 本地发送日志工具只读取用户明确提供的普通 UTF-8 JSON 文件，拒绝符号链接、
   超限文件和未知协议版本，不打开附件、不访问网络且不执行日志内容。
 - 证据匹配遇到多个非重复候选时保留未匹配结果，不依靠排序猜测文件版本。
@@ -222,7 +237,7 @@ file-manage-agent/
 │   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
 │   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
 │   ├── runtime/               # 后台队列、请求分派、Worker 与 Scheduler
-│   ├── api/                   # 运行提交、状态查询和 Cron 计划路由
+│   ├── api/                   # 运行提交、状态、恢复、报告和 Cron 计划路由
 │   ├── mcp_servers/           # 只读脱敏模拟邮件 MCP 服务
 │   ├── observability/         # 四服务统一 JSON 日志与关联上下文
 │   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
@@ -240,7 +255,15 @@ file-manage-agent/
 ├── examples/sample_delivery_log.json
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
 ├── examples/sample_background_submission.json # 0.7.1 HTTP 后台提交示例
+├── examples/sample_background_resume.json # 0.8.1 后台 interrupt 幂等恢复示例
+├── examples/sample_human_review_response.json # 1.0.0 主版本审核 API 响应示例
+├── examples/sample_recovery_response.json # 1.0.0 错误恢复 API 响应示例
+├── examples/demo_manifest.json # 1.0.0 输入数量、路径和 SHA-256 清单示例
 ├── examples/sample_schedule.json # 0.7.2 持久化 Cron 计划示例
+├── scripts/
+│   ├── generate_demo_data.py   # 安全生成 1–500 个演示 DOCX 与基线清单
+│   ├── run_e2e_demo.py         # 前台、API、Cron 与输入不变性演示
+│   └── backup_restore_demo.py  # SQLite 与 Docker PostgreSQL 备份恢复演示
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
@@ -264,12 +287,20 @@ file-manage-agent/
 ├── docs/version-0.7.1-background-runtime.md # 0.8.0 第一批后台运行说明
 ├── docs/version-0.7.2-scheduler-worktree.md # 0.8.0 第二批调度与 Worktree 说明
 ├── docs/release-0.8.0-background-runtime.md # 0.8.0 第三批发布与多服务运行说明
+├── docs/version-0.8.1-main-closure-runtime-resume.md # 1.0.0 第一批主图、恢复与报告说明
+├── docs/architecture-1.0.0.md # 1.0.0 组件、主图和部署架构
+├── docs/state-contracts-1.0.0.md # 1.0.0 状态与持久化协议
+├── docs/demo-1.0.0.md # 1.0.0 SQLite/PostgreSQL 演示手册
+├── docs/resume-and-interview.md # 两类人工中断和 API 恢复协议
+├── docs/release-1.0.0.md # 1.0.0 发布、升级和验收矩阵
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
-│   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
+│   ├── integration/           # 顶层图、数据库、运行时和部署集成测试
+│   └── e2e/                   # 1.0.0 前台、后台、恢复、MCP 和只读验收
 ├── Dockerfile
 ├── docker-compose.yml         # 迁移、API、Worker、Scheduler 与模拟 MCP 编排
+├── docker-compose.postgresql.yml # 仅通过 Docker 启用 PostgreSQL 的 override
 ├── requirements.txt           # 基础可编辑安装入口，依赖版本统一由 pyproject.toml 管理
 └── pyproject.toml
 ```
@@ -1084,6 +1115,70 @@ direct-failure 分支统一改到恢复入口：
 完整协议、安全边界、配置和验收矩阵见
 [0.8.0 后台运行时发布说明](docs/release-0.8.0-background-runtime.md)。
 
+## 0.8.1 主图收口、后台人工恢复与报告获取
+
+第一批把主图准备阶段固定为 `System Prompt → Memory Recall → Skill Registry →
+Task DAG`，把所有业务报告统一收敛到 `validate_report_result → Memory Persist →
+finalize_run_tasks → after_run hooks`。`graphs/routers.py` 中的新增路由均由
+`add_conditional_edges` 直接调用，`nodes/` 中的新增函数也都由主图显式注册。
+
+后台 Worker 会把单个 `file_governance_review` 或 `error_recovery` 中断的稳定
+`interrupt_id` 和最小载荷写入 `background_jobs.pending_interrupt`。API 接受恢复
+请求后进入 `resume_queued`，Worker 从同一 SQLite checkpoint 使用
+`Command(resume=...)` 续跑；相同 `request_id`、中断身份和值摘要的重复请求返回
+同一结果，不会重复入队。迁移前必须执行：
+
+```bash
+python -m alembic upgrade head
+```
+
+完整状态转换、接口契约与验收矩阵见
+[0.8.1 主图收口、后台人工恢复与报告获取](docs/version-0.8.1-main-closure-runtime-resume.md)。
+
+## 0.8.2 PostgreSQL 与完整部署拓扑
+
+应用数据库现在接受 SQLite 文件路径或 `postgresql+psycopg` URL。默认
+`docker-compose.yml` 仍只启动 SQLite，普通用户的启动方式和资源成本不变；
+只有显式叠加 `docker-compose.postgresql.yml` 时才启动官方 PostgreSQL 容器。
+Alembic、API、Worker 和 Scheduler 读取同一个 `FILE_GOVERNANCE_DATABASE_URL`，
+迁移服务等待数据库健康后执行，三个长期服务继续等待迁移成功。
+
+PostgreSQL URL 只存在于进程环境中。后台任务、Cron 模板和 LangGraph checkpoint
+仅保存 `FILE_GOVERNANCE_DATABASE_URL` 这一固定环境变量引用，不会持久化用户名或
+密码。多个 Worker 领取任务时使用 PostgreSQL 行锁和 `SKIP LOCKED`；SQLite
+仍使用原有条件更新，两个后端保持同一任务状态协议。
+
+## 1.0.0 端到端验收与项目交付
+
+第三批以真实入口和可复验产物完成稳定版交付：
+
+- E2E 同时覆盖 Python/CLI 前台、API 后台、Cron 入队、Worker 和报告获取；
+- 主版本审核和错误恢复可在 API、Worker 重启后依靠同一 SQLite checkpoint 恢复；
+- 相同恢复请求保持幂等，过期 interrupt ID 被拒绝，人工恢复不消耗异常重试次数；
+- 真实 Streamable HTTP 邮件 MCP 成功和本地发送日志降级均有明确证据来源；
+- 32 个真实 DOCX 验证文件数量、路径和 SHA-256 不变，32 个 PDF 任务验证并发峰值；
+- 演示数据生成器支持 1–500 个文件；
+- SQLite 通过新副本验证备份恢复，PostgreSQL 只使用 Docker 容器内工具和临时恢复库；
+- SQLite 从 ORM 读回的无时区时间在状态边界补为 UTC，保证恢复记录可重放。
+
+完整文档：
+
+- [1.0.0 架构说明](docs/architecture-1.0.0.md)
+- [1.0.0 状态契约](docs/state-contracts-1.0.0.md)
+- [1.0.0 演示手册](docs/demo-1.0.0.md)
+- [后台恢复与人工确认](docs/resume-and-interview.md)
+- [1.0.0 发布说明](docs/release-1.0.0.md)
+
+快速演示：
+
+```bash
+python scripts/generate_demo_data.py --output-root .artifacts/demo --file-count 32
+python scripts/run_e2e_demo.py --demo-root .artifacts/demo --database-backend sqlite --mode all
+python scripts/backup_restore_demo.py --backend sqlite --action roundtrip \
+  --work-directory .artifacts/demo/backup-restore-output \
+  --database-path .artifacts/demo/database/file-governance-app.sqlite3
+```
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1107,7 +1202,7 @@ python -m pip install -e ".[dev]"
 `file-governance-mock-email-mcp` 五个命令，也可以通过对应的
 `python -m app.entrypoints.*` 模块启动。
 
-构建 wheel 时，公开模拟邮件数据、受控 Prompt、Skill 注册表和四个 `SKILL.md`
+构建 wheel 时，公开示例 JSON、受控 Prompt、Skill 注册表和四个 `SKILL.md`
 会随分发包进入安装数据目录：
 
 ```bash
@@ -1186,6 +1281,21 @@ curl -X POST http://127.0.0.1:8000/runs \
 ```bash
 curl http://127.0.0.1:8000/runs/<run_id>
 curl http://127.0.0.1:8000/runs/jobs/<job_id>
+```
+
+当状态中的 `background_job.pending_interrupt` 非空时，使用其中的
+`interrupt_id`、`kind` 和协议载荷构造恢复请求：
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/<run_id>/resume \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_background_resume.json
+```
+
+报告生成后使用受控接口下载，不应直接拼接响应中的本地路径：
+
+```bash
+curl -OJ http://127.0.0.1:8000/runs/<run_id>/report
 ```
 
 Worker 手工演示或集成测试可以增加 `--once`，只执行一次过期租约恢复和任务领取
@@ -1541,12 +1651,16 @@ Memory、Context Compact 和十表应用数据库均已接入 CLI、API、Worker
 
 ```bash
 python -m pytest
-python -m ruff check app tests
-python -m compileall -q app tests
+python -m ruff check app tests alembic scripts
+python -m compileall -q app tests alembic scripts
 ```
 
 新的测试结构覆盖：
 
+- 1.0.0 Python/CLI 前台、API 后台、Cron、Worker 和报告下载端到端链路；
+- 两类人工中断在 API/Worker 重启后的 checkpoint 恢复、幂等和计数语义；
+- 邮件 MCP 成功、本地日志降级、32 文件只读不变性及 PDF 有界并发；
+- SQLite 迁移、备份恢复副本与 PostgreSQL Docker 拓扑/迁移/Repository；
 - 文件名归一化、内容支持的合组和无关文档隔离；
 - 候选对、差异、重复边、分叉和线性版本链；
 - 可解释候选评分、自动推荐和人工选择限制；
@@ -1599,6 +1713,9 @@ python -m compileall -q app tests
 - SQLite checkpoint 恢复状态和原始数据库字节均不包含 API Key 实际值、私有 Prompt
   或长正文尾部；
 - 应用数据库路径与 checkpoint 文件隔离、七个 Repository 的事务提交和异常回滚；
+- Docker PostgreSQL 从空库迁移、0005 回退重放、Repository JSON 往返、
+  `SKIP LOCKED` 双 Worker 领取和后台任务收口；
+- 默认 SQLite Compose 与 PostgreSQL override 合并模型、健康依赖和迁移门禁；
 - Alembic `upgrade head`、0002 单独回退、`downgrade base`、再次升级及 ORM
   元数据一致性；
 - 错误恢复跨运行隔离、重试次数倒退拒绝、节点输入摘要不可变和结果复用查询；
@@ -1633,16 +1750,16 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.8.0 -t file-manage-agent:0.8.0 .
+docker build --build-arg APP_VERSION=1.0.0 -t file-manage-agent:1.0.0 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.8.0 \
+  --build-arg APP_VERSION=1.0.0 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.8.0-mainstream .
+  -t file-manage-agent:1.0.0-mainstream .
 ```
 
 镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
@@ -1651,7 +1768,7 @@ docker build \
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:1.0.0 \
   python -m alembic upgrade head
 ```
 
@@ -1661,7 +1778,7 @@ docker run --rm \
 docker run --rm -p 8000:8000 \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0
+  file-manage-agent:1.0.0
 ```
 
 使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
@@ -1670,7 +1787,7 @@ docker run --rm -p 8000:8000 \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:1.0.0 \
   file-governance-worker \
   --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
@@ -1681,7 +1798,7 @@ docker run --rm \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:1.0.0 \
   file-governance-scheduler \
   --database-path /data/artifacts/database/file-governance-app.sqlite3 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -1693,8 +1810,34 @@ docker run --rm \
 docker compose up --build
 ```
 
-Compose 中 `/data/input` 始终只读，API、Worker 和 Scheduler 共享同一个 named
-volume 中的应用数据库和 checkpoint，模拟 MCP 只读取镜像内公开示例数据。四个
+默认命令继续使用 named volume 中的 SQLite 应用数据库。要仅通过 Docker 启用
+PostgreSQL，先从示例创建本地环境文件并修改密码；Compose URL 插值不做编码，
+因此本拓扑要求用户名、密码和数据库名只使用 `A-Z/a-z/0-9/._~-`：
+
+```bash
+cp .env.example .env
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  up --build
+```
+
+PostgreSQL 数据保存在独立的 `file-governance-postgresql-data` named volume。
+迁移容器会等待 `pg_isready` 健康检查通过再执行 `alembic upgrade head`，API、
+Worker 和 Scheduler 随后等待迁移成功。需要停止服务但保留数据库时执行：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  down
+```
+
+只有明确需要删除演示数据库时才额外添加 `--volumes`。应用数据库切换为
+PostgreSQL 后，LangGraph checkpoint 仍保存在共享产物卷中的独立 SQLite 文件。
+
+Compose 中 `/data/input` 始终只读，API、Worker 和 Scheduler 共享同一个应用
+数据库和 checkpoint，模拟 MCP 只读取镜像内公开示例数据。四个
 长期进程都把日志写为单行 JSON。镜像已安装 Git，但构建上下文不包含 `.git`；如需演示显式
 仓库写入 Task，必须另外把测试 Git 仓库以可写方式挂载到
 `/workspace/repository`，并在受信任请求中显式设置 `project_git_root`。
@@ -1711,7 +1854,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:1.0.0 \
   file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1724,14 +1867,15 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.8.0 \
+  file-manage-agent:1.0.0 \
   file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```
 
 ## 当前未实现
 
-- PostgreSQL 等生产级 Checkpointer；
+- PostgreSQL LangGraph Checkpointer；应用数据库已经支持 PostgreSQL，
+  checkpoint 本批仍使用独立 SQLite 文件；
 - 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
 - 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
 - Worktree 自动合并、Pull Request 或复杂冲突处理；

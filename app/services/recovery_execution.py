@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -29,6 +30,7 @@ from app.storage.database import (
     create_application_engine,
     create_session_factory,
     open_application_session,
+    resolve_application_database_state_target,
 )
 from app.storage.repositories import create_repository_bundle
 from app.utils.error_context import (
@@ -45,9 +47,9 @@ from app.utils.runtime import create_error_record, utc_now_iso
 RECOVERY_NODE_TRANSITIONS = {
     "execute_before_run_hooks": "validate_request",
     "validate_request": "load_system_prompt",
-    "load_system_prompt": "load_skill_registry",
-    "load_skill_registry": "recall_long_term_memory",
-    "recall_long_term_memory": "plan_run_tasks",
+    "load_system_prompt": "recall_long_term_memory",
+    "recall_long_term_memory": "load_skill_registry",
+    "load_skill_registry": "plan_run_tasks",
     "plan_run_tasks": "run_inventory_subgraph",
     "run_inventory_subgraph": "sync_inventory_task_status",
     "sync_inventory_task_status": "run_context_compact_after_inventory",
@@ -62,7 +64,9 @@ RECOVERY_NODE_TRANSITIONS = {
     "run_recommendation_subgraph": "sync_recommendation_task_status",
     "sync_recommendation_task_status": "generate_governance_report",
     "sync_human_review_task_status": "generate_governance_report",
-    "persist_long_term_memory": "execute_after_run_hooks",
+    "validate_report_result": "persist_long_term_memory",
+    "persist_long_term_memory": "finalize_run_tasks",
+    "finalize_run_tasks": "execute_after_run_hooks",
     "execute_after_run_hooks": "finalize_run",
 }
 
@@ -101,7 +105,7 @@ RECOVERY_TASK_NODES = {
     "evidence": "run_evidence_subgraph",
     "recommendation": "run_recommendation_subgraph",
     "human_review": "sync_human_review_task_status",
-    "report": "generate_failure_report",
+    "report": "validate_report_result",
 }
 
 # Team Orchestration 内部子图调用错误到顶层分派包装节点的固定映射。
@@ -163,6 +167,8 @@ RECOVERABLE_NODE_TASK_TYPES = {
     "run_recommendation_subgraph": "recommendation",
     "recall_long_term_memory": "inventory",
     "persist_long_term_memory": "report",
+    "validate_report_result": "report",
+    "finalize_run_tasks": "report",
 }
 
 # 计算子图输入摘要时允许读取的顶层状态字段。
@@ -374,12 +380,32 @@ def _orm_execution_to_state(record: Any) -> NodeExecutionRecord:
             "result_refs": list(record.result_refs or []),
             "result_digest": record.result_digest,
             "last_error_id": record.last_error_id,
-            "started_at": record.started_at.isoformat(),
+            "started_at": _database_datetime_to_iso(record.started_at),
             "finished_at": (
-                record.finished_at.isoformat() if record.finished_at is not None else None
+                _database_datetime_to_iso(record.finished_at)
+                if record.finished_at is not None
+                else None
             ),
         },
     )
+
+
+def _database_datetime_to_iso(value: datetime) -> str:
+    """把数据库时间规范化为带 UTC 时区的 ISO 8601 字符串。
+
+    SQLite 即使使用 ``DateTime(timezone=True)`` 也可能返回无时区 datetime；
+    PostgreSQL 则通常保留时区。本函数在 ORM 转状态边界统一两种行为，避免恢复
+    checkpoint 再次持久化时被严格时间校验拒绝。
+
+    Args:
+        value: SQLAlchemy ORM 返回的 datetime。
+
+    Returns:
+        明确包含 UTC 时区的 ISO 8601 字符串。
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _database_is_ready(state: Mapping[str, Any]) -> bool:
@@ -395,7 +421,10 @@ def _database_is_ready(state: Mapping[str, Any]) -> bool:
     return bool(
         database.get("enabled")
         and database.get("status") == "ready"
-        and database.get("database_path")
+        and (
+            database.get("database_path")
+            or database.get("database_url_env")
+        )
     )
 
 
@@ -415,8 +444,9 @@ def load_persisted_node_execution(
     if not _database_is_ready(state):
         return None
     database = state["application_database"]
+    database_target = resolve_application_database_state_target(database)
     engine = create_application_engine(
-        database["database_path"],
+        database_target,
         input_root=state.get("workspace", {}).get("input_root"),
         checkpoint_path=database.get("checkpoint_path"),
         echo=bool(database.get("echo", False)),
@@ -444,8 +474,9 @@ def persist_node_execution(
     if not _database_is_ready(state):
         return
     database = state["application_database"]
+    database_target = resolve_application_database_state_target(database)
     engine = create_application_engine(
-        database["database_path"],
+        database_target,
         input_root=state.get("workspace", {}).get("input_root"),
         checkpoint_path=database.get("checkpoint_path"),
         echo=bool(database.get("echo", False)),
@@ -483,8 +514,9 @@ def persist_recovery_error(
     if not _database_is_ready(state):
         return
     database = state["application_database"]
+    database_target = resolve_application_database_state_target(database)
     engine = create_application_engine(
-        database["database_path"],
+        database_target,
         input_root=state.get("workspace", {}).get("input_root"),
         checkpoint_path=database.get("checkpoint_path"),
         echo=bool(database.get("echo", False)),

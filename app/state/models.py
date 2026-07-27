@@ -53,6 +53,50 @@ class RunState(TypedDict):
     # 运行结束时间；任务未结束时为 None。
 
 
+class PendingInterruptState(TypedDict):
+    """后台任务当前等待 API 恢复的 LangGraph 中断快照。"""
+
+    interrupt_id: str
+    # LangGraph 为当前 checkpoint 中断生成的稳定 ID。
+
+    kind: Literal["file_governance_review", "error_recovery"]
+    # 中断所属的人审选择或错误恢复协议类型。
+
+    payload: dict[str, Any]
+    # 返回给受信任 API 调用方的最小中断载荷，不包含完整图状态。
+
+    created_at: str
+    # Worker 持久化该中断的 ISO 8601 时间。
+
+
+class BackgroundResumeState(TypedDict):
+    """后台人工恢复请求在入队和应用阶段的幂等状态。"""
+
+    request_id: str
+    # 调用方提供的幂等键；同一恢复操作重试时必须保持不变。
+
+    interrupt_id: str
+    # 本次恢复明确消费的当前中断 ID。
+
+    kind: Literal["file_governance_review", "error_recovery"]
+    # 恢复值所遵循的中断协议类型。
+
+    value: dict[str, Any] | None
+    # 等待 Worker 应用的恢复值；应用后清空，避免长期保留人工输入。
+
+    value_digest: str
+    # 规范化恢复值的 SHA-256 摘要，用于应用后继续识别重复请求。
+
+    status: Literal["pending", "applied", "failed"]
+    # 恢复请求正在等待 Worker、已经应用，或在异常重试耗尽后失败。
+
+    submitted_at: str
+    # API 首次接受该幂等恢复请求的 ISO 8601 时间。
+
+    applied_at: str | None
+    # Worker 完成本次恢复调用的时间；尚未应用时为 None。
+
+
 class BackgroundJobState(TypedDict):
     """持久化后台任务队列中的一项文件治理任务。"""
 
@@ -70,6 +114,7 @@ class BackgroundJobState(TypedDict):
 
     status: Literal[
         "queued",
+        "resume_queued",
         "leased",
         "running",
         "waiting_human",
@@ -77,7 +122,7 @@ class BackgroundJobState(TypedDict):
         "partial",
         "failed",
     ]
-    # 后台任务在排队、领取、执行、中断和终结阶段的状态。
+    # 后台任务在首次排队、恢复排队、领取、执行、中断和终结阶段的状态。
 
     request_payload: dict[str, Any]
     # 已规范化的治理请求信封；不得包含 API Key 实际值或完整文档正文。
@@ -86,10 +131,19 @@ class BackgroundJobState(TypedDict):
     # 当前持有任务租约的 Worker ID；未领取或已经释放时为 None。
 
     attempt_count: int
-    # Worker 实际领取并尝试执行该任务的累计次数。
+    # 首次执行和异常重试的累计次数；正常人工恢复领取不会增加该计数。
 
     max_attempts: int
     # Worker 崩溃或运行失败后允许重新领取的最大次数。
+
+    resume_count: int
+    # 已成功应用的人工恢复次数，不计入异常重试次数。
+
+    pending_interrupt: PendingInterruptState | None
+    # 当前可由 API 恢复的中断；非 waiting_human 状态为 None。
+
+    resume: BackgroundResumeState | None
+    # 最近一次恢复请求；等待应用时含恢复值，应用后只保留幂等元数据。
 
     available_at: str
     # 当前任务最早允许再次领取的 ISO 8601 时间。
@@ -613,8 +667,14 @@ class MemoryState(TypedDict):
     namespace: str
     # 当前工作空间的隔离命名空间，默认由输入根目录哈希生成。
 
+    backend: Literal["sqlite", "postgresql"]
+    # 长期 Memory 使用的应用数据库后端。
+
     database_path: str | None
-    # 独立应用数据库文件路径；关闭 Memory 时为 None。
+    # SQLite 应用数据库文件路径；关闭或使用 PostgreSQL 时为 None。
+
+    database_url_env: str | None
+    # PostgreSQL URL 的固定环境变量引用；状态中不得保存含凭据 URL。
 
     checkpoint_path: str | None
     # 可选 SQLite checkpoint 文件路径，用于强制校验两类数据库不共用文件。
@@ -1260,8 +1320,14 @@ class ContextCompactState(TypedDict):
     persist_summaries: bool
     # 是否把有界 Context Summary 写入独立应用数据库。
 
+    backend: Literal["sqlite", "postgresql"]
+    # Context Summary 持久化使用的应用数据库后端。
+
     database_path: str | None
-    # Context Summary 使用的应用数据库文件路径；关闭时为 None。
+    # Context Summary 使用的 SQLite 文件路径；关闭或使用 PostgreSQL 时为 None。
+
+    database_url_env: str | None
+    # PostgreSQL URL 的固定环境变量引用；状态中不得保存含凭据 URL。
 
     checkpoint_path: str | None
     # 可选 SQLite checkpoint 路径，用于强制数据库文件隔离。
@@ -1283,16 +1349,19 @@ class ContextCompactState(TypedDict):
 
 
 class ApplicationDatabaseState(TypedDict):
-    """十张应用表共用的启用状态、SQLite 隔离配置和运行期连接结果。"""
+    """十张应用表共用的启用状态、安全连接引用和运行期连接结果。"""
 
     enabled: bool
     # 是否持久化运行、Memory、审计、人工选择、错误恢复和节点执行；默认关闭。
 
-    backend: Literal["sqlite"]
-    # 当前应用数据库后端；0.6.0 只支持独立 SQLite 文件。
+    backend: Literal["sqlite", "postgresql"]
+    # 当前应用数据库后端；SQLite 为默认值，PostgreSQL 通过 Docker 拓扑启用。
 
     database_path: str | None
-    # 十张应用表共用的 SQLite 文件绝对路径；关闭时为 None。
+    # 十张应用表共用的 SQLite 文件绝对路径；关闭或使用 PostgreSQL 时为 None。
+
+    database_url_env: str | None
+    # PostgreSQL URL 的固定环境变量引用；禁止把用户名或密码写入图状态。
 
     checkpoint_path: str | None
     # 可选 LangGraph checkpoint 路径，用于强制两个数据库文件完全隔离。

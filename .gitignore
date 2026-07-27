@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.7.2 Task、恢复、后台任务、计划、Worktree 和发布验收快照含运行信息
+# 1.0.0 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -147,6 +147,10 @@ cron*.json
 worktree*.json
 email_mcp*.json
 structured_log*.json
+demo-data/
+e2e-demo-output/
+backup-restore-output/
+*.sqlite3.bak
 
 # Codex 或其他本地代理生成的工作目录
 .agents/
@@ -168,6 +172,13 @@ database/
 *.db
 *.db-*
 
+# PostgreSQL 导出、临时凭据和本地容器数据不得提交
+*.sql
+*.dump
+*.backup
+postgres-data/
+postgresql-data/
+
 # 真实业务输入文件不提交；允许使用 .gitkeep 保留空目录
 data/input/*
 !data/input/.gitkeep
@@ -178,6 +189,10 @@ review_response.json
 review_response*.json
 recovery_response.json
 recovery_response*.json
+background_resume_request.json
+background_resume_request*.json
+background_resume_response.json
+background_resume_response*.json
 
 # 本地 Docker 手工测试请求包含运行路径，不提交到仓库
 docker_request.json

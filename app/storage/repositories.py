@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Generic, TypeVar
 
-from sqlalchemy import Select, select, update
+from sqlalchemy import Select, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.state.models import (
@@ -26,6 +26,10 @@ from app.storage.orm_models import (
     ScheduledJobModel,
     ToolCallAuditModel,
     WorkerLeaseModel,
+)
+from app.utils.background_resume import (
+    is_same_resume_request,
+    validate_resume_value_against_interrupt,
 )
 
 """本模块通过 Repository 隔离十张应用表的数据访问，不负责创建 Session 或提交事务。"""
@@ -100,6 +104,7 @@ ERROR_RECOVERY_STATUS_TRANSITIONS = {
 BACKGROUND_JOB_STATUSES = frozenset(
     {
         "queued",
+        "resume_queued",
         "leased",
         "running",
         "waiting_human",
@@ -533,6 +538,9 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
                 current_worker_id=None,
                 attempt_count=0,
                 max_attempts=max_attempts,
+                resume_count=0,
+                pending_interrupt=None,
+                resume_state=None,
                 available_at=_parse_required_datetime(
                     job["available_at"],
                     field_name="job.available_at",
@@ -574,10 +582,11 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
         worker_id: str,
         claimed_at: datetime,
     ) -> BackgroundJobModel | None:
-        """使用条件更新领取一个已经到达可执行时间的排队任务。
+        """按数据库方言原子领取一个已经到达可执行时间的排队任务。
 
-        候选读取后仍以 ``status='queued'`` 和 ``available_at`` 作为更新条件，
-        因此多个 Worker 即使读到同一候选，也只有一个事务能够成功推进状态。
+        PostgreSQL 在当前短事务中使用 ``FOR UPDATE SKIP LOCKED``，允许多个
+        Worker 并行跳过已锁候选；SQLite 保留候选读取后的条件更新，确保只有
+        一个事务可以推进同一任务。人工恢复领取不会增加异常尝试次数。
 
         Args:
             worker_id: 尝试领取任务的 Worker ID。
@@ -590,35 +599,67 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             worker_id,
             field_name="worker_id",
         )
-        candidate_id = self._session.scalar(
-            select(BackgroundJobModel.job_id)
+        claimable_statement = (
+            select(BackgroundJobModel)
             .where(
-                BackgroundJobModel.status == "queued",
+                BackgroundJobModel.status.in_({"queued", "resume_queued"}),
                 BackgroundJobModel.available_at <= claimed_at,
-                BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+                or_(
+                    BackgroundJobModel.status == "resume_queued",
+                    BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+                ),
             )
             .order_by(
                 BackgroundJobModel.available_at.asc(),
                 BackgroundJobModel.created_at.asc(),
                 BackgroundJobModel.job_id.asc(),
             )
-            .limit(1)
         )
-        if candidate_id is None:
+        if self._session.get_bind().dialect.name == "postgresql":
+            job = self._session.scalars(
+                claimable_statement.with_for_update(skip_locked=True).limit(1)
+            ).first()
+            if job is None:
+                return None
+            if job.status == "queued":
+                job.attempt_count += 1
+            job.status = "leased"
+            job.current_worker_id = normalized_worker_id
+            job.claimed_at = claimed_at
+            job.updated_at = claimed_at
+            self._session.flush()
+            return job
+
+        candidate = self._session.execute(
+            claimable_statement.with_only_columns(
+                BackgroundJobModel.job_id,
+                BackgroundJobModel.status,
+            ).limit(1)
+        ).first()
+        if candidate is None:
             return None
+        candidate_id, candidate_status = candidate
+        attempt_count_value = (
+            BackgroundJobModel.attempt_count + 1
+            if candidate_status == "queued"
+            else BackgroundJobModel.attempt_count
+        )
         result = self._session.execute(
             update(BackgroundJobModel)
             .where(
                 BackgroundJobModel.job_id == candidate_id,
-                BackgroundJobModel.status == "queued",
+                BackgroundJobModel.status == candidate_status,
                 BackgroundJobModel.available_at <= claimed_at,
-                BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+                or_(
+                    BackgroundJobModel.status == "resume_queued",
+                    BackgroundJobModel.attempt_count < BackgroundJobModel.max_attempts,
+                ),
             )
             .values(
                 status="leased",
                 current_worker_id=normalized_worker_id,
                 claimed_at=claimed_at,
-                attempt_count=BackgroundJobModel.attempt_count + 1,
+                attempt_count=attempt_count_value,
                 updated_at=claimed_at,
             )
         )
@@ -626,6 +667,54 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             return None
         self._session.flush()
         return self.get(candidate_id)
+
+    def queue_resume(
+        self,
+        job_id: str,
+        *,
+        resume_state: dict,
+        queued_at: datetime,
+    ) -> BackgroundJobModel:
+        """校验当前中断并把一个幂等人工恢复请求放回 Worker 队列。
+
+        Args:
+            job_id: 当前等待人工恢复的后台任务 ID。
+            resume_state: 已规范化并带值摘要的 pending 恢复状态。
+            queued_at: API 接受首次恢复请求的 UTC 时间。
+
+        Returns:
+            已进入 ``resume_queued`` 的任务；完全相同的重复请求返回原任务。
+
+        Raises:
+            RuntimeError: 幂等键冲突、任务不可恢复或 interrupt_id 已过期时抛出。
+        """
+        job = self.get_required(job_id)
+        if is_same_resume_request(job.resume_state, resume_state):
+            return job
+        if job.resume_state is not None and job.resume_state.get("request_id") == resume_state.get(
+            "request_id"
+        ):
+            raise RuntimeError("request_id 已被不同的人工恢复请求使用")
+        if job.status != "waiting_human":
+            raise RuntimeError("后台任务当前不处于 waiting_human 状态")
+        pending = job.pending_interrupt
+        if not isinstance(pending, dict) or pending.get("interrupt_id") != resume_state.get(
+            "interrupt_id"
+        ):
+            raise RuntimeError("interrupt_id 已过期或不属于当前 checkpoint")
+        if pending.get("kind") != resume_state.get("kind"):
+            raise RuntimeError("恢复 kind 与当前中断协议不一致")
+        validate_resume_value_against_interrupt(pending, resume_state)
+        job.status = "resume_queued"
+        job.resume_state = dict(resume_state)
+        job.available_at = queued_at
+        job.claimed_at = None
+        job.started_at = None
+        job.error_summary = None
+        job.updated_at = queued_at
+        job.finished_at = None
+        self._session.flush()
+        return job
 
     def mark_running(
         self,
@@ -669,6 +758,7 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
         finished_at: datetime,
         report_path: str | None = None,
         error_summary: str | None = None,
+        pending_interrupt: dict | None = None,
     ) -> BackgroundJobModel:
         """完成、部分完成、暂停或最终失败一个当前 Worker 持有的任务。
 
@@ -679,6 +769,7 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             finished_at: 当前收口事务使用的 UTC 时间。
             report_path: 可选治理报告路径。
             error_summary: 可选脱敏错误摘要。
+            pending_interrupt: waiting_human 状态必须持久化的当前中断快照。
 
         Returns:
             已收口并完成 flush 的后台任务。
@@ -700,8 +791,23 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             "running",
         }:
             raise RuntimeError("只有当前租约 Worker 可以收口 leased 或 running 任务")
+        if normalized_status == "waiting_human" and pending_interrupt is None:
+            raise ValueError("waiting_human 收口必须提供 pending_interrupt")
+        if normalized_status != "waiting_human" and pending_interrupt is not None:
+            raise ValueError("最终状态不得保留 pending_interrupt")
+        resume_state = job.resume_state
+        if isinstance(resume_state, dict) and resume_state.get("status") == "pending":
+            resume_state = {
+                **resume_state,
+                "value": None,
+                "status": "applied",
+                "applied_at": finished_at.isoformat(),
+            }
+            job.resume_count += 1
         job.status = normalized_status
         job.current_worker_id = None
+        job.pending_interrupt = dict(pending_interrupt) if pending_interrupt is not None else None
+        job.resume_state = resume_state
         job.report_path = report_path
         job.error_summary = error_summary
         job.finished_at = (
@@ -718,6 +824,7 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
         available_at: datetime,
         updated_at: datetime | None = None,
         error_summary: str,
+        increment_attempt_count: bool = False,
     ) -> BackgroundJobModel:
         """把未耗尽尝试次数的异常任务重新放回队列。
 
@@ -726,6 +833,7 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             available_at: 任务最早允许再次领取的时间。
             updated_at: 本次状态变更时间；省略时沿用最早可领取时间。
             error_summary: 本次重入队原因的脱敏摘要。
+            increment_attempt_count: 恢复执行异常时是否消耗一次异常重试次数。
 
         Returns:
             已恢复为 queued 状态的后台任务。
@@ -736,9 +844,15 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
         job = self.get_required(job_id)
         if job.status in BACKGROUND_JOB_TERMINAL_STATUSES:
             raise RuntimeError("最终状态后台任务不得重新入队")
-        if job.attempt_count >= job.max_attempts:
+        next_attempt_count = job.attempt_count + int(increment_attempt_count)
+        if next_attempt_count >= job.max_attempts:
             raise RuntimeError("后台任务尝试次数已耗尽")
-        job.status = "queued"
+        job.attempt_count = next_attempt_count
+        job.status = (
+            "resume_queued"
+            if isinstance(job.resume_state, dict) and job.resume_state.get("status") == "pending"
+            else "queued"
+        )
         job.current_worker_id = None
         job.available_at = available_at
         job.claimed_at = None
@@ -754,6 +868,7 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
         *,
         failed_at: datetime,
         error_summary: str,
+        increment_attempt_count: bool = False,
     ) -> BackgroundJobModel:
         """把已经耗尽尝试次数的过期租约任务标记为最终失败。
 
@@ -761,13 +876,23 @@ class BackgroundJobRepository(BaseRepository[BackgroundJobModel]):
             job_id: 等待标记失败的后台任务 ID。
             failed_at: 最终失败时间。
             error_summary: 面向状态查询的脱敏失败摘要。
+            increment_attempt_count: 恢复执行异常时是否记录最后一次异常尝试。
 
         Returns:
             已进入 failed 状态的后台任务。
         """
         job = self.get_required(job_id)
+        if increment_attempt_count:
+            job.attempt_count = min(job.max_attempts, job.attempt_count + 1)
+        if isinstance(job.resume_state, dict) and job.resume_state.get("status") == "pending":
+            job.resume_state = {
+                **job.resume_state,
+                "value": None,
+                "status": "failed",
+            }
         job.status = "failed"
         job.current_worker_id = None
+        job.pending_interrupt = None
         job.error_summary = error_summary
         job.finished_at = failed_at
         job.updated_at = failed_at

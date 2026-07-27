@@ -44,6 +44,44 @@ class RunSubmissionResponse(BaseModel):
     # API 返回时任务已经持久化入队但尚未保证开始执行。
 
 
+class PendingInterruptResponse(BaseModel):
+    """HTTP API 可公开的当前后台中断快照。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 响应只能包含恢复当前 checkpoint 所需的最小中断字段。
+
+    interrupt_id: str
+    # LangGraph 为当前中断生成的稳定 ID。
+
+    kind: Literal["file_governance_review", "error_recovery"]
+    # 当前中断所遵循的人审或错误恢复协议。
+
+    payload: dict[str, Any]
+    # 供调用方构造恢复值的受控中断载荷。
+
+    created_at: str
+    # Worker 持久化当前中断的时间。
+
+
+class BackgroundResumeRequest(BaseModel):
+    """通过当前 interrupt_id 提交一次幂等后台人工恢复的 HTTP 请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 拒绝未知字段，避免恢复参数被静默忽略。
+
+    request_id: str = Field(min_length=1, max_length=128)
+    # 调用方提供的幂等键；同一次操作重试必须保持不变。
+
+    interrupt_id: str = Field(min_length=1, max_length=256)
+    # 必须与状态接口当前公开的中断 ID 完全一致。
+
+    kind: Literal["file_governance_review", "error_recovery"]
+    # 恢复值所遵循的固定协议类型。
+
+    value: dict[str, Any]
+    # 将由 Worker 传给 Command(resume=...) 的协议对象。
+
+
 class BackgroundJobResponse(BaseModel):
     """HTTP API 可公开的后台任务生命周期摘要。"""
 
@@ -64,6 +102,7 @@ class BackgroundJobResponse(BaseModel):
 
     status: Literal[
         "queued",
+        "resume_queued",
         "leased",
         "running",
         "waiting_human",
@@ -71,16 +110,22 @@ class BackgroundJobResponse(BaseModel):
         "partial",
         "failed",
     ]
-    # 后台任务当前生命周期状态。
+    # 后台任务当前生命周期状态，包括独立的人工恢复排队状态。
 
     current_worker_id: str | None
     # 当前持有任务租约的 Worker ID。
 
     attempt_count: int
-    # Worker 已经领取并尝试执行的累计次数。
+    # 首次执行和异常重试累计次数；正常人工恢复不增加该值。
 
     max_attempts: int
     # 当前任务允许的最大尝试次数。
+
+    resume_count: int
+    # 已成功应用的人工恢复次数。
+
+    pending_interrupt: PendingInterruptResponse | None
+    # 当前等待调用方恢复的中断；其他状态通常为 None。
 
     available_at: str
     # 当前任务最早允许领取的时间。
@@ -125,6 +170,8 @@ class BackgroundJobResponse(BaseModel):
             current_worker_id=job["current_worker_id"],
             attempt_count=job["attempt_count"],
             max_attempts=job["max_attempts"],
+            resume_count=job["resume_count"],
+            pending_interrupt=job["pending_interrupt"],
             available_at=job["available_at"],
             claimed_at=job["claimed_at"],
             started_at=job["started_at"],
@@ -156,6 +203,12 @@ class RunStatusResponse(BaseModel):
 
     report_path: str | None
     # 最终报告路径；尚未生成时为 None。
+
+    report_available: bool
+    # 当前后台运行是否已经登记可供下载的报告路径。
+
+    report_url: str | None
+    # 受控报告下载接口；尚无报告时为 None。
 
     error_summary: str | None
     # 可供调用方展示的脱敏错误摘要。

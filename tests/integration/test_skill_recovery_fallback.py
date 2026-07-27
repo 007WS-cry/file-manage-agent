@@ -91,5 +91,5 @@ def test_skill_failure_uses_default_skill_after_retry_exhaustion(
     assert recovered_error["retry_count"] == 1
     assert result["recovery"]["action"] == "fallback"
     assert result["recovery"]["resume_node"] == "load_skill_registry"
-    assert result["recovery"]["resume_after_node"] == "recall_long_term_memory"
+    assert result["recovery"]["resume_after_node"] == "plan_run_tasks"
     assert result["degradations"][0]["action"] == "default_skill"

@@ -15,13 +15,16 @@ from app.runtime.scheduler import (
     DEFAULT_SCHEDULER_TIMEZONE,
     SchedulerService,
 )
-from app.storage.database import DEFAULT_APPLICATION_DATABASE_PATH
+from app.storage.database import (
+    APPLICATION_DATABASE_PATH_ENV,
+    APPLICATION_DATABASE_URL_ENV,
+    DEFAULT_APPLICATION_DATABASE_PATH,
+    get_application_database_backend,
+    resolve_application_database_target,
+)
 
 """本模块解析独立 APScheduler 进程参数，并启动持久化 Cron 计划同步和入队循环。"""
 
-
-# Scheduler 读取应用数据库路径使用的环境变量名称。
-APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
 
 # Scheduler 为后台任务写入的 checkpoint 路径环境变量名称。
 CHECKPOINT_PATH_ENV = "FILE_GOVERNANCE_CHECKPOINT_PATH"
@@ -52,16 +55,32 @@ def build_argument_parser() -> argparse.ArgumentParser:
         prog="file-governance-scheduler",
         description="恢复持久化 Cron 计划，并在触发时只创建后台队列任务。",
     )
+    configured_database_url = os.environ.get(
+        APPLICATION_DATABASE_URL_ENV,
+        "",
+    ).strip()
+    parser.add_argument(
+        "--database-url",
+        default=configured_database_url or None,
+        help=(
+            "已执行 Alembic 迁移的 SQLAlchemy URL；PostgreSQL 凭据建议只通过 "
+            f"{APPLICATION_DATABASE_URL_ENV} 注入。"
+        ),
+    )
     parser.add_argument(
         "--database-path",
         type=Path,
-        default=Path(
-            os.environ.get(
-                APPLICATION_DATABASE_PATH_ENV,
-                str(DEFAULT_APPLICATION_DATABASE_PATH),
+        default=(
+            None
+            if configured_database_url
+            else Path(
+                os.environ.get(
+                    APPLICATION_DATABASE_PATH_ENV,
+                    str(DEFAULT_APPLICATION_DATABASE_PATH),
+                )
             )
         ),
-        help="已执行 0003 Alembic 迁移的应用数据库路径。",
+        help="未使用 --database-url 时的 SQLite 应用数据库路径。",
     )
     parser.add_argument(
         "--checkpoint-path",
@@ -129,8 +148,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
     arguments = build_argument_parser().parse_args(argv)
     logger = configure_structured_logging("scheduler", level=arguments.log_level)
+    database_target = resolve_application_database_target(
+        database_url=arguments.database_url,
+        database_path=(
+            None if arguments.database_url is not None else arguments.database_path
+        ),
+    )
+    if get_application_database_backend(database_target) == "postgresql":
+        os.environ[APPLICATION_DATABASE_URL_ENV] = str(database_target)
     service = SchedulerService(
-        arguments.database_path,
+        database_target,
         arguments.checkpoint_path,
         timezone_name=arguments.timezone,
         reconcile_interval_seconds=arguments.reconcile_interval,

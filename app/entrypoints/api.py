@@ -8,7 +8,6 @@ from pathlib import Path
 import uvicorn
 
 from app.api.app import (
-    APPLICATION_DATABASE_PATH_ENV,
     CHECKPOINT_PATH_ENV,
     DEFAULT_RUNTIME_CHECKPOINT_PATH,
     create_app,
@@ -17,7 +16,11 @@ from app.observability.logging import (
     configure_structured_logging,
     log_runtime_event,
 )
-from app.storage.database import DEFAULT_APPLICATION_DATABASE_PATH
+from app.storage.database import (
+    APPLICATION_DATABASE_PATH_ENV,
+    APPLICATION_DATABASE_URL_ENV,
+    DEFAULT_APPLICATION_DATABASE_PATH,
+)
 
 """本模块解析 HTTP API 进程参数并启动只暴露脱敏运行状态的 Uvicorn 服务。"""
 
@@ -53,16 +56,32 @@ def build_argument_parser() -> argparse.ArgumentParser:
         default=int(os.environ.get(API_PORT_ENV, "8000")),
         help="API 监听端口。",
     )
+    configured_database_url = os.environ.get(
+        APPLICATION_DATABASE_URL_ENV,
+        "",
+    ).strip()
+    parser.add_argument(
+        "--database-url",
+        default=configured_database_url or None,
+        help=(
+            "已执行 Alembic 迁移的 SQLAlchemy URL；PostgreSQL 凭据建议只通过 "
+            f"{APPLICATION_DATABASE_URL_ENV} 注入。"
+        ),
+    )
     parser.add_argument(
         "--database-path",
         type=Path,
-        default=Path(
-            os.environ.get(
-                APPLICATION_DATABASE_PATH_ENV,
-                str(DEFAULT_APPLICATION_DATABASE_PATH),
+        default=(
+            None
+            if configured_database_url
+            else Path(
+                os.environ.get(
+                    APPLICATION_DATABASE_PATH_ENV,
+                    str(DEFAULT_APPLICATION_DATABASE_PATH),
+                )
             )
         ),
-        help="已执行 Alembic 迁移的应用数据库路径。",
+        help="未使用 --database-url 时的 SQLite 应用数据库路径。",
     )
     parser.add_argument(
         "--checkpoint-path",
@@ -99,7 +118,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     logger = configure_structured_logging("api", level=arguments.log_level)
     log_runtime_event(logger, "service_starting", "HTTP API 正在启动。")
     application = create_app(
-        database_path=arguments.database_path,
+        database_path=(
+            None if arguments.database_url is not None else arguments.database_path
+        ),
+        database_url=arguments.database_url,
         checkpoint_path=arguments.checkpoint_path,
     )
     uvicorn.run(

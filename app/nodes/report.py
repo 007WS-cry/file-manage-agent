@@ -7,9 +7,45 @@ from app.services.reporting import (
     escape_markdown_cell,
 )
 from app.state.models import FileGovernanceState
-from app.utils.error_context import is_error_unresolved
+from app.utils.error_context import create_node_error, is_error_unresolved
 
 """本模块实现失败、无数据、版本摘要、证据治理及生命周期收口报告节点。"""
+
+
+def validate_report_result(state: FileGovernanceState) -> dict:
+    """校验报告节点返回的最小契约，并把损坏结果转成统一恢复错误。
+
+    ``report_path`` 允许为空，因为磁盘写入失败时仍应保留内存 Markdown 报告；
+    摘要、正文和生成时间则必须存在，避免长期记忆与 Task 收口消费半成品。
+
+    Args:
+        state: 已执行成功、无数据或失败报告节点的顶层治理状态。
+
+    Returns:
+        报告契约完整时返回空错误更新，否则返回一条可由主图路由的结构化错误。
+    """
+    report = state.get("report")
+    is_valid = (
+        isinstance(report, dict)
+        and bool(str(report.get("summary", "")).strip())
+        and bool(str(report.get("report_markdown", "")).strip())
+        and bool(str(report.get("generated_at", "")).strip())
+        and isinstance(report.get("warnings"), list)
+    )
+    if is_valid:
+        return {"errors": []}
+    return {
+        "errors": [
+            create_node_error(
+                state,
+                stage="report",
+                node_name="validate_report_result",
+                category="protocol",
+                message="报告节点没有返回完整的摘要、Markdown 正文、警告列表和生成时间。",
+                fatal=True,
+            )
+        ]
+    }
 
 
 def generate_failure_report(state: FileGovernanceState) -> dict:

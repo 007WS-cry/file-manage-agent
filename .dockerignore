@@ -52,6 +52,10 @@ review_response.json
 review_response*.json
 recovery_response.json
 recovery_response*.json
+background_resume_request.json
+background_resume_request*.json
+background_resume_response.json
+background_resume_response*.json
 
 # 本地 Docker 手工测试请求通过只读挂载提供，不进入镜像构建上下文
 docker_request.json
@@ -70,6 +74,13 @@ delivery_log*.json
 *.sqlite3-*
 *.db
 *.db-*
+
+# PostgreSQL 导出、临时凭据和本地容器数据不得进入镜像构建上下文
+*.sql
+*.dump
+*.backup
+postgres-data
+postgresql-data
 
 # 本地配置、日志、文档源码及静态站点产物
 .env
@@ -95,7 +106,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.7.2 Task、恢复、后台任务、计划、Worktree 和发布验收快照只在运行时生成
+# 1.0.0 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -177,6 +188,10 @@ cron*.json
 worktree*.json
 email_mcp*.json
 structured_log*.json
+demo-data
+e2e-demo-output
+backup-restore-output
+*.sqlite3.bak
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

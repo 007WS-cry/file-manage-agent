@@ -15,7 +15,6 @@ from app.graphs.routers import (
     route_after_run_hooks_result,
     route_before_run_hooks_result,
     route_evidence_result,
-    route_failure_report_task_sync,
     route_system_prompt_result,
     route_team_orchestration_result,
     route_version_analysis_result,
@@ -46,12 +45,12 @@ from app.nodes.subgraphs_nodes import (
     run_version_analysis_subgraph,
 )
 from app.nodes.task_tracking import (
+    finalize_run_tasks,
     plan_run_tasks,
     sync_evidence_task_status,
     sync_human_review_task_status,
     sync_inventory_task_status,
     sync_recommendation_task_status,
-    sync_report_task_status,
     sync_version_task_status,
 )
 from app.state.factories import create_initial_state
@@ -74,6 +73,18 @@ GOVERNANCE_CONCLUSION_FIELDS = (
 
 # 0.5.0 新增且 0.4.0 checkpoint 不包含的顶层状态字段。
 V050_STATE_FIELDS = ("llm", "team", "team_messages", "llm_calls")
+
+
+def route_reference_failure_report(state: FileGovernanceState) -> str:
+    """为 0.4.0 参照图区分已有 Task DAG 与规划前失败路径。
+
+    Args:
+        state: 已生成参照失败报告的顶层治理状态。
+
+    Returns:
+        已创建 Task 时返回 ``sync``，否则返回 ``skip``。
+    """
+    return "sync" if state.get("tasks") else "skip"
 
 
 def create_docx(path: Path, text: str) -> None:
@@ -119,7 +130,7 @@ def build_v040_reference_graph() -> Any:
     builder.add_node("generate_failure_report", generate_failure_report)
     builder.add_node("generate_no_data_report", generate_no_data_report)
     builder.add_node("generate_governance_report", generate_governance_report)
-    builder.add_node("sync_report_task_status", sync_report_task_status)
+    builder.add_node("sync_report_task_status", finalize_run_tasks)
     builder.add_node("execute_after_run_hooks", execute_after_run_hooks)
     builder.add_node("generate_lifecycle_failure_report", generate_lifecycle_failure_report)
     builder.add_node("finalize_run", finalize_run)
@@ -188,7 +199,7 @@ def build_v040_reference_graph() -> Any:
     )
     builder.add_conditional_edges(
         "generate_failure_report",
-        route_failure_report_task_sync,
+        route_reference_failure_report,
         {"sync": "sync_report_task_status", "skip": "execute_after_run_hooks"},
     )
     builder.add_edge("generate_no_data_report", "sync_report_task_status")
@@ -264,8 +275,7 @@ def test_disabled_llm_preserves_v040_governance_conclusions(tmp_path: Path) -> N
         assert current_result[field_name] == reference_result[field_name]
     assert current_result["report"]["summary"] == reference_result["report"]["summary"]
     assert (
-        current_result["report"]["report_markdown"]
-        == reference_result["report"]["report_markdown"]
+        current_result["report"]["report_markdown"] == reference_result["report"]["report_markdown"]
     )
     assert all(diff["summary_source"] == "deterministic" for diff in current_result["diffs"])
     assert current_result["llm"]["enabled"] is False

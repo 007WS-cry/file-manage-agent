@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "0.8.0"
-description = "支持邮件 MCP 证据、统一 JSON 日志、多服务编排与后台运行时的 LangGraph 文件版本治理 Agent"
+version = "1.0.0"
+description = "具备端到端验收、人工恢复与双数据库部署能力的 LangGraph 只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,6 +20,7 @@ dependencies = [
     "langgraph>=1.2,<2",
     "langgraph-checkpoint-sqlite>=3.1,<4",
     "SQLAlchemy>=2.0,<3",
+    "psycopg[binary]>=3.2,<4",
     "alembic>=1.15,<2",
     "fastapi>=0.115,<1",
     "uvicorn>=0.34,<1",
@@ -63,10 +64,10 @@ litellm = [
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["app*"]
+include = ["app*", "scripts*"]
 
 [tool.setuptools.data-files]
-"examples" = ["examples/mock_email_data.json"]
+"examples" = ["examples/*.json"]
 "resources/prompts" = ["resources/prompts/file_governance_system_v1.md"]
 "resources/skills" = ["resources/skills/registry.yaml"]
 "resources/skills/file-content-analysis" = ["resources/skills/file-content-analysis/SKILL.md"]

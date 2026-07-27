@@ -8,10 +8,14 @@ from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import make_url
 
 from alembic import context
-from app.storage.database import build_application_database_url
+from app.storage.database import (
+    APPLICATION_DATABASE_PATH_ENV,
+    APPLICATION_DATABASE_URL_ENV,
+    normalize_application_database_url,
+)
 from app.storage.orm_models import Base
 
-"""本模块配置七表应用数据库的 Alembic 在线和离线迁移，并自动准备 SQLite 父目录。"""
+"""本模块配置十表应用数据库的 Alembic 在线和离线迁移，并自动准备 SQLite 父目录。"""
 
 
 # Alembic 当前运行使用的全局配置对象。
@@ -20,9 +24,6 @@ config = context.config
 # Alembic 自动比较表结构时使用的 SQLAlchemy MetaData。
 target_metadata = Base.metadata
 
-# 部署环境可通过该环境变量覆盖 alembic.ini 中的默认 SQLite 路径。
-APPLICATION_DATABASE_PATH_ENV = "FILE_GOVERNANCE_DATABASE_PATH"
-
 # 在线和离线迁移共用的结构比较及单迁移事务选项。
 MIGRATION_CONTEXT_OPTIONS = {
     "compare_type": True,
@@ -30,19 +31,22 @@ MIGRATION_CONTEXT_OPTIONS = {
 }
 
 
-def _apply_database_path_override() -> None:
-    """把可选环境变量中的数据库文件路径转换为安全 SQLAlchemy URL。
+def _apply_database_target_override() -> None:
+    """把可选数据库 URL 或 SQLite 路径转换为安全 SQLAlchemy URL。
 
-    环境变量只表示本地 SQLite 文件路径，不接受任意数据库 URL，避免通过部署
-    配置绕过当前版本的 SQLite 边界。
+    PostgreSQL URL 优先从固定环境变量读取；未配置时继续读取 SQLite 路径
+    环境变量。URL 只写入 Alembic 内存配置，不输出到日志。
     """
+    configured_url = os.environ.get(APPLICATION_DATABASE_URL_ENV, "").strip()
     configured_path = os.environ.get(APPLICATION_DATABASE_PATH_ENV, "").strip()
-    if not configured_path:
+    if not configured_url and not configured_path:
         return
-    database_url = build_application_database_url(configured_path)
+    database_url = normalize_application_database_url(
+        configured_url or configured_path
+    )
     config.set_main_option(
         "sqlalchemy.url",
-        database_url.render_as_string(hide_password=False),
+        database_url.render_as_string(hide_password=False).replace("%", "%%"),
     )
 
 
@@ -90,12 +94,13 @@ def run_migrations_offline() -> None:
     离线模式只读取 URL 和迁移脚本，不连接数据库文件。
     """
     database_url = config.get_main_option("sqlalchemy.url")
+    parsed_url = make_url(database_url)
     context.configure(
         url=database_url,
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
-        render_as_batch=database_url.startswith("sqlite"),
+        render_as_batch=parsed_url.drivername.startswith("sqlite"),
         **MIGRATION_CONTEXT_OPTIONS,
     )
     with context.begin_transaction():
@@ -128,7 +133,7 @@ def run_migrations_online() -> None:
     connectable.dispose()
 
 
-_apply_database_path_override()
+_apply_database_target_override()
 _configure_logging()
 if context.is_offline_mode():
     run_migrations_offline()

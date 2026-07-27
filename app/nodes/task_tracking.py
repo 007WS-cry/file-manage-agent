@@ -195,19 +195,26 @@ def sync_human_review_task_status(state: FileGovernanceState) -> dict:
     return public_task_update(working_state, errors)
 
 
-def sync_report_task_status(state: FileGovernanceState) -> dict:
-    """收口未执行的上游 Task，并把已生成的治理报告登记为完成。
+def finalize_run_tasks(state: FileGovernanceState) -> dict:
+    """在报告与长期记忆持久化完成后统一收口本次运行的全部 Task。
 
-    成功、无数据和业务失败报告均走同一节点。报告 Task 只描述报告是否生成，
-    不继承业务 Task 的失败状态，因此下游阻断不会被误报为报告自身失败。
-    已安全降级的上游 Task 保持 ``partial``，不会被本节点改写为 ``failed``。
+    成功、无数据和业务失败报告均走同一节点。请求校验、Prompt、Memory 或
+    Skill 阶段在固定 DAG 创建前失败时，本节点保持空 Task 状态并允许生命周期
+    正常收口；DAG 已创建时，报告 Task 只描述报告与记忆是否完成，不继承业务
+    Task 的失败状态。已安全降级的上游 Task 保持 ``partial``，不会被改写。
 
     Args:
-        state: 已生成任一种业务报告且具有合法固定 Task DAG 的顶层状态。
+        state: 已生成报告并完成长期记忆持久化尝试的顶层治理状态。
 
     Returns:
         全部 Task 终态、最终 Todo 投影及可选编排错误。
     """
+    if not state.get("tasks"):
+        return {
+            "tasks": [],
+            "todos": list(state.get("todos", [])),
+            "errors": [],
+        }
     working_state, errors = settle_unfinished_tasks_before_report(state)
     if has_orchestration_failure(errors):
         return public_task_update(working_state, errors)

@@ -6,11 +6,14 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from langgraph.types import Command
+
 from app.graphs.file_governance import build_background_file_governance_graph
 from app.runtime.dispatcher import build_runtime_initial_state
-from app.runtime.job_queue import JobQueue
+from app.runtime.job_queue import JobQueue, utc_now
 from app.state.models import BackgroundJobState
 from app.storage.checkpoints import open_checkpointer
+from app.utils.background_resume import serialize_pending_interrupt
 
 """本模块实现独立 Background Worker 的领取循环、租约心跳和 LangGraph 执行边界。"""
 
@@ -110,25 +113,38 @@ class BackgroundWorker:
         checkpoint_path = checkpoint.get("database_path")
         if not isinstance(checkpoint_path, str) or not checkpoint_path.strip():
             raise ValueError("后台任务缺少持久化 checkpoint.database_path")
-        state = build_runtime_initial_state(
-            envelope,
-            run_id=job["run_id"],
-            thread_id=job["thread_id"],
-            execution_mode="background",
-            trigger_source=job["trigger_source"],
-            background_job_id=job["id"],
-            worker_id=self.worker_id,
-        )
+        workspace = envelope.get("workspace")
+        if not isinstance(workspace, Mapping):
+            raise ValueError("后台任务缺少 workspace 对象")
+        input_root = workspace.get("input_root")
+        if not isinstance(input_root, str) or not input_root.strip():
+            raise ValueError("后台任务缺少 workspace.input_root")
         with open_checkpointer(
             "sqlite",
             database_path=Path(checkpoint_path),
-            input_root=state["workspace"]["input_root"],
+            input_root=input_root,
         ) as checkpointer:
             graph = build_background_file_governance_graph(checkpointer=checkpointer)
-            return graph.invoke(
-                state,
-                config={"configurable": {"thread_id": job["thread_id"]}},
+            config = {"configurable": {"thread_id": job["thread_id"]}}
+            resume_state = job.get("resume")
+            if isinstance(resume_state, Mapping) and resume_state.get("status") == "pending":
+                resume_value = resume_state.get("value")
+                if not isinstance(resume_value, Mapping):
+                    raise ValueError("后台恢复任务缺少可应用的 resume.value")
+                snapshot = graph.get_state(config)
+                if not snapshot.next:
+                    raise ValueError("当前 checkpoint 没有可恢复的 LangGraph 中断")
+                return graph.invoke(Command(resume=dict(resume_value)), config=config)
+            state = build_runtime_initial_state(
+                envelope,
+                run_id=job["run_id"],
+                thread_id=job["thread_id"],
+                execution_mode="background",
+                trigger_source=job["trigger_source"],
+                background_job_id=job["id"],
+                worker_id=self.worker_id,
             )
+            return graph.invoke(state, config=config)
 
     def _heartbeat_loop(
         self,
@@ -193,6 +209,10 @@ class BackgroundWorker:
         run = result.get("run")
         run_status = run.get("status") if isinstance(run, Mapping) else None
         interrupts = result.get("__interrupt__", ())
+        pending_interrupt = serialize_pending_interrupt(
+            interrupts,
+            created_at=utc_now().isoformat(),
+        )
         if interrupts or run_status == "waiting_human":
             status = "waiting_human"
         elif run_status in GRAPH_FINAL_STATUSES:
@@ -212,6 +232,7 @@ class BackgroundWorker:
             status=status,
             report_path=str(report_path) if report_path is not None else None,
             error_summary=error_summary,
+            pending_interrupt=pending_interrupt,
         )
 
     def run_once(self) -> bool:

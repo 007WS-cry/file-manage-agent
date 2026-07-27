@@ -8,7 +8,6 @@ from app.services.recovery_execution import (
     RECOVERY_RESUME_AFTER_NODES,
     RECOVERY_RETRY_NODES,
 )
-from app.services.task_system import TASK_DAG_TEMPLATE, build_task_id, validate_task_dag
 from app.state.models import (
     ContentSubagentGraphState,
     ContextCompactGraphState,
@@ -365,41 +364,40 @@ def route_skill_preparation_result(
     return "ready" if context_ids == selected_ids else "fallback"
 
 
-def route_failure_report_task_sync(
+def route_report_result(
     state: FileGovernanceState,
-) -> Literal["sync", "skip"]:
-    """判断失败报告是否具有可安全收口的 Task DAG。
-
-    请求校验、Prompt 或 Task 规划阶段可能在固定 DAG 创建前失败，此时失败报告
-    直接进入 after-run hooks。业务子图失败时 DAG 已合法创建，报告则继续同步
-    Report Task，避免在主图中复制 ``generate_failure_report`` 节点。
+) -> Literal["continue", "recovery"]:
+    """根据统一报告契约校验结果选择持久化记忆或进入错误恢复。
 
     Args:
-        state: 已生成失败报告的顶层文件治理状态。
+        state: 已执行 ``validate_report_result`` 的顶层文件治理状态。
 
     Returns:
-        DAG 完整且没有编排致命错误时返回 ``sync``，否则返回 ``skip``。
+        报告契约错误尚未解决时返回 ``recovery``，否则返回 ``continue``。
     """
-    if any(
+    has_report_error = any(
+        error.get("stage") == "report" and is_error_unresolved(error)
+        for error in state.get("errors", [])
+    )
+    return "recovery" if has_report_error else "continue"
+
+
+def route_task_finalization_result(
+    state: FileGovernanceState,
+) -> Literal["continue", "recovery"]:
+    """根据最终 Task 收口结果选择生命周期后置钩子或统一错误恢复。
+
+    Args:
+        state: 已执行 ``finalize_run_tasks`` 的顶层文件治理状态。
+
+    Returns:
+        存在未解决编排错误时返回 ``recovery``，否则返回 ``continue``。
+    """
+    has_finalization_error = any(
         error.get("stage") == "team_orchestration" and is_error_unresolved(error)
         for error in state.get("errors", [])
-    ):
-        return "skip"
-    try:
-        tasks = state.get("tasks", [])
-        validate_task_dag(tasks)
-        run_id = state["run"]["run_id"]
-        expected_ids = {
-            build_task_id(run_id, definition["task_type"]) for definition in TASK_DAG_TEMPLATE
-        }
-        actual_ids = {task["task_id"] for task in tasks}
-        if len(tasks) != len(expected_ids) or actual_ids != expected_ids:
-            return "skip"
-        if any(task["task_id"] != build_task_id(run_id, task["task_type"]) for task in tasks):
-            return "skip"
-    except (KeyError, TypeError, ValueError):
-        return "skip"
-    return "sync"
+    )
+    return "recovery" if has_finalization_error else "continue"
 
 
 def has_pending_parse_jobs(state: InventoryGraphState) -> Literal["pending", "done"]:

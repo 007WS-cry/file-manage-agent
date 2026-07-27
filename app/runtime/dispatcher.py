@@ -17,6 +17,7 @@ from app.state.models import (
     WorkspaceState,
 )
 from app.storage.checkpoints import open_checkpointer
+from app.storage.database import build_application_database_state_reference
 
 """本模块规范化运行请求信封，并把前台调用或后台入队与 LangGraph 状态创建隔离。"""
 
@@ -107,7 +108,7 @@ def normalize_runtime_envelope(
 
     Args:
         payload: HTTP API 接收或后台任务持久化的请求信封。
-        application_database_path: 十张应用表共用的 SQLite 文件。
+        application_database_path: 十张应用表共用的 SQLite 路径或 PostgreSQL URL。
         checkpoint_path: Worker 跨进程恢复使用的 SQLite checkpoint 文件。
 
     Returns:
@@ -157,14 +158,15 @@ def normalize_runtime_envelope(
         )
         envelope["prompt"] = prompt
 
-    database_path = str(Path(application_database_path).expanduser().resolve())
+    database_reference = build_application_database_state_reference(
+        application_database_path
+    )
     normalized_checkpoint_path = str(Path(checkpoint_path).expanduser().resolve())
     application_database = _copy_optional_mapping(envelope, "application_database") or {}
     application_database.update(
         {
             "enabled": True,
-            "backend": "sqlite",
-            "database_path": database_path,
+            **database_reference,
         }
     )
     envelope["application_database"] = application_database
@@ -172,7 +174,7 @@ def normalize_runtime_envelope(
     for field_name in ("memory", "context_compact"):
         config = _copy_optional_mapping(envelope, field_name)
         if config is not None and config.get("enabled") is True:
-            config["database_path"] = database_path
+            config.update(database_reference)
             envelope[field_name] = config
 
     checkpoint = _copy_optional_mapping(envelope, "checkpoint") or {}
@@ -283,7 +285,7 @@ def create_background_submission(
         raise ValueError("max_attempts 必须位于 1 到 20 之间")
     envelope = normalize_runtime_envelope(
         payload,
-        application_database_path=queue.database_path,
+        application_database_path=queue.database_target,
         checkpoint_path=checkpoint_path,
     )
     run_id = uuid4().hex
@@ -309,6 +311,9 @@ def create_background_submission(
         current_worker_id=None,
         attempt_count=0,
         max_attempts=max_attempts,
+        resume_count=0,
+        pending_interrupt=None,
+        resume=None,
         available_at=created_at,
         claimed_at=None,
         started_at=None,

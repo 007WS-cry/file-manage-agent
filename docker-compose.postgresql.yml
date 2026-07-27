@@ -1,0 +1,58 @@
+services:
+  postgres:
+    image: postgres:17.10-alpine
+    environment:
+      POSTGRES_DB: ${FILE_GOVERNANCE_POSTGRES_DB:-file_governance}
+      POSTGRES_USER: ${FILE_GOVERNANCE_POSTGRES_USER:-file_governance}
+      POSTGRES_PASSWORD: ${FILE_GOVERNANCE_POSTGRES_PASSWORD:?请在 .env 中设置 PostgreSQL 密码}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    ports:
+      - "127.0.0.1:${FILE_GOVERNANCE_POSTGRES_PORT:-55432}:5432"
+    volumes:
+      - file-governance-postgresql-data:/var/lib/postgresql/data
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  migrate:
+    environment:
+      FILE_GOVERNANCE_DATABASE_URL: >-
+        postgresql+psycopg://${FILE_GOVERNANCE_POSTGRES_USER:-file_governance}:${FILE_GOVERNANCE_POSTGRES_PASSWORD:?请在 .env 中设置 PostgreSQL 密码}@postgres:5432/${FILE_GOVERNANCE_POSTGRES_DB:-file_governance}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    environment:
+      FILE_GOVERNANCE_DATABASE_URL: >-
+        postgresql+psycopg://${FILE_GOVERNANCE_POSTGRES_USER:-file_governance}:${FILE_GOVERNANCE_POSTGRES_PASSWORD:?请在 .env 中设置 PostgreSQL 密码}@postgres:5432/${FILE_GOVERNANCE_POSTGRES_DB:-file_governance}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  worker:
+    environment:
+      FILE_GOVERNANCE_DATABASE_URL: >-
+        postgresql+psycopg://${FILE_GOVERNANCE_POSTGRES_USER:-file_governance}:${FILE_GOVERNANCE_POSTGRES_PASSWORD:?请在 .env 中设置 PostgreSQL 密码}@postgres:5432/${FILE_GOVERNANCE_POSTGRES_DB:-file_governance}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  scheduler:
+    environment:
+      FILE_GOVERNANCE_DATABASE_URL: >-
+        postgresql+psycopg://${FILE_GOVERNANCE_POSTGRES_USER:-file_governance}:${FILE_GOVERNANCE_POSTGRES_PASSWORD:?请在 .env 中设置 PostgreSQL 密码}@postgres:5432/${FILE_GOVERNANCE_POSTGRES_DB:-file_governance}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  file-governance-postgresql-data:
