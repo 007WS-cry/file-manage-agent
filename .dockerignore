@@ -106,7 +106,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.8.1 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照只在运行时生成
+# 1.0.0 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照只在运行时生成
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -188,6 +188,10 @@ cron*.json
 worktree*.json
 email_mcp*.json
 structured_log*.json
+demo-data
+e2e-demo-output
+backup-restore-output
+*.sqlite3.bak
 
 # Docker 构建定义由构建器单独读取，不进入镜像上下文内容
 Dockerfile*

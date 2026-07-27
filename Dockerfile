@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=0.8.2
+ARG APP_VERSION=1.0.0
 ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="支持 SQLite/PostgreSQL 双后端与完整多服务拓扑的文件版本治理 Agent"
+    org.opencontainers.image.description="具备端到端验收、人工恢复与双数据库部署能力的只读文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -37,6 +37,7 @@ COPY alembic ./alembic
 COPY alembic.ini ./
 COPY configs ./configs
 COPY examples ./examples
+COPY scripts ./scripts
 # 受控 Prompt 是运行时资源，必须在安装和切换非 root 用户前复制到镜像。
 COPY resources ./resources
 
@@ -62,5 +63,5 @@ VOLUME ["/data/input", "/data/artifacts", "/data/evidence"]
 
 EXPOSE 8000 8001
 
-# 默认启动 HTTP API；Worker、Scheduler 或模拟邮件 MCP 可通过命令参数整体覆盖。
+# 1.0.0 默认启动 HTTP API；Worker、Scheduler 或模拟邮件 MCP 可通过命令参数整体覆盖。
 CMD ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]

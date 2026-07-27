@@ -15,7 +15,7 @@ from app.storage.database import (
 )
 from app.storage.orm_models import Base
 
-"""本模块配置七表应用数据库的 Alembic 在线和离线迁移，并自动准备 SQLite 父目录。"""
+"""本模块配置十表应用数据库的 Alembic 在线和离线迁移，并自动准备 SQLite 父目录。"""
 
 
 # Alembic 当前运行使用的全局配置对象。

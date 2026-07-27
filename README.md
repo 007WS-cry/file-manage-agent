@@ -1,10 +1,10 @@
 # File Manage Agent
 
-基于 LangGraph 的只读文件版本治理 Agent。当前版本 `0.8.2` 已完成向 `1.0.0`
-演进的第二批：应用数据库支持 SQLite/PostgreSQL 双后端，PostgreSQL 任务领取
-使用 `FOR UPDATE SKIP LOCKED`，并提供默认 SQLite、按需 PostgreSQL 的完整
-Docker Compose 拓扑。`0.8.1` 的主图最终顺序收口、两类后台人工中断 API 幂等
-恢复和受控 Markdown 报告下载继续保持不变。
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `1.0.0` 为稳定版本，已完成
+Python/CLI 前台、API 后台、Cron、两类人工恢复、MCP 成功与本地降级、Worker
+checkpoint 重启、SQLite/PostgreSQL Docker 拓扑、数十文件有界执行、输入 SHA-256
+不变性及数据库迁移/备份/恢复的端到端验收。默认部署继续使用 SQLite；PostgreSQL
+仅通过 Docker Compose override 按需启用。
 `0.7.2` 的持久化 Cron 计划、独立 APScheduler、只入队触发和隔离 Git
 Worktree 生命周期继续保持不变。
 `0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
@@ -45,6 +45,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 邮件 MCP 成功时生成 `email_mcp` DeliveryRecord，关闭或不可用时自动使用本地日志；
 - API、Worker、Scheduler 和模拟邮件 MCP 共用字段稳定的单行 JSON 日志；
 - Docker Compose 一次编排迁移、API、Worker、Scheduler 与模拟邮件 MCP；
+- 32 个真实 DOCX、32 个并发 PDF 任务及最高 500 文件演示生成能力；
+- 运行前后文件数量、相对路径、大小和 SHA-256 完全一致的发布验收；
+- SQLite 一致性副本及 Docker PostgreSQL 临时恢复库的备份恢复演示；
 - 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
 - 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
 - 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
@@ -142,7 +145,9 @@ direct-failure 出口统一改到 Recovery，并在不改变正常治理结论�
 router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestration 中加入
 只针对显式仓库写入 Task 的 Worktree 条件分支；`0.8.0` 在 Evidence 子图新增
 邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排；
-`0.8.1` 固定主图准备与收口顺序，并让两类 interrupt 可以由后台 API 安全续跑。
+`0.8.1` 固定主图准备与收口顺序，并让两类 interrupt 可以由后台 API 安全续跑；
+`0.8.2` 接入 SQLite/PostgreSQL 双应用数据库后端及完整部署拓扑；`1.0.0` 增加
+端到端验收、演示脚本、备份恢复闭环和正式交付文档。
 
 ## 安全边界
 
@@ -251,7 +256,14 @@ file-manage-agent/
 ├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
 ├── examples/sample_background_submission.json # 0.7.1 HTTP 后台提交示例
 ├── examples/sample_background_resume.json # 0.8.1 后台 interrupt 幂等恢复示例
+├── examples/sample_human_review_response.json # 1.0.0 主版本审核 API 响应示例
+├── examples/sample_recovery_response.json # 1.0.0 错误恢复 API 响应示例
+├── examples/demo_manifest.json # 1.0.0 输入数量、路径和 SHA-256 清单示例
 ├── examples/sample_schedule.json # 0.7.2 持久化 Cron 计划示例
+├── scripts/
+│   ├── generate_demo_data.py   # 安全生成 1–500 个演示 DOCX 与基线清单
+│   ├── run_e2e_demo.py         # 前台、API、Cron 与输入不变性演示
+│   └── backup_restore_demo.py  # SQLite 与 Docker PostgreSQL 备份恢复演示
 ├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
 ├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
 ├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
@@ -276,10 +288,16 @@ file-manage-agent/
 ├── docs/version-0.7.2-scheduler-worktree.md # 0.8.0 第二批调度与 Worktree 说明
 ├── docs/release-0.8.0-background-runtime.md # 0.8.0 第三批发布与多服务运行说明
 ├── docs/version-0.8.1-main-closure-runtime-resume.md # 1.0.0 第一批主图、恢复与报告说明
+├── docs/architecture-1.0.0.md # 1.0.0 组件、主图和部署架构
+├── docs/state-contracts-1.0.0.md # 1.0.0 状态与持久化协议
+├── docs/demo-1.0.0.md # 1.0.0 SQLite/PostgreSQL 演示手册
+├── docs/resume-and-interview.md # 两类人工中断和 API 恢复协议
+├── docs/release-1.0.0.md # 1.0.0 发布、升级和验收矩阵
 ├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
 ├── tests/
 │   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
-│   └── integration/           # 顶层图、SQLite 恢复和 CLI 集成测试
+│   ├── integration/           # 顶层图、数据库、运行时和部署集成测试
+│   └── e2e/                   # 1.0.0 前台、后台、恢复、MCP 和只读验收
 ├── Dockerfile
 ├── docker-compose.yml         # 迁移、API、Worker、Scheduler 与模拟 MCP 编排
 ├── docker-compose.postgresql.yml # 仅通过 Docker 启用 PostgreSQL 的 override
@@ -1130,6 +1148,37 @@ PostgreSQL URL 只存在于进程环境中。后台任务、Cron 模板和 LangG
 密码。多个 Worker 领取任务时使用 PostgreSQL 行锁和 `SKIP LOCKED`；SQLite
 仍使用原有条件更新，两个后端保持同一任务状态协议。
 
+## 1.0.0 端到端验收与项目交付
+
+第三批以真实入口和可复验产物完成稳定版交付：
+
+- E2E 同时覆盖 Python/CLI 前台、API 后台、Cron 入队、Worker 和报告获取；
+- 主版本审核和错误恢复可在 API、Worker 重启后依靠同一 SQLite checkpoint 恢复；
+- 相同恢复请求保持幂等，过期 interrupt ID 被拒绝，人工恢复不消耗异常重试次数；
+- 真实 Streamable HTTP 邮件 MCP 成功和本地发送日志降级均有明确证据来源；
+- 32 个真实 DOCX 验证文件数量、路径和 SHA-256 不变，32 个 PDF 任务验证并发峰值；
+- 演示数据生成器支持 1–500 个文件；
+- SQLite 通过新副本验证备份恢复，PostgreSQL 只使用 Docker 容器内工具和临时恢复库；
+- SQLite 从 ORM 读回的无时区时间在状态边界补为 UTC，保证恢复记录可重放。
+
+完整文档：
+
+- [1.0.0 架构说明](docs/architecture-1.0.0.md)
+- [1.0.0 状态契约](docs/state-contracts-1.0.0.md)
+- [1.0.0 演示手册](docs/demo-1.0.0.md)
+- [后台恢复与人工确认](docs/resume-and-interview.md)
+- [1.0.0 发布说明](docs/release-1.0.0.md)
+
+快速演示：
+
+```bash
+python scripts/generate_demo_data.py --output-root .artifacts/demo --file-count 32
+python scripts/run_e2e_demo.py --demo-root .artifacts/demo --database-backend sqlite --mode all
+python scripts/backup_restore_demo.py --backend sqlite --action roundtrip \
+  --work-directory .artifacts/demo/backup-restore-output \
+  --database-path .artifacts/demo/database/file-governance-app.sqlite3
+```
+
 ## 安装
 
 要求 Python 3.10+。
@@ -1153,7 +1202,7 @@ python -m pip install -e ".[dev]"
 `file-governance-mock-email-mcp` 五个命令，也可以通过对应的
 `python -m app.entrypoints.*` 模块启动。
 
-构建 wheel 时，公开模拟邮件数据、受控 Prompt、Skill 注册表和四个 `SKILL.md`
+构建 wheel 时，公开示例 JSON、受控 Prompt、Skill 注册表和四个 `SKILL.md`
 会随分发包进入安装数据目录：
 
 ```bash
@@ -1602,12 +1651,16 @@ Memory、Context Compact 和十表应用数据库均已接入 CLI、API、Worker
 
 ```bash
 python -m pytest
-python -m ruff check app tests
-python -m compileall -q app tests
+python -m ruff check app tests alembic scripts
+python -m compileall -q app tests alembic scripts
 ```
 
 新的测试结构覆盖：
 
+- 1.0.0 Python/CLI 前台、API 后台、Cron、Worker 和报告下载端到端链路；
+- 两类人工中断在 API/Worker 重启后的 checkpoint 恢复、幂等和计数语义；
+- 邮件 MCP 成功、本地日志降级、32 文件只读不变性及 PDF 有界并发；
+- SQLite 迁移、备份恢复副本与 PostgreSQL Docker 拓扑/迁移/Repository；
 - 文件名归一化、内容支持的合组和无关文档隔离；
 - 候选对、差异、重复边、分叉和线性版本链；
 - 可解释候选评分、自动推荐和人工选择限制；
@@ -1697,16 +1750,16 @@ python -m compileall -q app tests
 构建镜像：
 
 ```bash
-docker build --build-arg APP_VERSION=0.8.2 -t file-manage-agent:0.8.2 .
+docker build --build-arg APP_VERSION=1.0.0 -t file-manage-agent:1.0.0 .
 ```
 
 默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
 
 ```bash
 docker build \
-  --build-arg APP_VERSION=0.8.2 \
+  --build-arg APP_VERSION=1.0.0 \
   --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
-  -t file-manage-agent:0.8.2-mainstream .
+  -t file-manage-agent:1.0.0-mainstream .
 ```
 
 镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
@@ -1715,7 +1768,7 @@ docker build \
 ```bash
 docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.2 \
+  file-manage-agent:1.0.0 \
   python -m alembic upgrade head
 ```
 
@@ -1725,7 +1778,7 @@ docker run --rm \
 docker run --rm -p 8000:8000 \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.2
+  file-manage-agent:1.0.0
 ```
 
 使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
@@ -1734,7 +1787,7 @@ docker run --rm -p 8000:8000 \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.2 \
+  file-manage-agent:1.0.0 \
   file-governance-worker \
   --database-path /data/artifacts/database/file-governance-app.sqlite3
 ```
@@ -1745,7 +1798,7 @@ docker run --rm \
 docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
-  file-manage-agent:0.8.2 \
+  file-manage-agent:1.0.0 \
   file-governance-scheduler \
   --database-path /data/artifacts/database/file-governance-app.sqlite3 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -1801,7 +1854,7 @@ docker run --rm \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
   --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
-  file-manage-agent:0.8.2 \
+  file-manage-agent:1.0.0 \
   file-governance run /config/request.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
   --application-database-path /data/artifacts/database/file-governance-app.sqlite3
@@ -1814,7 +1867,7 @@ docker run --rm \
   --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
   --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
   --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
-  file-manage-agent:0.8.2 \
+  file-manage-agent:1.0.0 \
   file-governance resume /config/review.json --thread-id governance-run-001 \
   --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
 ```

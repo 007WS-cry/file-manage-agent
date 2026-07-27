@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 0.8.1 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照含运行信息
+# 1.0.0 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -147,6 +147,10 @@ cron*.json
 worktree*.json
 email_mcp*.json
 structured_log*.json
+demo-data/
+e2e-demo-output/
+backup-restore-output/
+*.sqlite3.bak
 
 # Codex 或其他本地代理生成的工作目录
 .agents/

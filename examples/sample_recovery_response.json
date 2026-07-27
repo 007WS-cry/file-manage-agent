@@ -1,0 +1,10 @@
+{
+  "request_id": "recovery-request-001",
+  "interrupt_id": "请替换为 GET /runs/{run_id} 当前返回的 interrupt_id",
+  "kind": "error_recovery",
+  "value": {
+    "action": "provide_path",
+    "replacement_path": "C:/readonly-input",
+    "note": "已挂载经过核验的只读输入目录"
+  }
+}

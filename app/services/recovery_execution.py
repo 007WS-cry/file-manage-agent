@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -379,12 +380,32 @@ def _orm_execution_to_state(record: Any) -> NodeExecutionRecord:
             "result_refs": list(record.result_refs or []),
             "result_digest": record.result_digest,
             "last_error_id": record.last_error_id,
-            "started_at": record.started_at.isoformat(),
+            "started_at": _database_datetime_to_iso(record.started_at),
             "finished_at": (
-                record.finished_at.isoformat() if record.finished_at is not None else None
+                _database_datetime_to_iso(record.finished_at)
+                if record.finished_at is not None
+                else None
             ),
         },
     )
+
+
+def _database_datetime_to_iso(value: datetime) -> str:
+    """把数据库时间规范化为带 UTC 时区的 ISO 8601 字符串。
+
+    SQLite 即使使用 ``DateTime(timezone=True)`` 也可能返回无时区 datetime；
+    PostgreSQL 则通常保留时区。本函数在 ORM 转状态边界统一两种行为，避免恢复
+    checkpoint 再次持久化时被严格时间校验拒绝。
+
+    Args:
+        value: SQLAlchemy ORM 返回的 datetime。
+
+    Returns:
+        明确包含 UTC 时区的 ISO 8601 字符串。
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc).isoformat()
 
 
 def _database_is_ready(state: Mapping[str, Any]) -> bool:

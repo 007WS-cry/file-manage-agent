@@ -1,0 +1,11 @@
+{
+  "request_id": "review-request-001",
+  "interrupt_id": "请替换为 GET /runs/{run_id} 当前返回的 interrupt_id",
+  "kind": "file_governance_review",
+  "value": {
+    "selections": {
+      "group-contract-demo": "file-contract-v2-demo"
+    },
+    "review_note": "已核对版本时间、差异和客户确认记录"
+  }
+}

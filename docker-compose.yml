@@ -4,8 +4,8 @@ x-file-governance-service: &file-governance-service
   build:
     context: .
     args:
-      APP_VERSION: 0.8.2
-  image: file-manage-agent:0.8.2
+      APP_VERSION: 1.0.0
+  image: file-manage-agent:1.0.0
   environment:
     FILE_GOVERNANCE_DATABASE_PATH: /data/artifacts/database/file-governance-app.sqlite3
     FILE_GOVERNANCE_CHECKPOINT_PATH: /data/artifacts/checkpoints/file-governance-background.sqlite3
@@ -17,6 +17,7 @@ x-file-governance-service: &file-governance-service
   volumes:
     - ./data/input:/data/input:ro
     - file-governance-artifacts:/data/artifacts
+  init: true
   restart: unless-stopped
 
 services:
@@ -70,8 +71,8 @@ services:
     build:
       context: .
       args:
-        APP_VERSION: 0.8.2
-    image: file-manage-agent:0.8.2
+        APP_VERSION: 1.0.0
+    image: file-manage-agent:1.0.0
     command:
       [
         "file-governance-mock-email-mcp",
@@ -86,6 +87,7 @@ services:
       FILE_GOVERNANCE_LOG_LEVEL: INFO
     ports:
       - "8001:8001"
+    init: true
     restart: unless-stopped
 
 volumes:

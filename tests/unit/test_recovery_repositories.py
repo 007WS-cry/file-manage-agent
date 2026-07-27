@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from sqlalchemy.exc import IntegrityError
 
+from app.services.recovery_execution import _orm_execution_to_state
 from app.state.models import ErrorRecord, NodeExecutionRecord
 from app.storage import (
     ErrorRecoveryRecordModel,
@@ -207,6 +210,32 @@ def test_storage_package_exports_recovery_persistence_types() -> None:
     """storage 包应公开两张 ORM 表及其 Repository 类型。"""
     assert ErrorRecoveryRecordRepository.model_type is ErrorRecoveryRecordModel
     assert NodeExecutionRecordRepository.model_type is NodeExecutionRecordModel
+
+
+def test_sqlite_naive_execution_times_recover_as_utc_state() -> None:
+    """SQLite 丢失时区的 ORM 时间应在恢复状态边界统一补为 UTC。"""
+    record = SimpleNamespace(
+        idempotency_key="run:task:node",
+        task_execution_id="run:task:execution",
+        run_id="run",
+        task_id="run:task",
+        stage="inventory",
+        node_name="extract_docx_content",
+        input_digest="input-digest",
+        status="succeeded",
+        attempt_count=1,
+        state_update_ref=None,
+        result_refs=[],
+        result_digest=None,
+        last_error_id=None,
+        started_at=datetime(2026, 7, 27, 8, 0, 0),
+        finished_at=datetime(2026, 7, 27, 8, 0, 5),
+    )
+
+    state = _orm_execution_to_state(record)
+
+    assert state["started_at"] == "2026-07-27T08:00:00+00:00"
+    assert state["finished_at"] == "2026-07-27T08:00:05+00:00"
 
 
 def test_repositories_reject_stale_or_mutated_idempotency_state(
