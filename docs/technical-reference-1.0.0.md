@@ -1,0 +1,1886 @@
+# File Manage Agent 1.0.0 完整技术参考
+
+> 本文由标准化前的根 README 迁入，用于保留 1.0.0 的完整能力清单、技术说明、
+> 运行命令与版本演进。面向使用者的入口请阅读
+> [`README.md`](../README.md)，专题技术文档请从[技术文档索引](README.md)进入。
+
+基于 LangGraph 的只读文件版本治理 Agent。当前版本 `1.0.0` 为稳定版本，已完成
+Python/CLI 前台、API 后台、Cron、两类人工恢复、MCP 成功与本地降级、Worker
+checkpoint 重启、SQLite/PostgreSQL Docker 拓扑、数十文件有界执行、输入 SHA-256
+不变性及数据库迁移/备份/恢复的端到端验收。默认部署继续使用 SQLite；PostgreSQL
+仅通过 Docker Compose override 按需启用。
+`0.7.2` 的持久化 Cron 计划、独立 APScheduler、只入队触发和隔离 Git
+Worktree 生命周期继续保持不变。
+`0.7.1` 的持久化后台队列、HTTP 提交查询、独立 Background Worker、租约心跳
+和 Worker 崩溃后的任务重新领取继续保持不变。
+`0.7.0` 的故障注入、有限重试重放、节点幂等复用、恢复型人工确认、
+部分成功报告和旧状态兼容矩阵继续保持不变。
+`0.6.0` 已完成多模型 Task 路由、按需 Skills、安全 Memory、Context Compact
+和应用数据库发布收口。
+`governance_runs`、`memory_items`、`context_summaries`、`tool_call_audits`、
+`human_reviews` 五张基础表已经全部接线；`error_recovery_records`、
+`node_execution_records`、`background_jobs`、`scheduled_jobs` 和
+`worker_leases` 已接入恢复及外围运行基础设施，同时继续保证模型失败或上下文压缩
+不会改变版本关系、证据、推荐和人工选择。Content、Version、Evidence 可分别路由 Claude、
+Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中转站。
+当前具备：
+
+- 只读扫描、SHA-256 去重及 XLSX、DOCX、文本型 PDF 内容提取；
+- 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
+- 可解释主版本评分和低置信度人工确认；
+- Inventory、Version Analysis、Evidence、Recommendation 四个业务子图和顶层治理图；
+- Content、Version、Evidence 三个可独立调用的固定 Subagent 子图；
+- 标准化内容及中间 JSON 产物的隔离、原子持久化；
+- 进程内或 SQLite LangGraph checkpoint；
+- 独立 SQLAlchemy 应用数据库、十表 ORM/迁移和 Repository 数据访问边界；
+- `POST /runs` 持久化后台提交，以及按 `run_id`、`job_id` 查询的脱敏 HTTP API；
+- `POST /runs/{run_id}/resume` 通过当前 `interrupt_id` 幂等恢复主版本审核或错误恢复；
+- `GET /runs/{run_id}/report` 在 `report_root`、符号链接、扩展名和大小边界内下载报告；
+- 首次执行/异常重试与正常人工恢复分别使用 `attempt_count`、`resume_count` 计数；
+- 独立 Worker 事务领取、限时租约、短事务心跳、失败重新入队和尝试次数上限；
+- Worker 异常退出后的过期租约扫描、任务重新领取和最终失败收口；
+- 持久化 Cron 计划的创建、查看、启用和停用 HTTP API；
+- 独立 APScheduler 进程、数据库计划恢复及只入队的 Cron 回调；
+- 普通治理 Task 默认不创建 Worktree，显式仓库写入 Task 才进入隔离分支；
+- Git 子命令与参数形状白名单、禁用仓库 Hook、argv 参数、超时、工作目录和
+  绝对路径边界检查；
+- 干净 Worktree 安全移除、脏 Worktree 和隔离分支保留、关闭失败现场保留；
+- 官方 MCP Python SDK 的 Streamable HTTP 只读邮件证据客户端和脱敏模拟服务；
+- 邮件 MCP 成功时生成 `email_mcp` DeliveryRecord，关闭或不可用时自动使用本地日志；
+- API、Worker、Scheduler 和模拟邮件 MCP 共用字段稳定的单行 JSON 日志；
+- Docker Compose 一次编排迁移、API、Worker、Scheduler 与模拟邮件 MCP；
+- 32 个真实 DOCX、32 个并发 PDF 任务及最高 500 文件演示生成能力；
+- 运行前后文件数量、相对路径、大小和 SHA-256 完全一致的发布验收；
+- SQLite 一致性副本及 Docker PostgreSQL 临时恢复库的备份恢复演示；
+- 错误恢复记录与节点幂等执行记录的短事务持久化、结果复用查询和重放保护；
+- 独立 Error Recovery 子图、确定性动作选择和恢复型人工 `interrupt()`；
+- 六个顶层子图包装节点的未捕获异常入口、固定路由白名单和失败阶段安全续跑；
+- 所有业务错误统一绑定 `task_id`、`node_execution_id`、重试进度与恢复终态；
+- coordinator、no-memory、keep-context 和 default-skill 本地回退由 Recovery
+  统一登记，历史已恢复错误不会再次触发顶层恢复；
+- 输入摘要一致、结果摘要校验通过时复用成功节点的受控状态更新产物；
+- 治理运行生命周期、脱敏工具审计和人工选择的幂等持久化；
+- 大型工具输出只保存受控产物引用、固定摘要和字节数；
+- 当前运行短期阶段摘要、跨运行长期 Memory 召回和幂等持久化；
+- 固定模板、结构化字段白名单、哈希命名空间及数据库原始字节泄漏保护；
+- 独立 Context Compact 子图、确定性 Token 估算和两个阶段压缩安全点；
+- 未跟踪临时压缩载荷、可重建中间产物和有界 Context Summary；
+- 压缩开关对版本边、分叉、推荐和人工选择的严格不变性测试；
+- 可升级、回退和重放的 Alembic SQLite 迁移；
+- 可跨进程恢复 `interrupt()`、按 kind 输出提示与兼容响应示例的最小 CLI；
+- 成功、部分成功、无数据和失败 Markdown 报告，独立列出已恢复错误和降级项；
+- `ErrorRecord` 重试、降级、人工恢复和生命周期字段的 0.6.0 兼容扩展；
+- `RecoveryState`、`RecoveryGraphState`、`NodeExecutionRecord` 和
+  `DegradationRecord` 状态协议；
+- 覆盖十八类错误的确定性策略快照、有限重试、指数退避和安全降级纯服务；
+- 旧 0.6.0 状态在 `initialize_run` 中补齐空恢复、节点执行和降级字段；
+- transient、parse、Subagent、Memory、Skill、Context、人工恢复和幂等重放的
+  0.7.0 故障注入矩阵，以及不改变治理结论的 0.6.0 checkpoint 兼容测试；
+- PDF 来源、本地发送记录及推荐候选的状态协议；
+- 只读本地发送日志加载工具，以及不执行文件 I/O 的纯证据匹配服务；
+- 带 START、END、条件跳过和 LangGraph Send 并行匹配的独立 Evidence 子图；
+- 分阶段应用版本链、发送确认、PDF 来源和分叉规则的 Recommendation 子图；
+- 证据化 Markdown 报告以及贯穿四个子图的端到端错误路由；
+- 受版本控制的文件治理 System Prompt 资源；
+- Prompt、Hooks、Hook Event 顶层状态协议和严格的初始配置校验；
+- 受路径、符号链接、扩展名、UTF-8 和字节上限约束的 Prompt 加载器；
+- 静态 Hook 白名单、顺序 runner、HookEvent 以及 block/ignore 失败聚合；
+- 请求预检、运行状态补充、报告检查、数据库工具审计和安全清理内置 Hook；
+- before_run、System Prompt、after_run 顶层节点、条件路由和生命周期失败报告；
+- CLI 请求信封中的生命周期与应用数据库配置及旧 checkpoint 关闭兼容模式；
+- `TaskItem`、`TodoItem`、`TaskStatusUpdate` 和 Team Orchestration 子图状态协议；
+- 按 `task_id` 稳定合并且不重置已有字段的 LangGraph Task reducer；
+- 六阶段固定 Task DAG、确定性 ID、拓扑排序、环检测和固定逻辑角色映射；
+- 仅以 Task 为事实来源、不会读取旧 Todo 状态的用户进度纯投影；
+- 同时支持 Task 状态同步和固定 Subagent 分派的 Team Orchestration 子图；
+- 固定团队初始化、动态成员拒绝、实际角色选择和串行分派运行状态；
+- 消费后清空且不会泄漏回顶层状态的 `task_update` 与 `dispatch_request`；
+- Subagent result/error 消息校验、摘要与引用合并、Task 产物登记和协调者回退；
+- 顶层规划节点和六个同步适配节点，按业务实际结果推进 Task 和 Todo；
+- 无需审核时正常跳过 Human Review，interrupt 期间保持 running，恢复后完成；
+- 业务失败只标记源 Task failed，下游以带原因的 skipped 阻断且报告仍可收口；
+- 成功、无数据和业务失败报告统一完成 Report Task，计划前失败安全绕过 Task 同步。
+- `run`、`resume` 统一输出 Todo 投影和七种 Task 状态数量；
+- CLI 通过字段白名单隔离文档正文、完整报告、Task 引用和大型治理产物。
+- 兼容旧单模型写法的 `profiles`、默认 Profile 和三类任务路由状态；
+- 只从环境变量读取 API Key、可选 Base URL 和专有参数的 LangChain 多 Provider；
+- 可注入、可模拟超时和非法输出的 Mock Provider；
+- Content、Version、Evidence 三类独立 Pydantic 输出及产物引用白名单校验；
+- 不记录 Prompt、响应正文、API Key 或 Base URL 的 Profile、耗时、Token 和错误审计。
+- 固定 Subagent 注册表、最小输入信封、assignment/result/error Team Message；
+- 模型失败、超时或引用越权时的确定性摘要回退和 fallback 审计。
+- Content、Evidence 阶段后分派，以及 Version 文件对摘要的内部 Team Orchestration 调用；
+- 只允许成功 Version Subagent 替换解释摘要的 `DiffRecord` 来源和消息审计字段；
+- 包含关键修改摘要、来源和可选受控引用的治理报告。
+- 受版本控制的四项 Skill、严格 YAML 注册表和安全的按需 Markdown 加载器；
+- Task 类型、固定角色和 Agent 注册表三重约束的最小 Skill 选择；
+- Team Orchestration 中显式的选择、加载、绑定、释放节点及失败协调者回退；
+- 只向当前 Subagent Prompt 注入已校验 Skill，分派后恢复全部 Skill 为 available；
+- 0.2.0、0.3.0、0.4.0 参照路径及 0.5.0 状态升级兼容测试；
+- 不持久化 API Key、私有模型 Prompt 或完整解析正文的 SQLite checkpoint 边界。
+
+四个业务子图既可独立测试，也已按 Inventory、Version Analysis、Evidence、
+Recommendation 的顺序接入顶层 File Governance 图；Error Recovery 作为第七个
+编排子图统一承接失败出口。当前版本提供 Python 接口、CLI、HTTP API、独立
+Background Worker、Scheduler 和模拟邮件 MCP。`0.2.3` 已接入 Prompt 和 Hooks 顶层
+节点；Prompt 和 Hooks 默认仍完全关闭，并通过 0.2.0 参照图兼容测试确认业务结果
+一致。旧版缺少生命周期、Task 或 Todo 字段的 checkpoint 也会自动补齐兼容默认值。
+`0.5.0` 由顶层图和 Version Analysis 子图构造最小 `dispatch_request`。模型只解释
+既有内容、差异和证据摘要，不改变分组、版本方向、相似度、置信度、证据匹配或推荐
+结论。CLI 仍只展示用户所需的最小进度，不输出 LLM 配置、Team Message、Prompt
+或调用审计。旧状态缺少 LLM、Team、消息或审计字段时会补齐安全默认值。`0.5.1`
+只建立应用数据库、Repository 和迁移；`0.5.2` 在三个既有 Subagent 子图内增加
+`resolve_model_profile` 节点；`0.5.3` 在 Prompt 加载与 Task 规划之间加入 Skill
+元数据节点，并在 Team Orchestration 分派边界内完成按需加载和释放；`0.5.4`
+在 Skill 元数据后召回长期 Memory，在 Evidence 与 Recommendation 子图捕获安全
+摘要，并在报告收口后、after_run Hook 前幂等持久化；`0.5.5` 在 Inventory
+同步后及 Evidence 解释分派后调用 Context Compact，不改变任何治理决策字段；
+`0.6.0` 接通运行历史、工具审计和人工选择，补齐 0.5.0 兼容及组合发布验收；
+`0.6.1` 只建立 Error Recovery 状态和策略基础；`0.6.2` 增加两张恢复持久化表、
+短事务 Repository 和第二个可逆迁移；`0.6.3` 接入第七个恢复子图，把既有
+direct-failure 出口统一改到 Recovery，并在不改变正常治理结论和人工主版本确认
+协议的前提下提供有限重试、安全降级、恢复型人工输入和结果复用；`0.6.4`
+把六个既有业务子图及工具错误统一接入该链路，并补齐重试重放、关联错误收敛和
+历史恢复终态过滤；`0.6.5` 接入 retry、skip_file、provide_path、abort 四种
+人工恢复输入，按 interrupt kind 生成 CLI 提示，并让 partial 报告与 failed
+任务统计明确分离；`0.7.0` 通过九组集成场景验证短暂故障重放、文件级跳过、
+五类既有回退、状态引用隔离、数据库幂等键和 0.6.0 状态升级，并统一发布版本；
+`0.7.1` 在业务图外新增 API、持久化队列和 Worker，顶层业务节点及 conditional
+router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestration 中加入
+只针对显式仓库写入 Task 的 Worktree 条件分支；`0.8.0` 在 Evidence 子图新增
+邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排；
+`0.8.1` 固定主图准备与收口顺序，并让两类 interrupt 可以由后台 API 安全续跑；
+`0.8.2` 接入 SQLite/PostgreSQL 双应用数据库后端及完整部署拓扑；`1.0.0` 增加
+端到端验收、演示脚本、备份恢复闭环和正式交付文档。
+
+## 安全边界
+
+- 原始业务文件始终只读，不删除、移动、重命名或覆盖文件。
+- 请求必须显式设置 `workspace.input_readonly = true`。
+- 输入目录拒绝符号链接；产物、报告、应用数据库和 checkpoint 不得与输入目录重叠。
+- Office 解析器不执行公式、宏、嵌入对象或外部链接。
+- PDF 解析器不执行 OCR，也不猜测加密密码。
+- 文件大小、ZIP 声明解压大小、Excel 单元格、PDF 页数和提取字符数均有上限。
+- 完整正文通过 `content_ref` 指向 `normalized/*.json`，不直接进入图状态。
+- Inventory 解析期间的 `current_raw_content` 使用 LangGraph 非跟踪通道，不进入子图
+  checkpoint；中断恢复只依赖已持久化的安全业务状态。
+- 产物 ID 不允许包含路径分隔符，JSON 使用同目录临时文件和原子替换写入。
+- 分叉、链不完整、候选近似并列或低置信度结果必须人工确认。
+- `interrupt()` 载荷只包含文件 ID、文件名、评分和理由，不包含完整正文。
+- 后台恢复必须同时匹配当前 `interrupt_id` 与 `kind`；过期 ID、幂等键冲突和
+  非 waiting_human 任务均被拒绝，正常恢复不会消耗异常重试次数。
+- 报告下载重新解析任务声明的 `workspace.report_root`，拒绝路径越界、符号链接、
+  非 Markdown 文件和超过大小上限的文件。
+- 本地发送日志工具只读取用户明确提供的普通 UTF-8 JSON 文件，拒绝符号链接、
+  超限文件和未知协议版本，不打开附件、不访问网络且不执行日志内容。
+- 证据匹配遇到多个非重复候选时保留未匹配结果，不依靠排序猜测文件版本。
+- Prompt 只读取显式配置的本地 `.md`/`.txt` 文件，拒绝符号链接、非 UTF-8、
+  超限内容和相对路径越界，并记录实际内容 SHA-256。
+- Hook 只能从静态白名单解析，不能通过请求动态导入模块或执行表达式；状态更新
+  仅允许完整替换 `run` 或 `report`，并显式禁止修改 Team、Task、消息和 LLM 审计。
+- Task 只保存状态键、产物引用和简短错误，不保存完整文档正文；Todo 只能由 Task
+  单向生成，不能作为第二套可写执行状态。
+- CLI 只输出 Todo 白名单和 Task 状态计数，不输出 `documents`、完整 Task、报告
+  Markdown、Prompt、HookEvent 或 checkpoint 内容。
+- LLM Profile 只能保存 API Key 和 Base URL 的环境变量名称；实际值不得进入请求
+  JSON、YAML、LangGraph 状态、checkpoint、日志、Team Message 或调用审计。
+- 应用数据库与 LangGraph checkpoint 必须使用不同 SQLite 文件；数据库 Session
+  只在单次事务中使用，Repository 不得自行 commit 或跨线程共享 Session。
+- 恢复跳转只能来自固定节点白名单；节点错误处理器只建立结构化错误并进入 Recovery，
+  不得直接选择业务降级。
+- 节点结果只在幂等键和输入摘要均一致、受控产物路径合法且结果摘要校验通过时复用。
+- 长期 Memory 只允许固定模板摘要及版本组、文件、证据记录 ID 和计数白名单；
+  文档正文、API Key、完整模型 Prompt、审核自由文本、收件人和原始证据引用不得
+  写入应用数据库。
+- Context Compact 的大型临时载荷使用 `UntrackedValue`；应用数据库只保存固定
+  摘要、Token 估算和受控产物引用，不保存文档详情或已释放的 Prompt 正文。
+- Python Tool 审计不保存调用参数或完整输出；文档解析结果只保存固定短摘要、
+  `content_ref` 和字节数，人工审核自由文本不会进入 `human_reviews`。
+- LangChain 适配器可从 Profile 指定的 `base_url_env` 读取兼容服务地址，并从
+  `options_env` 读取受限 JSON 专有参数；实际值都不会写入治理状态。
+- 项目不会主动开启 LangSmith tracing；生产环境不要设置 `LANGSMITH_TRACING=true`，
+  除非已明确授权把有界 Prompt 和响应元数据发送到该遥测服务。
+- 关闭 `llm.enabled` 时统一 Client 强制使用 Mock Provider，即使其他字段预配置了
+  真实 Provider 也不会读取密钥或发起网络调用。
+- Subagent 输入拒绝未知正文型字段、超长预览、超长结构化字符串和非受控引用；
+  Subagent 不会主动打开 `artifact_refs` 指向的文件。
+- Team Message 的发送方和接收方必须属于固定 Team，result/error 必须返回唯一
+  coordinator，模型输出引用必须属于当前输入白名单。
+- Team Orchestration 拒绝动态成员、角色篡改、协调者 Task 分派和失败 Task 重放；
+  分派请求、模型输出和 Team Message 三层引用必须保持一致。
+- 普通治理 Task 的 `requires_repository_write` 固定默认为 false，不得仅因存在
+  Git 仓库路径就创建 Worktree。
+- Git 只能通过统一子进程边界执行 `rev-parse`、`status` 和受限 `worktree`，
+  禁止 Shell 拼接、任意参数形状、仓库 Hook、路径越界、强制删除和自动合并。
+- Worktree 检测到未提交、已暂存或未跟踪改动时必须保留目录和隔离分支；原始
+  业务文件仍由独立只读目录提供。
+- 邮件 MCP 客户端只允许调用固定 `search_sent_email_evidence` Tool，不读取正文、
+  真实收件地址、附件内容或凭据，也不具备发送、修改和删除能力。
+- MCP 证据引用必须使用 `email-mcp://`，失败日志只保留异常类型和脱敏说明；
+  本地日志降级仍遵守既有只读路径和协议校验。
+- Skill 注册表只接受固定字段、Task 类型和角色；Skill 路径必须位于
+  `resources/skills` 受控目录并命名为 `SKILL.md`，同时受 UTF-8 和字节上限约束。
+- 顶层只持久化 Skill 元数据；SKILL.md 正文只在当前 Task 分派期间进入子图状态，
+  结束后正文、SHA-256、Task 绑定和 Agent `skill_ids` 均被清空。
+
+## 目录
+
+```text
+file-manage-agent/
+├── resources/
+│   ├── prompts/               # 受版本控制的 System Prompt 资源
+│   └── skills/                # Skill 注册表和四项受控 SKILL.md
+├── app/
+│   ├── state/                 # 状态、reducer、初始状态工厂和子图状态转换
+│   ├── llm/                   # Prompt、模型 Profile、统一 Client 和输出校验
+│   │   └── providers/         # Provider 抽象、LangChain 多模型、Mock 与旧兼容实现
+│   ├── skills/                # Skill 元数据加载、注册表状态操作和 Task 选择
+│   ├── agents/                # 固定 Subagent、静态注册表和 Team Protocol
+│   ├── hooks/                 # 静态 Hook 注册、顺序执行和内置生命周期 Hook
+│   ├── tools/                 # 只读治理、邮件 MCP 客户端及 Git/Worktree 生命周期
+│   ├── services/              # 标准化、版本图、Memory、恢复策略和幂等恢复执行
+│   ├── storage/               # 业务产物、checkpoint、ORM 与 Repository
+│   ├── runtime/               # 后台队列、请求分派、Worker 与 Scheduler
+│   ├── api/                   # 运行提交、状态、恢复、报告和 Cron 计划路由
+│   ├── mcp_servers/           # 只读脱敏模拟邮件 MCP 服务
+│   ├── observability/         # 四服务统一 JSON 日志与关联上下文
+│   ├── utils/                 # 生命周期、Token 估算、Task 编排和状态辅助函数
+│   ├── nodes/                 # 仅存放通过 add_node 显式注册的图节点函数
+│   ├── graphs/                # 四业务图、Context Compact、团队图、恢复图与顶层图
+│   └── entrypoints/           # CLI、API、Worker、Scheduler 和模拟 MCP 入口
+├── alembic/                   # 应用数据库迁移环境和版本脚本
+├── alembic.ini                # 默认应用数据库迁移配置
+├── configs/default.yaml       # 默认治理、生命周期、存储和数据库参数
+├── .env                       # 本地密钥文件，必须被 Git 和 Docker 构建上下文忽略
+├── .env.example               # 只声明密钥环境变量名称的安全示例
+├── examples/sample_request.json # 默认关闭真实模型的安全请求
+├── examples/sample_llm_request.json # 仅引用环境变量名称的真实 Provider 请求
+├── examples/sample_multi_model_request.json # 0.6.0 多模型与五表组合请求
+├── examples/sample_delivery_log.json
+├── examples/sample_task_progress.json # 0.4.0 CLI 安全进度摘要示例
+├── examples/sample_background_submission.json # 0.7.1 HTTP 后台提交示例
+├── examples/sample_background_resume.json # 0.8.1 后台 interrupt 幂等恢复示例
+├── examples/sample_human_review_response.json # 1.0.0 主版本审核 API 响应示例
+├── examples/sample_recovery_response.json # 1.0.0 错误恢复 API 响应示例
+├── examples/demo_manifest.json # 1.0.0 输入数量、路径和 SHA-256 清单示例
+├── examples/sample_schedule.json # 0.7.2 持久化 Cron 计划示例
+├── scripts/
+│   ├── generate_demo_data.py   # 安全生成 1–500 个演示 DOCX 与基线清单
+│   ├── run_e2e_demo.py         # 前台、API、Cron 与输入不变性演示
+│   └── backup_restore_demo.py  # SQLite 与 Docker PostgreSQL 备份恢复演示
+├── docs/version-0.3-prompt-hooks.md # 0.3.0 生命周期、兼容性与交付说明
+├── docs/version-0.3.1-task-system.md # 0.3.1 状态协议与确定性 Task System
+├── docs/version-0.3.2-team-orchestration.md # 0.3.2 独立团队编排子图
+├── docs/version-0.3.3-task-progress.md # 0.3.3 顶层 Task 进度与人工审核
+├── docs/release-0.4.0-task-orchestration.md # 0.4.0 正式发布说明
+├── docs/version-0.4.1-llm-foundation.md # 0.4.1 LLM 基础设施说明
+├── docs/version-0.4.2-fixed-subagents.md # 0.4.2 固定 Subagent 与 Team Protocol
+├── docs/version-0.4.3-team-dispatch.md # 0.4.3 固定团队分派与协调者回退
+├── docs/version-0.4.4-business-stage-integration.md # 0.4.4 三业务阶段接入
+├── docs/release-0.5.0-agent-team.md # 0.5.0 固定 Agent Team 正式发布说明
+├── docs/version-0.5.2-langchain-multi-model.md # 0.5.2 LangChain 多模型适配
+├── docs/version-0.5.4-memory.md # 0.5.4 短期与长期 Memory 说明
+├── docs/version-0.5.5-context-compact.md # 0.5.5 Context Compact 说明
+├── docs/release-0.6.0-skills-memory-context.md # 0.6.0 正式发布说明
+├── docs/version-0.6.1-recovery-state-policy.md # 0.7.0 第一批恢复状态与策略
+├── docs/version-0.6.2-recovery-persistence.md # 0.7.0 第二批恢复与幂等持久化
+├── docs/version-0.6.3-error-recovery-graph.md # 0.7.0 第三批恢复子图与顶层路由
+├── docs/version-0.6.4-existing-subgraph-integration.md # 0.7.0 第四批既有子图统一接入
+├── docs/version-0.6.5-recovery-interrupt-report-cli.md # 0.7.0 第五批人工恢复、报告与 CLI
+├── docs/release-0.7.0-error-recovery.md # 0.7.0 Error Recovery 正式发布说明
+├── docs/version-0.7.1-background-runtime.md # 0.8.0 第一批后台运行说明
+├── docs/version-0.7.2-scheduler-worktree.md # 0.8.0 第二批调度与 Worktree 说明
+├── docs/release-0.8.0-background-runtime.md # 0.8.0 第三批发布与多服务运行说明
+├── docs/version-0.8.1-main-closure-runtime-resume.md # 1.0.0 第一批主图、恢复与报告说明
+├── docs/architecture-1.0.0.md # 1.0.0 组件、主图和部署架构
+├── docs/state-contracts-1.0.0.md # 1.0.0 状态与持久化协议
+├── docs/demo-1.0.0.md # 1.0.0 SQLite/PostgreSQL 演示手册
+├── docs/resume-and-interview.md # 两类人工中断和 API 恢复协议
+├── docs/release-1.0.0.md # 1.0.0 发布、升级和验收矩阵
+├── docs/version-0.4-evidence.md # 第四批证据链、评分和错误语义说明
+├── tests/
+│   ├── unit/                  # 分组、版本图、推荐和 Task System 单元测试
+│   ├── integration/           # 顶层图、数据库、运行时和部署集成测试
+│   └── e2e/                   # 1.0.0 前台、后台、恢复、MCP 和只读验收
+├── Dockerfile
+├── docker-compose.yml         # 迁移、API、Worker、Scheduler 与模拟 MCP 编排
+├── docker-compose.postgresql.yml # 仅通过 Docker 启用 PostgreSQL 的 override
+├── requirements.txt           # 基础可编辑安装入口，依赖版本统一由 pyproject.toml 管理
+└── pyproject.toml
+```
+
+`app/state/model.py` 仅用于兼容早期单数文件名，新代码应从
+`app.state.models` 导入状态。
+
+## 0.2.2 Prompt 与 Hook 基础设施
+
+`0.2.1` 新增了 `PromptState`、`HookConfigState` 和 `HookEvent`，并将 `prompt`、
+`hooks` 和 `hook_events` 放入顶层 `FileGovernanceState`。`0.2.2` 在该协议上实现：
+
+- `app.llm.prompt_loader`：只读加载受信任的 `.md`/`.txt` Prompt，拒绝路径越界、
+  符号链接、非 UTF-8 内容和超限文件，追加动态规则后记录 SHA-256；
+- `app.hooks.registry`：通过不可变静态白名单解析六个内置 Hook，不支持配置驱动的
+  Python 模块导入、表达式或 `eval()`；
+- `app.hooks.runner`：按配置顺序执行四个阶段，限制 Hook 只能更新 `run`、`report`，
+  为每次调用生成 HookEvent，并分别聚合 `block` 与 `ignore` 失败；
+- `app.hooks.builtin`：提供请求信封预检、运行状态补充、报告检查、最小工具审计入口
+  和不接触原始文件的清理 Hook。
+
+调用 `create_initial_state()` 时不提供 `prompt_config` 和 `hook_config`，即可获得
+完全关闭的新功能配置。显式启用时，Prompt 加载器和 Hook runner 已可独立测试或
+调用；`0.2.3` 已把它们注册为顶层 LangGraph 生命周期节点。
+
+## 0.2.3 接入顶层 LangGraph
+
+本批将第二批基础设施接入实际治理运行，同时保持生命周期配置和业务请求隔离：
+
+- `execute_before_run_hooks` 在不可关闭的业务请求校验之前执行；阻断失败直接生成
+  失败报告，不进入文件扫描；
+- `load_system_prompt` 在请求校验后受限读取 Prompt；关闭时直接继续，加载失败时
+  记录 `prompt` 类致命错误；
+- 成功、无数据和业务失败报告均进入 `execute_after_run_hooks`；`ignore` 失败只保留
+  HookEvent，`block` 失败追加生命周期收口失败章节后结束；
+- CLI 从请求信封单独解析 `prompt`、`hooks`，再分别传给 `create_initial_state()`，
+  两个对象不会进入业务 `RequestState`；
+- `initialize_run` 会为 0.2.0/0.2.2 checkpoint 或手工状态补齐完全关闭的生命周期
+  字段，保持原有调用兼容性。
+
+## 0.3.0 兼容性与版本交付
+
+正式版本保持四个既有业务子图及其节点不变，并补齐以下交付能力：
+
+- 使用不包含生命周期节点的 0.2.0 参照图，与 Prompt、Hooks 同时关闭的 0.3.0
+  路径逐项比较业务事实、版本关系、推荐、错误和报告内容；
+- `pyproject.toml` 将受控 Prompt 声明为 setuptools `data-files`，wheel 安装后默认
+  路径可回退到 Python 数据前缀下的 `resources/prompts`；
+- Dockerfile 显式复制 `resources/`，并在安装前检查受控 Prompt 确实存在；
+- `.dockerignore` 和 `.gitignore` 排除本地、私有 Prompt，同时显式保留受控版本；
+- 包版本、镜像版本和 Python `__version__` 统一为 `0.3.0`。
+
+完整的配置、路由、失败策略、兼容范围和升级步骤见
+[0.3.0 Prompt 与生命周期 Hooks](version-0.3-prompt-hooks.md)。
+
+## 0.3.1 确定性 Task System 第一批
+
+本批先建立 `0.4.0` Team Orchestration 所需的状态与纯服务边界，不修改现有四个
+业务子图和顶层执行顺序：
+
+- 固定创建 Inventory、Version Analysis、Evidence、Recommendation、Human Review
+  和 Report 六个 Task，Task ID 使用 `run_id:task_type`；
+- `create_task_dag()` 支持从不完整 checkpoint 补齐缺失 Task，已有 Task 的状态、
+  输出、错误、`created_at` 和 `updated_at` 保持不变；
+- `topologically_sort_tasks()` 和 `validate_task_dag()` 拒绝重复 ID、重复依赖、
+  未知依赖、自依赖和循环依赖；
+- `assign_tasks_to_roles()` 只写固定逻辑角色，不调用 LLM 或 Subagent；
+- `update_todos_from_tasks()` 不接收旧 Todo，确保 Todo 只能由 Task 单向生成；
+- Task 和 Todo 调试快照默认不进入 Git 或 Docker 构建上下文。
+
+完整字段、幂等边界、Todo 推导规则和测试范围见
+[0.3.1 确定性 Task System](version-0.3.1-task-system.md)。
+
+## 0.3.2 独立 Team Orchestration 子图
+
+本批在 0.3.1 纯服务层上增加可独立调用的 LangGraph 子图：
+
+```text
+START
+  -> create_task_dag
+  -> validate_task_dag
+  -> [invalid -> END]
+  -> assign_tasks_to_roles
+  -> update_task_status
+  -> update_todos_from_tasks
+  -> END
+```
+
+- 节点异常统一转换为 `team_orchestration` 阶段的结构化校验错误；
+- DAG 创建或校验失败后直接结束，不继续分配角色和投影 Todo；
+- `update_task_status()` 校验状态转换、依赖就绪、失败错误和产物引用；
+- completed、failed、skipped 终态不能重新打开，相同终态更新保持幂等；
+- `task_update` 无论成功或失败都会被消费并清空；
+- 顶层转换器只允许 `tasks`、`todos`、`errors` 返回，私有命令不会泄漏；
+- 子图节点集合不包含 LLM、Subagent、MCP 或文件工具。
+
+完整的状态边界、转换规则和独立调用说明见
+[0.3.2 独立 Team Orchestration 子图](version-0.3.2-team-orchestration.md)。
+
+## 0.3.3 顶层 Task 进度与人工审核
+
+本批把固定 DAG 接入真实治理运行，同时保持四个业务节点文件不变：
+
+- `plan_run_tasks()` 幂等创建六个 Task，并在请求和 Prompt 校验通过后启动 Inventory；
+- 四个业务同步节点完成当前 Task，再按实际路由启动后继 Task；非致命 Evidence
+  错误保留部分成功语义，不会错误地把 Evidence Task 标为 failed；
+- Recommendation 无需人工确认时把 Human Review 正常标记为 skipped；需要确认时，
+  Task 在 `interrupt()` 期间保持 running，恢复并应用人工选择后才完成；
+- 业务子图致命失败只把对应 Task 标为 failed，下游业务和审核 Task 使用带阻断原因
+  的 skipped，Todo 因而显示 blocked 而不会把下游误报为自身失败；
+- 无数据路径正常跳过未执行 Task，Report Task 完成后全部 Todo 都进入终态；
+- 单一失败报告节点按 DAG 是否可用分流：计划前失败直接执行 after-run hooks，业务
+  失败则先完成 Report Task，避免主图出现两个同名失败报告节点；
+- 0.3.0 参照图兼容测试继续逐项验证业务事实、治理结论、人工状态和报告正文。
+
+完整的流程、状态转换表和失败收口规则见
+[0.3.3 顶层 Task 进度与人工审核](version-0.3.3-task-progress.md)。
+
+## 0.4.0 CLI 展示与版本交付
+
+正式版本在不扩大治理状态暴露面的前提下补齐进度展示：
+
+- `run` 的正常、部分成功、失败、无数据和人工暂停结果，以及 `resume` 的恢复结果，
+  均输出相同结构的 `todos` 与 `task_status_counts`；
+- Todo 只公开 `id`、`title`、`status`、`related_task_ids`、`order`，并按固定顺序排列；
+- Task 只统计 pending、running、retrying、completed、partial、failed、skipped
+  数量，零数量状态仍保留；
+- CLI 不输出完整 Task、文档记录、文件事实、证据集合、报告 Markdown、Prompt、
+  HookEvent 或 checkpoint；
+- 正常完成、无需审核、人工暂停恢复、无数据、业务失败、非致命警告和 checkpoint
+  重放七条路径均纳入最终验收矩阵；
+- `app/nodes` 严格只保留流程图中通过 `add_node()` 注册的节点函数，生命周期和 Task
+  编排辅助逻辑统一迁移到 `app/utils`，并由 AST 结构测试持续约束；
+- 包版本、Python `__version__` 和默认 Docker 镜像版本统一为 `0.4.0`。
+
+完整输出协议、安全边界、升级说明和测试映射见
+[0.4.0 Task Orchestration 正式发布说明](release-0.4.0-task-orchestration.md)。
+
+## 0.4.1 统一 LLM 基础设施和状态契约
+
+本版本是从 `0.4.0` 向固定 Agent Team 演进的第一批，不修改既有业务图执行顺序：
+
+- 新增统一 `LLMClient`，按配置选择 Mock 或 OpenAI Provider；
+- 真实 Provider 只接受 `api_key_env`，调用时才读取环境变量，不保存实际密钥；
+- 默认 `llm.enabled=false` 且使用 Mock，升级后不会自动产生外部请求或费用；
+- 三个固定 Subagent 的输入、Pydantic 输出和内部图状态全部定义在
+  `app/state/models.py`；
+- `TeamMessage`、`TeamState`、`LLMConfigState`、`LLMCallRecord` 进入顶层状态协议；
+- 调用成功记录 Provider、模型、耗时和 Token；失败与超时只记录脱敏错误摘要；
+- Pydantic 输出禁止额外字段，产物引用还必须通过调用方白名单校验；
+- 旧 checkpoint 在初始化时补齐安全关闭的 LLM、固定 Team、空消息和空审计列表。
+
+本批不会调用三个 Subagent，也不会修改版本差异摘要。业务图接入将在后续批次完成。
+完整配置和安全边界见
+[0.4.1 LLM 基础设施](version-0.4.1-llm-foundation.md)。
+
+## 0.4.2 三个固定 Subagent 和 Team Protocol
+
+第二批在第一批状态与 LLM Client 契约上完成三个独立子图：
+
+- Content Subagent 只接收短内容预览、结构摘要、关键字段和产物引用；
+- Version Subagent 只接收文件安全标签、相似度、关键修改和排序信号；
+- Evidence Subagent 只接收 PDF 来源摘要、发送证据摘要和产物引用；
+- 固定注册表只允许 `content`、`version`、`evidence` 三个角色，不支持动态招聘；
+- 每个子图先创建合法 assignment 消息，结束时创建 result 或 error 消息；
+- Pydantic 输出只包含 `summary` 和 `artifact_refs`，引用必须属于输入白名单；
+- 模型失败、超时或输出越权时，按配置进入角色专属确定性回退；
+- 流程分支由 `graphs/routers.py` 中被 `add_conditional_edges()` 明确调用的路由实现。
+
+三个 Subagent 当前可以独立调用，但尚未接入既有 Inventory、Version Analysis 和
+Evidence 业务图，避免本批改变 `0.4.0` 的确定性治理结论。详细协议、分支语义和
+测试矩阵见 [0.4.2 固定 Subagent 与 Team Protocol](version-0.4.2-fixed-subagents.md)。
+
+## 0.4.3 升级 Team Orchestration
+
+第三批把第二批的三个独立 Subagent 接入 Team Orchestration，但暂不修改顶层业务图：
+
+- 编排图幂等初始化并严格校验 coordinator、Content、Version、Evidence 四个成员；
+- 同一次调用只能执行 `task_update` 状态同步或 `dispatch_request` 分派；
+- 分派前同时校验真实 Task、`assigned_role`、最小输入协议和产物引用；
+- 条件路由只允许选择 Content、Version、Evidence 三个固定角色；
+- Subagent 返回后再次校验 sender、receiver、消息类型、摘要和引用白名单；
+- 合法引用按稳定顺序登记到对应 `TaskItem.output_refs`；
+- 模型失败、error 消息或越权引用会转为协调者确定性回退结果；
+- `dispatch_request` 和 `dispatch_result` 不写回顶层状态，不实现 Skills 或 Worktree。
+
+现有顶层图尚未创建分派请求，三个业务阶段的接入属于下一批。完整分支、状态边界和
+测试矩阵见 [0.4.3 固定团队分派](version-0.4.3-team-dispatch.md)。
+
+## 0.4.4 接入三个业务阶段
+
+第四批把固定 Team 正式接入文件治理运行，同时维持确定性事实的唯一权威来源：
+
+- `sync_inventory_task_status` 后按文档串行分派 Content Subagent；
+- Version Analysis 为每个成功比较构造不含正文的输入，并通过 Team Orchestration
+  调用 Version Subagent；
+- 只有审计状态为 `success` 且未使用 fallback 的 Version 输出可以替换 `summary`；
+- 超时、缺少 API Key、Pydantic 非法或协议失败时保留确定性摘要；
+- `sync_evidence_task_status` 后按版本组分派 Evidence Subagent，再进入 Recommendation；
+- Content 和 Evidence 输出只增加解释消息与受控引用，不改变文档事实或证据评分；
+- 生命周期 Hook 显式禁止修改固定 Team、Task、Todo、Team Message 和 LLM 审计；
+- 最终报告展示关键修改摘要、摘要来源、Team Message ID 和可选解释引用。
+
+流程、状态边界和回退验收见
+[0.4.4 三业务阶段接入](version-0.4.4-business-stage-integration.md)。
+
+## 0.5.0 兼容性、发布和文档
+
+第五批将前四批能力收口为首个固定 Agent Team 正式版本：
+
+- Python 包、项目元数据、Docker 默认镜像版本统一为 `0.5.0`；
+- 新增 0.4.0 确定性参照图，证明关闭真实 LLM 时版本关系、证据和推荐结论不变；
+- 旧状态缺少 `llm`、`team`、`team_messages`、`llm_calls` 时自动补齐安全默认值；
+- SQLite checkpoint 测试同时检查恢复状态和数据库原始字节，禁止 API Key 实际值、
+  私有模型 Prompt 及完整正文尾部落盘；
+- Inventory 原始解析结果改用非跟踪状态通道，只把标准化产物引用写入持久化状态；
+- 默认示例继续关闭真实模型；真实 Provider 使用被忽略的本地 `.env` 提供
+  `OPENAI_API_KEY`，远程仓库只提交 `.env.example`；
+- 真实 Provider、Mock、超时、缺失密钥、非法 Pydantic 输出、越权引用和三个角色回退
+  均映射到自动化测试或显式手工 smoke 步骤。
+
+发布范围、升级方式和完整验收矩阵见
+[0.5.0 固定 Agent Team 正式发布说明](release-0.5.0-agent-team.md)。
+
+## 0.5.1 应用数据库骨架
+
+本版本是从 `0.5.0` 向 `0.6.0` 演进的第一批，只建立数据库基础设施，不修改
+顶层 LangGraph、CLI 请求协议或现有业务结论：
+
+- `app.storage.database` 校验应用数据库路径、自动创建父目录，并提供短生命周期
+  SQLAlchemy Session 事务；
+- `app.storage.orm_models` 定义 `governance_runs`、`memory_items`、
+  `context_summaries`、`tool_call_audits`、`human_reviews` 五张表；
+- `app.storage.repositories` 隔离五张表的数据访问，Repository 只执行查询、写入
+  和 flush，由外层 Session 上下文统一提交或回滚；
+- `alembic/` 和 `alembic.ini` 管理表结构升级与回退，不使用 ORM
+  `create_all()` 代替正式迁移；
+- 应用数据库默认使用
+  `.artifacts/database/file-governance-app.sqlite3`，LangGraph checkpoint 继续使用
+  `.artifacts/checkpoints/file-governance.sqlite3`，两者不得共用文件；
+- 当前主图尚未读写这五张表；Memory、Context Compact、工具审计和人工审核将在
+  后续批次逐步接线。
+
+首次初始化本地应用数据库：
+
+```bash
+python -m alembic upgrade head
+```
+
+命令会自动创建 `.artifacts/database/` 父目录和 SQLite 文件。检查当前迁移版本：
+
+```bash
+python -m alembic current
+```
+
+回退首个迁移并重新升级：
+
+```bash
+python -m alembic downgrade base
+python -m alembic upgrade head
+```
+
+需要改变数据库位置时，可以设置 `FILE_GOVERNANCE_DATABASE_PATH` 环境变量；
+Alembic 会把它作为本地 SQLite 文件路径并自动创建父目录。0.5.1 的普通
+`file-governance run` 命令尚不接收应用数据库路径，也不会在执行治理图时自动
+运行迁移。
+
+## 0.5.2 LangChain 多模型适配
+
+本版本是向 `0.6.0` 演进的第二批。统一 Client 默认通过 LangChain
+`with_structured_output(..., include_raw=True)` 调用真实模型，以继续获得经过
+Pydantic 校验的输出和 Token 用量。默认依赖只安装 `langchain-openai` 演示
+Provider；其他 Provider 使用可选依赖组按需安装，不会随基础安装一次性拉取。旧
+`app.llm.providers.openai.OpenAILLMProvider` 暂时保留导入兼容，但业务 Client
+创建所有真实模型时统一使用 `LangChainChatModelProvider`。
+
+当前适配范围：
+
+- LangChain 内置主流 Provider：OpenAI、Anthropic、Google Gemini/Vertex AI、
+  DeepSeek、Azure OpenAI、AWS Bedrock、Groq、Mistral、Cohere、xAI、Ollama、
+  Hugging Face、NVIDIA、Together、Fireworks、Perplexity、OpenRouter、LiteLLM 等；
+- Qwen 使用 `langchain-qwq` 的 `ChatQwen`；
+- GLM/ZhipuAI 使用维护中的 `langchain-openai` 连接其 OpenAI 兼容端点，必须设置
+  `ZHIPUAI_BASE_URL`；
+- 任意标准 OpenAI Chat Completions 中转站使用 `openai_compatible`；OpenRouter
+  和 LiteLLM 使用专用 Provider，以保留其结构化输出和路由语义。
+
+只安装实际使用的原生集成：
+
+```bash
+python -m pip install ".[anthropic]"
+python -m pip install ".[gemini]"
+python -m pip install ".[deepseek]"
+python -m pip install ".[qwen]"
+python -m pip install ".[openrouter]"
+python -m pip install ".[litellm]"
+```
+
+其他 LangChain 内置 Provider 按运行时报错给出的包名单独安装，例如
+`langchain-aws`、`langchain-groq` 或 `langchain-ollama`。
+
+多模型配置使用有序 `profiles` 列表、`default_profile_id` 和固定任务路由：
+
+```json
+{
+  "enabled": true,
+  "profiles": [
+    {
+      "id": "content-claude",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "api_key_env": "ANTHROPIC_API_KEY",
+      "temperature": 0.0,
+      "max_output_tokens": 800,
+      "timeout_seconds": 30.0
+    },
+    {
+      "id": "version-deepseek",
+      "provider": "deepseek",
+      "model": "deepseek-chat",
+      "api_key_env": "DEEPSEEK_API_KEY",
+      "structured_output_method": "function_calling",
+      "temperature": 0.0,
+      "max_output_tokens": 1600,
+      "timeout_seconds": 45.0
+    },
+    {
+      "id": "evidence-qwen",
+      "provider": "qwen",
+      "model": "qwen-flash",
+      "api_key_env": "DASHSCOPE_API_KEY",
+      "base_url_env": "DASHSCOPE_API_BASE",
+      "structured_output_method": "function_calling",
+      "temperature": 0.0,
+      "max_output_tokens": 800,
+      "timeout_seconds": 30.0
+    }
+  ],
+  "default_profile_id": "content-claude",
+  "task_profile_ids": {
+    "content": "content-claude",
+    "version": "version-deepseek",
+    "evidence": "evidence-qwen"
+  },
+  "fallback_enabled": true
+}
+```
+
+`task_profile_ids` 只接受 `content`、`version`、`evidence` 三个固定任务类型，
+且目标 ID 必须存在；Profile ID 重复、未知 Provider、直接 `api_key`/`base_url`
+字段和非法生成边界都会在创建初始状态时被拒绝。省略任务路由时使用
+`default_profile_id`。旧 `provider/model/api_key_env` 单模型配置继续有效，会被
+转换成 ID 为 `default` 的单一 Profile；顶层兼容字段镜像默认 Profile，便于旧
+checkpoint 和调用方平滑升级。
+
+`structured_output_method` 支持 `auto`、`function_calling`、`json_schema` 和
+`json_mode`。默认 `auto` 由 Provider 选择；模型本身必须支持所选能力，例如
+DeepSeek 的 `deepseek-chat` 可用于本项目结构化摘要，而 `deepseek-reasoner`
+不支持结构化输出。`options_env` 可指向只在运行时读取的 JSON 对象，用于
+Azure deployment、`default_headers`、`extra_body` 等 Provider 专有参数，但不得
+覆盖模型、API Key、Base URL、超时或 Token 预算。
+
+三个 Subagent 在构造 Prompt 前执行 `resolve_model_profile`，模型调用审计新增
+`model_profile_id`。关闭 `llm.enabled` 时，即使 Profile 配置为真实 Provider，也会审计
+并执行 `disabled-mock`，不读取环境变量；模型失败、超时、结构化解析失败和越权
+引用仍沿用既有确定性回退。
+
+## 图结构
+
+顶层图：
+
+```text
+initialize_run
+  -> execute_before_run_hooks
+  -> validate_request
+  -> load_system_prompt
+  -> plan_run_tasks
+  -> run_inventory_subgraph -> sync_inventory_task_status
+  -> dispatch_content_subagent_task
+  -> run_version_analysis_subgraph -> sync_version_task_status
+  -> run_evidence_subgraph -> sync_evidence_task_status
+  -> dispatch_evidence_subagent_task
+  -> run_recommendation_subgraph -> sync_recommendation_task_status
+  -> [prepare_human_review -> interrupt -> apply_human_selection
+      -> sync_human_review_task_status]
+  -> generate_governance_report | generate_no_data_report | generate_failure_report
+  -> [具有合法 Task DAG 时 sync_report_task_status]
+  -> execute_after_run_hooks
+  -> [generate_lifecycle_failure_report]
+  -> finalize_run
+```
+
+`generate_failure_report` 始终只有一个节点。请求、Prompt 或 Task 规划前后没有合法
+DAG 的失败直接进入 after-run hooks；四个业务阶段失败则先由同步节点更新失败和
+阻断状态，再由报告同步节点完成 Report Task。
+
+Inventory 子图按队列逐文件解析。单文件失败只产生非致命错误并继续处理；目录
+无法访问或状态引用不一致等问题才形成致命错误。
+
+Version Analysis 子图按队列逐文件对比较，然后统一构建版本边、分叉和版本链。
+主版本推荐已完全迁移到 Recommendation 子图。顶层包装节点使用
+`app/state/converters.py` 显式转换状态，解析队列、比较队列、Evidence 任务和
+推荐候选集合等子图私有字段不会泄漏回顶层状态。
+
+三个固定 Subagent 子图共享以下模型路由前缀，后续输出校验与回退路径保持不变：
+
+```text
+validate_*_subagent_input
+  -> resolve_model_profile
+  -> build_*_subagent_prompt
+  -> execute_before_model_hooks
+  -> invoke_*_structured_llm
+  -> execute_after_model_hooks
+  -> validate_*_subagent_output | build_deterministic_*_fallback
+```
+
+独立 Evidence 子图：
+
+```text
+START
+  -> collect_pdf_candidates
+  -> create_pdf_match_jobs
+  -> [fanout_pdf_matching -> Send(match_pdf_to_source_version) -> join_pdf_matches]
+  -> load_local_delivery_log
+  -> match_delivery_to_version
+  -> merge_external_evidence
+  -> validate_evidence_confidence
+  -> capture_evidence_memory
+  -> END
+```
+
+没有 PDF 时直接跳到本地发送日志；单个 PDF 或日志读取失败可记录非致命错误并
+继续，状态引用或证据关系不一致才产生致命错误。`run_evidence_subgraph()` 通过
+白名单转换只返回 `memory`、`pdf_exports`、`deliveries` 和 `errors`，候选、任务和原始日志
+不会泄漏到顶层状态。顶层图在版本分析成功后调用该子图，并允许日志读取或单个
+PDF 匹配等非致命错误降级后继续 Recommendation。
+
+独立 Recommendation 子图：
+
+```text
+START
+  -> find_editable_leaf_versions
+  -> score_version_candidates
+  -> apply_recalled_memory
+  -> apply_delivery_rules
+  -> apply_pdf_source_rules
+  -> apply_branch_rules
+  -> select_main_versions
+  -> explain_recommendations
+  -> calculate_decision_confidence
+  -> preserve_complete_version_chains
+  -> mark_human_review_items
+  -> validate_recommendation_results
+  -> capture_recommendation_memory
+  -> END
+```
+
+Recommendation 子图只在各自版本组内竞争主版本：客户确认和可靠发送记录增强
+具体版本，PDF 来源关系优先可编辑源文件，分叉、链不完整、近似并列或低于阈值
+的结果强制进入人工审核。推荐只表达主版本偏好，`preserve_file_ids` 始终保留组内
+全部版本；`run_recommendation_subgraph()` 仅返回 `memory`、`decisions`、
+`human_review` 和 `errors`，私有候选集合不会泄漏到顶层状态。Recommendation
+完成后，致命错误
+进入失败报告；分叉、链不完整、近似并列或低置信度结果进入人工审核；其余结果
+直接生成证据化治理报告。
+
+第四批的证据协议、匹配优先级、推荐加权和错误语义详见
+[Evidence 接入与治理决策说明](version-0.4-evidence.md)。
+
+## 0.5.3 Task 级 Skills
+
+本版本是向 `0.6.0` 演进的第三批。Skill 资源由
+`resources/skills/registry.yaml` 统一登记，当前包含：
+
+- `file-content-analysis`：Inventory Task 的 Content 内容说明；
+- `version-relation`：Version Analysis Task 的版本关系解释；
+- `evidence-confidence`：Evidence Task 的证据强弱与限制说明；
+- `governance-report`：Recommendation、Human Review 和 Report 的协调者报告规则。
+
+主图中的 `load_skill_registry` 只读取 YAML 元数据并验证四个 `SKILL.md` 的受控
+路径，不读取指令正文。固定 Subagent 分派进入 Team Orchestration 后按以下顺序
+执行：
+
+1. `select_task_skills` 根据真实 Task、`assigned_role` 和固定 Agent 注册表选择最小集合；
+2. `load_task_skills` 只读取选择项，并确保其他 Skill 没有正文；
+3. `bind_task_skills` 把正文和 SHA-256 绑定到当前 Task 与固定 Agent；
+4. Subagent Prompt 只追加本次绑定且摘要一致的 Skill 指令；
+5. `release_task_skills` 在成功或协调者回退收口后清空正文、摘要和绑定，恢复
+   `available`。
+
+Skill 不是工具，不会自行读取业务文件、访问网络或执行命令。当前三个固定
+Subagent 已实际消费各自 Skill；`governance-report` 已登记 Coordinator 的三个
+Task 范围，供后续报告 Agent 化批次使用，现有确定性 Recommendation、Human
+Review 和 Report 节点不改为模型调用。
+
+## 0.5.4 短期与长期 Memory
+
+本版本是向 `0.6.0` 演进的第四批。Memory 默认关闭，只有请求信封显式设置
+`memory.enabled=true` 后才访问应用数据库：
+
+- `recall_long_term_memory` 在 Skill 注册表加载完成后、Task 规划前读取当前
+  工作空间的最近长期治理事实；数据库不可用时记录非致命错误并继续当前运行；
+- Evidence 子图只捕获阶段计数、高置信度 PDF 来源关系及客户确认关系；
+- Recommendation 子图只把同组历史人工选择作为 `0.03` 的有界评分信号，仍由
+  当前文件事实、版本链和外部证据决定主版本；
+- 人工审核节点只保存版本组 ID 与所选文件 ID，明确忽略 `review_note`；
+- `persist_long_term_memory` 在报告 Task 收口后、`after_run` Hook 前幂等写入，
+  短期阶段摘要不会写入应用数据库；
+- 所有长期条目在创建和写入前都经过摘要长度、凭据模式、结构化字段白名单、
+  引用数量、命名空间和来源运行一致性复验。
+
+正式运行前需要执行一次迁移，随后在请求信封中启用 Memory：
+
+```bash
+python -m alembic upgrade head
+```
+
+```json
+{
+  "memory": {
+    "enabled": true,
+    "namespace": null,
+    "database_path": "../.artifacts/database/file-governance-app.sqlite3",
+    "recall_limit": 50
+  }
+}
+```
+
+`namespace=null` 时使用规范化输入根目录的 SHA-256 哈希；显式提供的命名空间
+也只作为哈希种子，不会原样写入数据库。数据库父目录会在首次建立 Engine 时
+自动创建，但应用不会用 ORM `create_all()` 替代正式迁移。省略
+`memory.database_path` 时可通过 `FILE_GOVERNANCE_DATABASE_PATH` 覆盖默认位置；
+请求中显式路径的优先级更高。
+
+## 0.5.5 Context Compact
+
+本版本是向 `0.6.0` 演进的第五批。Context Compact 默认关闭，启用后在两个固定
+安全点运行：
+
+1. `after_inventory`：只释放已经完成加载校验、且后续业务节点不再读取的
+   System Prompt 正文；文档记录保持原样。
+2. `after_evidence`：Version Analysis、Evidence 和 Evidence Subagent 已完成，
+   此时可把 Recommendation 不再消费的 `content_preview`、`structure_summary`
+   和 `key_fields` 移到 `intermediate` 产物。
+
+压缩后的文档仍保留 `id`、`file_id`、`content_ref`、`normalized_digest`、
+解析器和警告，完整标准化内容可由 `content_ref` 重建。压缩计划完全不接收
+`version_edges`、`branches`、`decisions` 或 `human_review`，集成测试还会对
+启用和关闭路径逐值比较这些字段。
+
+```text
+sync_inventory_task_status
+  -> run_context_compact_after_inventory
+  -> dispatch_content_subagent_task
+  -> ...
+dispatch_evidence_subagent_task
+  -> run_context_compact_after_evidence
+  -> run_recommendation_subgraph
+```
+
+请求信封示例：
+
+```json
+{
+  "context_compact": {
+    "enabled": true,
+    "trigger_token_threshold": 12000,
+    "retained_preview_characters": 0,
+    "persist_summaries": true,
+    "database_path": "../.artifacts/database/file-governance-app.sqlite3"
+  }
+}
+```
+
+Token 估算不调用模型或外部分词服务：ASCII 文本按每四字符一个 Token 近似，
+中文等非 ASCII 字符按一字符一个 Token 保守估算。压缩详情写入受控中间产物；
+`context_summaries` 表只保存固定模板摘要、压缩后估算、序号和产物引用。启用
+数据库摘要前仍需执行 `python -m alembic upgrade head`。
+
+## 0.6.0 数据库接线、兼容性和发布收口
+
+应用数据库新增独立顶层配置，默认关闭。启用 Memory 或 Context Summary 时会自动
+接通同一个 SQLite；也可只启用运行历史、工具审计和人工选择：
+
+```json
+{
+  "application_database": {
+    "enabled": true,
+    "backend": "sqlite",
+    "database_path": "../.artifacts/database/file-governance-app.sqlite3",
+    "auto_create_parent": true,
+    "echo": false,
+    "timeout_seconds": 30.0
+  }
+}
+```
+
+`initialize_run` 写入脱敏运行范围和真实 Checkpointer `thread_id`；
+`flush_tool_audit_hook` 在 after_run 阶段幂等保存文件扫描、文档解析和本地发送
+日志审计；`finalize_run` 更新最终状态并保存人工选择。完整工具输出不会写入
+SQLite，文档解析只保存受控 `content_ref`。
+
+数据库父目录和 SQLite 文件在 Engine 首次连接时自动创建，但表结构不会在普通
+治理运行中自动创建。首次使用必须执行：
+
+```bash
+python -m alembic upgrade head
+```
+
+应用数据库和 Checkpointer 必须使用不同文件。CLI 可以通过请求对象配置，也可以
+使用 `--application-database-path` 覆盖。完整多模型、Skills、Memory、Context
+Compact 和数据库组合示例见 `examples/sample_multi_model_request.json`，发布说明见
+[0.6.0 Skills、Memory、Context Compact 正式发布](release-0.6.0-skills-memory-context.md)。
+
+## 0.6.1 Error Recovery 状态协议与恢复策略
+
+本版本是从 `0.6.0` 向 `0.7.0` 演进的第一批，只建立统一错误恢复需要的状态、
+配置和纯策略服务，不新增图节点、不修改 `graphs/routers.py`，也不改变主图当前的
+失败分支。新增状态全部位于 `app/state/models.py`：
+
+- `RecoveryCategoryPolicyState` 和 `RecoveryPolicyState`：保存完整策略快照；
+- `RecoveryHumanState` 和 `RecoveryState`：保存待处理错误、动作和恢复型人工输入；
+- `NodeExecutionRecord`：为后续节点幂等键、结果复用和失败重放预留协议；
+- `DegradationRecord`：为后续部分成功报告保存结构化降级影响；
+- `RecoveryGraphState`：为后续第七个 Error Recovery 子图提供最小状态边界。
+- `TaskItem` 和 `TaskStatusUpdate`：增加稳定 `execution_id`、`attempt_count`、
+  `retrying` 与 `partial` 协议，旧 Task DAG 在重建时自动补齐；
+- `ReportState`：增加 `degradation_ids` 和 `recovered_error_ids`，当前只保存索引，
+  不提前生成后续批次的降级报告章节。
+
+`create_error_record()` 继续兼容 0.6.0 的原调用方式。旧调用产生的非致命错误标记为
+`recovered`，致命错误标记为 `failed`，因此本批不会把既有警告误当成等待恢复的错误；
+新调用可以显式提供 Task、节点执行、重试、降级、人工恢复和生命周期字段。
+
+默认策略记录在 `configs/default.yaml`。配置也可以直接传给 Python 初始状态工厂：
+
+```python
+state = create_initial_state(
+    request,
+    workspace,
+    recovery_config={
+        "enabled": True,
+        "categories": {
+            "timeout": {
+                "retryable": True,
+                "max_retries": 3,
+            },
+            "parse": {
+                "fallback": "skip_file",
+                "requires_human": False,
+            },
+        },
+    },
+)
+```
+
+策略加载会拒绝未知字段、未知错误类别、未知降级动作、负数或过大的重试次数，以及
+`retryable` 与 `max_retries` 相互矛盾的配置。退避计算是确定性的，不加入随机抖动，
+便于 checkpoint 重放和单元测试。完整边界和后续批次见
+[0.6.1 恢复状态与策略说明](version-0.6.1-recovery-state-policy.md)。
+
+## 0.6.2 恢复与幂等持久化
+
+本版本把 0.6.1 的状态协议映射到独立应用数据库，但不新增图节点，也不让 SQLAlchemy
+`Session` 进入 LangGraph 状态或跨越 `interrupt()`：
+
+- `error_recovery_records` 按 `run_id + error_id` 幂等保存错误事实、重试次数、
+  当前动作、降级选项和恢复状态；
+- `node_execution_records` 以 `idempotency_key` 为主键保存输入摘要、结果引用、
+  结果摘要和累计执行次数；
+- Repository 只查询、写入和 `flush`，提交、回滚与关闭仍由每个节点内部使用的
+  `open_application_session()` 短事务上下文负责；
+- 节点输入摘要、运行归属和节点名称写入后不可改变，旧 checkpoint 也不能用更小的
+  `attempt_count` 或 `retry_count` 覆盖数据库中的较新进度；
+- Alembic `0002_error_recovery_tables` 可独立回退到 0001，同时保留原五张基础表；
+- `governance_runs.status` 数据库约束增加 `recovering`，与 0.6.1 `RunState` 对齐。
+
+本批仍不调度重试、不跳转节点、不产生恢复型 `interrupt()`；完整表结构、事务边界和
+后续接入约束见
+[0.6.2 恢复与幂等持久化说明](version-0.6.2-recovery-persistence.md)。
+
+## 0.6.3 Error Recovery 子图与顶层路由
+
+本版本在前两批协议和持久化基础上构建第七个 Error Recovery 子图，并把顶层图的
+direct-failure 分支统一改到恢复入口：
+
+- 子图依次选择待处理错误、检查可复用结果、按策略决定动作并收口恢复结果；
+- `error_handler` 只捕获六个子图包装节点未处理的异常，建立脱敏错误和失败执行记录，
+  再用 `Command` 进入 Recovery，不直接决定重试或降级；
+- `resume_failed_stage()` 只允许回到固定失败节点，`resume_after_failed_stage()` 只
+  允许进入该阶段预先声明的正常后继节点；
+- 自动重试受分类策略和最大次数约束，确定性退避值进入状态但不持有数据库事务；
+- 无法自动恢复时可采用固定安全降级、发起独立 `error_recovery` 人工中断或终止；
+- 成功节点把最小状态更新写入受控中间产物；再次执行时只有幂等键、输入摘要、
+  结果摘要和产物路径全部校验通过才会复用；
+- 每次恢复错误或节点执行持久化都独立打开并关闭短事务，SQLAlchemy `Session`
+  不跨子图调用、条件边或 `interrupt()` 存活。
+
+完整流程、路由白名单和安全边界见
+[0.6.3 Error Recovery 子图说明](version-0.6.3-error-recovery-graph.md)。
+
+## 0.6.4 六个既有子图和工具统一接入
+
+本版本不新增业务子图，而是让所有既有错误产生位置遵守同一恢复协议：
+
+- `ErrorContextState` 在顶层到业务子图、Team Orchestration 和固定 Subagent
+  之间传递稳定运行、Task、逻辑执行与策略快照；
+- 节点只捕获阶段、函数、类别、脱敏消息和可选异常类型，`create_node_error()`
+  统一补齐错误身份并由 Recovery Policy 决定重试、人工处理或固定降级；
+- 同一 `node_execution_id` 重放时继承 `retry_count`，成功产物仍包含当前错误时
+  禁止错误复用，避免有限重试被重置为无限循环；
+- coordinator、no-memory、keep-context、default-skill 和 partial-result
+  保留原有确定性能力，但对应错误、Task 部分状态与 `DegradationRecord`
+  由 Error Recovery 统一登记；
+- 同一 Task 上由本地回退产生的关联错误会随主错误一起进入恢复终态，避免后续
+  阶段重复消费；路由只检查当前阶段且忽略 `recovered`、`fallback_applied` 历史记录；
+- Recovery 在写入 `error_recovery_records` 前补建对应失败
+  `node_execution_records`，两个 Repository 调用仍分别使用独立短事务。
+
+完整接入范围、重放规则和验证结果见
+[0.6.4 六个既有子图统一接入说明](version-0.6.4-existing-subgraph-integration.md)。
+
+## 0.6.5 恢复型人工确认、部分报告和 CLI
+
+本版本在统一 Recovery 协议上补齐用户可见的暂停恢复与报告收口：
+
+- `error_recovery` interrupt 根据当前错误只公开允许的 retry、skip_file、
+  provide_path 和 abort 动作；provide_path 继续执行符号链接、目录类型、
+  输出目录和数据库路径隔离校验；
+- `file_governance_review` 继续使用
+  `{"selections": {group_id: file_id}, "review_note": ...}`，不会混入
+  Recovery 的 action 字段；
+- CLI 保留原 interrupt 载荷，并依据 kind 添加 `cli_prompt` 和最小
+  `response_example`，让两个恢复协议可以安全区分；
+- Markdown 报告使用“已恢复错误”和“降级项”两个独立章节，ReportState 同步
+  保存对应 ID；存在恢复终态且无未解决错误时，摘要明确标记结果为部分完成；
+- 安全降级后的业务 Task 保持 partial，Report Task 仍为 completed，
+  partial 不计入 failed，也不会阻断后续可安全执行的流程。
+
+协议示例、安全限制和集成验证见
+[0.6.5 恢复型人工确认、部分报告和 CLI 说明](version-0.6.5-recovery-interrupt-report-cli.md)。
+
+## 0.7.0 Error Recovery 正式发布
+
+正式版本用可重复故障注入把前五批恢复能力收口为发布级契约：
+
+- transient 子图故障只执行有限重试，成功后复用同一节点执行身份并继续原后继；
+- 损坏文件只应用 `skip_file`，Subagent、Memory、Skill 和 Context 分别使用
+  coordinator、no-memory、default-skill 和 keep-context，不修改可用治理事实；
+- 恢复型人工 checkpoint 只保存错误、Task、受控路径和节点执行引用，不携带
+  文档正文、Team Message 或报告内容；
+- 同一幂等键和输入摘要的成功节点结果只执行一次，重放同时更新图状态和数据库
+  唯一记录，不让 SQLAlchemy Session 跨节点或 interrupt 存活；
+- 0.6.0 状态缺少 `recovery`、`node_executions`、`degradations` 及报告恢复索引时
+  自动补齐安全默认值，主版本推荐协议和确定性结论保持兼容。
+
+升级、验证矩阵与安全边界见
+[0.7.0 Error Recovery 正式发布说明](release-0.7.0-error-recovery.md)。
+
+## 0.7.1 持久化队列、HTTP API 与 Background Worker
+
+本版本只增加 LangGraph 外层运行基础设施，不修改七个子图的正常业务顺序：
+
+- `background_jobs` 保存请求信封、运行身份、状态、报告路径和有限尝试次数；
+- `worker_leases` 每个后台任务只保留当前或最近一次租约，Worker 通过独立短
+  Session 续租，图执行期间不持有数据库事务；
+- 任务领取通过 `status=queued` 和 `available_at` 条件更新解决多 Worker 竞争；
+- Worker 启动每次领取前扫描过期 active 租约，未耗尽尝试次数时重新入队，
+  已耗尽时同时把后台任务和治理运行标记为 failed；
+- `scheduled_jobs` 在本批只完成 ORM、Repository 和迁移，APScheduler 注册与
+  Cron 管理留到下一批；
+- 后台图必须显式注入 SQLite Checkpointer，不允许回退到 `InMemorySaver`；
+- API 只返回 ID、状态、阶段、报告路径和脱敏错误摘要，不返回请求信封、文档状态、
+  Prompt、Team Message、Task 引用或完整报告 Markdown。
+
+详细状态转换和安全边界见
+[0.7.1 后台运行基础设施说明](version-0.7.1-background-runtime.md)。
+
+## 0.7.2 APScheduler 与 Worktree Isolation
+
+第二批在 0.7.1 队列上增加计划管理和隔离式仓库写入边界：
+
+- `POST /schedules` 创建经过五段 Cron 和 IANA 时区校验的持久化计划；
+- `GET /schedules`、`GET /schedules/{schedule_id}` 查看规则和最近运行事实；
+- `POST /schedules/{schedule_id}/enable` 与 `/disable` 修改持久化启停状态；
+- 独立 Scheduler 定期从 `scheduled_jobs` 同步计划，Cron 回调只创建
+  `trigger_source=cron` 的后台任务，实际 LangGraph 仍由 Worker 领取；
+- Team Orchestration 通过 `needs_worktree_isolation` 条件路由区分显式写仓库
+  Task 和普通只读治理 Task；
+- Worktree 只在受控临时目录创建，Git 调用不经过 Shell，脏目录和分支不会被
+  强制删除，且本批不实现自动合并。
+
+详细进程边界、状态流转和安全关闭语义见
+[0.7.2 APScheduler 与 Worktree Isolation](version-0.7.2-scheduler-worktree.md)。
+
+## 0.8.0 模拟邮件 MCP、结构化日志与多服务编排
+
+第三批把外部邮件事实纳入既有确定性证据链，并完成后台运行时发布收口：
+
+- Evidence 子图先调用 `load_email_mcp_evidence`，再由
+  `route_email_evidence_source` 条件路由选择邮件 MCP 匹配或本地日志降级；
+- 客户端只发现和调用固定只读 Tool，服务端只返回脱敏附件名称、摘要、时间、
+  客户标签、确认标记和稳定引用；
+- MCP 关闭或不可用时自动读取 `delivery_log_path`，并登记 `mcp` 恢复类别和
+  `partial_result` 降级，不丢失已经获得的 PDF 或本地发送证据；
+- `email_mcp` DeliveryRecord 与本地记录使用相同确定性匹配和推荐加权规则，
+  最终报告明确展示证据来源；
+- API、Worker、Scheduler 和模拟邮件 MCP 统一输出 UTC 单行 JSON 日志；
+- Compose 启动迁移及四个长期服务，API 与 Worker 通过内部
+  `http://mock-email-mcp:8001/mcp` 访问模拟证据服务。
+
+完整协议、安全边界、配置和验收矩阵见
+[0.8.0 后台运行时发布说明](release-0.8.0-background-runtime.md)。
+
+## 0.8.1 主图收口、后台人工恢复与报告获取
+
+第一批把主图准备阶段固定为 `System Prompt → Memory Recall → Skill Registry →
+Task DAG`，把所有业务报告统一收敛到 `validate_report_result → Memory Persist →
+finalize_run_tasks → after_run hooks`。`graphs/routers.py` 中的新增路由均由
+`add_conditional_edges` 直接调用，`nodes/` 中的新增函数也都由主图显式注册。
+
+后台 Worker 会把单个 `file_governance_review` 或 `error_recovery` 中断的稳定
+`interrupt_id` 和最小载荷写入 `background_jobs.pending_interrupt`。API 接受恢复
+请求后进入 `resume_queued`，Worker 从同一 SQLite checkpoint 使用
+`Command(resume=...)` 续跑；相同 `request_id`、中断身份和值摘要的重复请求返回
+同一结果，不会重复入队。迁移前必须执行：
+
+```bash
+python -m alembic upgrade head
+```
+
+完整状态转换、接口契约与验收矩阵见
+[0.8.1 主图收口、后台人工恢复与报告获取](version-0.8.1-main-closure-runtime-resume.md)。
+
+## 0.8.2 PostgreSQL 与完整部署拓扑
+
+应用数据库现在接受 SQLite 文件路径或 `postgresql+psycopg` URL。默认
+`docker-compose.yml` 仍只启动 SQLite，普通用户的启动方式和资源成本不变；
+只有显式叠加 `docker-compose.postgresql.yml` 时才启动官方 PostgreSQL 容器。
+Alembic、API、Worker 和 Scheduler 读取同一个 `FILE_GOVERNANCE_DATABASE_URL`，
+迁移服务等待数据库健康后执行，三个长期服务继续等待迁移成功。
+
+PostgreSQL URL 只存在于进程环境中。后台任务、Cron 模板和 LangGraph checkpoint
+仅保存 `FILE_GOVERNANCE_DATABASE_URL` 这一固定环境变量引用，不会持久化用户名或
+密码。多个 Worker 领取任务时使用 PostgreSQL 行锁和 `SKIP LOCKED`；SQLite
+仍使用原有条件更新，两个后端保持同一任务状态协议。
+
+## 1.0.0 端到端验收与项目交付
+
+第三批以真实入口和可复验产物完成稳定版交付：
+
+- E2E 同时覆盖 Python/CLI 前台、API 后台、Cron 入队、Worker 和报告获取；
+- 主版本审核和错误恢复可在 API、Worker 重启后依靠同一 SQLite checkpoint 恢复；
+- 相同恢复请求保持幂等，过期 interrupt ID 被拒绝，人工恢复不消耗异常重试次数；
+- 真实 Streamable HTTP 邮件 MCP 成功和本地发送日志降级均有明确证据来源；
+- 32 个真实 DOCX 验证文件数量、路径和 SHA-256 不变，32 个 PDF 任务验证并发峰值；
+- 演示数据生成器支持 1–500 个文件；
+- SQLite 通过新副本验证备份恢复，PostgreSQL 只使用 Docker 容器内工具和临时恢复库；
+- SQLite 从 ORM 读回的无时区时间在状态边界补为 UTC，保证恢复记录可重放。
+
+完整文档：
+
+- [1.0.0 架构说明](architecture-1.0.0.md)
+- [1.0.0 状态契约](state-contracts-1.0.0.md)
+- [1.0.0 演示手册](demo-1.0.0.md)
+- [后台恢复与人工确认](resume-and-interview.md)
+- [1.0.0 发布说明](release-1.0.0.md)
+
+快速演示：
+
+```bash
+python scripts/generate_demo_data.py --output-root .artifacts/demo --file-count 32
+python scripts/run_e2e_demo.py --demo-root .artifacts/demo --database-backend sqlite --mode all
+python scripts/backup_restore_demo.py --backend sqlite --action roundtrip \
+  --work-directory .artifacts/demo/backup-restore-output \
+  --database-path .artifacts/demo/database/file-governance-app.sqlite3
+```
+
+## 安装
+
+要求 Python 3.10+。
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+`requirements.txt` 会以可编辑模式安装本项目；实际依赖及版本约束仍统一维护在
+`pyproject.toml` 中。Claude、Gemini、DeepSeek、Qwen、OpenRouter 和 LiteLLM
+等可选 Provider 请按上文的 extras 安装命令按需安装。
+
+安装测试和静态检查依赖：
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+安装后会提供 `file-governance`、`file-governance-api`、
+`file-governance-worker`、`file-governance-scheduler` 和
+`file-governance-mock-email-mcp` 五个命令，也可以通过对应的
+`python -m app.entrypoints.*` 模块启动。
+
+构建 wheel 时，公开示例 JSON、受控 Prompt、Skill 注册表和四个 `SKILL.md`
+会随分发包进入安装数据目录：
+
+```bash
+python -m pip wheel . --no-deps --no-build-isolation
+```
+
+## HTTP API、Background Worker、Scheduler 与模拟邮件 MCP
+
+API、Worker 和 Scheduler 启动前先把应用数据库升级到当前十表结构及最新恢复约束：
+
+```bash
+python -m alembic upgrade head
+```
+
+启动 HTTP API：
+
+```bash
+file-governance-api \
+  --host 127.0.0.1 \
+  --port 8000 \
+  --database-path .artifacts/database/file-governance-app.sqlite3 \
+  --checkpoint-path .artifacts/checkpoints/file-governance-background.sqlite3
+```
+
+另一个终端启动独立 Worker：
+
+```bash
+file-governance-worker \
+  --database-path .artifacts/database/file-governance-app.sqlite3
+```
+
+第三个终端启动独立 Scheduler：
+
+```bash
+file-governance-scheduler \
+  --database-path .artifacts/database/file-governance-app.sqlite3 \
+  --checkpoint-path .artifacts/checkpoints/file-governance-background.sqlite3 \
+  --timezone Asia/Shanghai
+```
+
+第四个终端启动只读模拟邮件 MCP：
+
+```bash
+file-governance-mock-email-mcp \
+  --host 127.0.0.1 \
+  --port 8001 \
+  --data-path examples/mock_email_data.json
+```
+
+在 API、Worker 或前台 CLI 的环境中设置
+`FILE_GOVERNANCE_EMAIL_MCP_ENABLED=true` 和
+`FILE_GOVERNANCE_EMAIL_MCP_URL=http://127.0.0.1:8001/mcp` 即可优先查询
+模拟服务；未设置时默认关闭并使用本地发送日志。
+
+提交脱敏示例请求。接口持久化完成后立即返回 HTTP 202，不等待 LangGraph 执行：
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_background_submission.json
+```
+
+响应只包含：
+
+```json
+{
+  "run_id": "治理运行 ID",
+  "job_id": "后台任务 ID",
+  "thread_id": "LangGraph 线程 ID",
+  "status": "queued"
+}
+```
+
+按返回的 ID 查询状态：
+
+```bash
+curl http://127.0.0.1:8000/runs/<run_id>
+curl http://127.0.0.1:8000/runs/jobs/<job_id>
+```
+
+当状态中的 `background_job.pending_interrupt` 非空时，使用其中的
+`interrupt_id`、`kind` 和协议载荷构造恢复请求：
+
+```bash
+curl -X POST http://127.0.0.1:8000/runs/<run_id>/resume \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_background_resume.json
+```
+
+报告生成后使用受控接口下载，不应直接拼接响应中的本地路径：
+
+```bash
+curl -OJ http://127.0.0.1:8000/runs/<run_id>/report
+```
+
+Worker 手工演示或集成测试可以增加 `--once`，只执行一次过期租约恢复和任务领取
+后退出。Scheduler 的 `--once` 只同步一次数据库计划，不触发 LangGraph。
+API、Worker 和 Scheduler 必须共享同一个应用数据库和 checkpoint 挂载；输入目录仍
+必须只读，应用数据库与 checkpoint 仍必须是两个不同的 SQLite 文件。
+
+创建并管理 Cron 计划：
+
+```bash
+curl -X POST http://127.0.0.1:8000/schedules \
+  -H "Content-Type: application/json" \
+  --data @examples/sample_schedule.json
+
+curl http://127.0.0.1:8000/schedules
+curl http://127.0.0.1:8000/schedules/<schedule_id>
+curl -X POST http://127.0.0.1:8000/schedules/<schedule_id>/disable
+curl -X POST http://127.0.0.1:8000/schedules/<schedule_id>/enable
+```
+
+API 只修改计划表，不在请求进程运行 Scheduler。独立 Scheduler 最迟在
+`reconcile_interval_seconds` 后看到计划变化；Cron 到点后只入队，必须由 Worker
+完成治理图。
+
+## Worktree Isolation
+
+普通六阶段治理 Task 默认都是 `requires_repository_write=false`，即使工作空间中
+存在 Git 仓库路径也不会创建 Worktree。只有受信任调用方显式把当前可分派 Task
+标记为 `requires_repository_write=true`，并同时提供以下字段，团队子图才进入
+隔离分支：
+
+```json
+{
+  "workspace": {
+    "input_root": "/data/input",
+    "input_readonly": true,
+    "artifact_root": "/data/artifacts/content",
+    "report_root": "/data/artifacts/reports",
+    "temporary_root": "/data/artifacts/worktrees",
+    "project_git_root": "/workspace/repository"
+  }
+}
+```
+
+Worktree 工具只创建隔离分支、检查状态并安全关闭，不实现自动合并。关闭时若存在
+任何改动，目录和分支会保留为 `completed` 供人工检查；只有干净目录才执行不带
+`--force` 的 `git worktree remove`。
+
+## 准备请求
+
+`examples/sample_request.json` 是默认关闭真实模型的完整请求信封；
+`examples/sample_llm_request.json` 则通过 Claude、DeepSeek 和 Qwen Profile
+启用三个阶段的模型摘要，并额外声明 Gemini、GLM 和通用中转站候选 Profile。
+`examples/sample_multi_model_request.json` 进一步启用 Hooks、长期 Memory、
+Context Compact 和五张应用表，用于 `0.6.0` 组合部署验收。
+相对路径以 JSON 文件所在目录
+为基准解析，因此示例中的 `../data/input` 指向仓库根目录下的 `data/input`。
+`delivery_log_path` 同样相对请求文件解析；设为 `null` 可跳过本地发送记录。
+`prompt`、`hooks`、`memory`、`context_compact` 和 `application_database` 都是
+可选请求信封对象；基础示例保持关闭，组合示例显式启用发布能力。
+CLI 会单独解析这些对象并传给状态工厂，不会把它们合并进业务 `request`。启用 Prompt 时，
+`source_path` 的相对路径同样以请求 JSON 所在目录为基准。
+
+```json
+{
+  "request": {
+    "root_directory": "../data/input",
+    "recursive": true,
+    "allowed_extensions": [".xlsx", ".docx", ".pdf"],
+    "max_files": 500,
+    "grouping_similarity_threshold": 0.72,
+    "auto_select_threshold": 0.82,
+    "pdf_match_threshold": 0.82,
+    "delivery_log_path": "sample_delivery_log.json",
+    "use_llm_summary": false
+  },
+  "workspace": {
+    "input_root": "../data/input",
+    "input_readonly": true,
+    "artifact_root": "../.artifacts/content",
+    "report_root": "../.artifacts/reports"
+  },
+  "prompt": {
+    "enabled": false,
+    "version": "file-governance-v1",
+    "source_path": "../resources/prompts/file_governance_system_v1.md",
+    "dynamic_rules": []
+  },
+  "hooks": {
+    "enabled": false,
+    "before_run": [
+      "validate_request_envelope_hook",
+      "enrich_run_state_hook",
+      "initialize_tool_audit_hook"
+    ],
+    "before_model": [],
+    "after_model": [],
+    "after_run": [
+      "validate_report_result_hook",
+      "flush_tool_audit_hook",
+      "cleanup_run_resources_hook"
+    ],
+    "default_failure_policy": "block",
+    "failure_policies": {
+      "initialize_tool_audit_hook": "ignore",
+      "flush_tool_audit_hook": "ignore",
+      "cleanup_run_resources_hook": "ignore"
+    }
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "mock",
+    "model": "mock-structured-v1",
+    "api_key_env": null,
+    "base_url_env": null,
+    "options_env": null,
+    "structured_output_method": "auto",
+    "temperature": 0.0,
+    "max_output_tokens": 800,
+    "timeout_seconds": 30.0,
+    "fallback_enabled": true
+  },
+  "checkpoint": {
+    "backend": "sqlite",
+    "database_path": "../.artifacts/checkpoints/file-governance-0.5.sqlite3"
+  }
+}
+```
+
+真实 Provider 请求不得在 JSON 中写入 API Key。本地开发先从可提交模板创建被忽略的
+`.env`，再只在本地填写真实值：
+
+```powershell
+if (-not (Test-Path -LiteralPath ".env" -PathType Leaf)) {
+    Copy-Item -LiteralPath ".env.example" -Destination ".env" -ErrorAction Stop
+}
+# 使用本地编辑器，只填写实际启用 Provider 对应的密钥和端点。
+```
+
+`.env` 已被 `.gitignore` 和 `.dockerignore` 排除，远程仓库只保留 `.env.example`。
+应用本身不会自动加载 dotenv 文件；Docker 运行真实 Provider 时必须显式传入
+`--env-file .env`。不要使用 `docker build --secret` 之外的方式把 `.env` 复制进镜像。
+
+使用官方 OpenAI API 时只填写：
+
+```dotenv
+OPENAI_API_KEY=你的官方API密钥
+```
+
+使用第三方 OpenAI 兼容中转站时，在 Profile 中选择
+`provider: "openai_compatible"`，并在本地 `.env` 填写：
+
+```dotenv
+OPENAI_COMPATIBLE_API_KEY=中转站提供的API密钥
+OPENAI_COMPATIBLE_BASE_URL=https://你的中转站地址/v1
+# 可选：中转站要求的 Header 或 extra_body，只在运行时读取。
+OPENAI_COMPATIBLE_OPTIONS={"default_headers":{"X-Tenant":"tenant-a"}}
+```
+
+LangChain `ChatOpenAI` 只保证兼容官方 OpenAI API 规范；中转站必须支持其
+Chat Model 请求和结构化输出能力。OpenRouter 和 LiteLLM 应分别使用
+`provider: "openrouter"` 与 `provider: "litellm"` 及其可选依赖，避免把专有
+路由字段当成普通 OpenAI 响应丢弃。其他中转站可通过 `options_env` 注入受控
+`default_headers` 或 `extra_body`；模型名称必须替换为中转站实际支持的名称。
+
+Profile、模型名称和任务路由由 `sample_llm_request.json` 配置，可按部署环境支持
+的结构化输出模型调整。自动化测试使用注入的 LangChain Chat Model 和离线 Mock
+验证真实适配与多模型路由，不会在 CI 中产生外部费用；真实模型 smoke 应使用下方
+Docker 命令完成。
+
+创建输入目录并放入待治理文件：
+
+```bash
+mkdir -p data/input
+```
+
+## 邮件 MCP 与本地发送记录协议
+
+`examples/mock_email_data.json` 是模拟邮件 MCP 的公开脱敏数据。服务通过
+Streamable HTTP `/mcp` 暴露固定 `search_sent_email_evidence` Tool；客户端只提交
+当前治理文件的基础文件名和结果上限。每条 MCP 记录采用与本地日志相同的字段，
+但 `evidence_ref` 必须使用 `email-mcp://` 命名空间。
+
+本地发送记录使用 `schema_version: "1.0"` 和 `deliveries` 数组。完整脱敏示例见
+`examples/sample_delivery_log.json`。每条记录包含：
+
+- `id`：发送记录稳定唯一 ID；
+- `attachment_name`：发送时的附件名称；
+- `attachment_sha256`：可选原始附件 SHA-256；
+- `normalized_digest`：可选标准化内容 SHA-256；
+- `sent_at`：可选、必须带时区的 ISO 8601 发送时间；
+- `recipient_label`：脱敏收件人标签；
+- `customer_confirmed`：是否存在客户确认或批准记录；
+- `evidence_ref`：指向原始记录的稳定引用，不应包含正文或凭据。
+
+真实发送日志默认被 `.gitignore` 和 `.dockerignore` 排除，只允许通过用户明确
+提供的路径或只读挂载进入运行环境。Evidence 子图优先消费可用 MCP 记录；MCP
+关闭、连接失败、超时、缺少固定 Tool 或返回协议非法时自动消费该本地协议。
+Recommendation 使用可靠匹配结果加权，最终治理报告展示来源、脱敏记录和证据引用。
+
+## CLI 启动治理
+
+```bash
+file-governance run examples/sample_request.json \
+  --thread-id governance-run-001
+```
+
+也可以临时覆盖 checkpoint：
+
+```bash
+file-governance run examples/sample_request.json \
+  --thread-id governance-run-001 \
+  --checkpoint-backend memory
+```
+
+CLI 输出固定为最小 JSON 摘要。自动完成时包含报告路径；需要人工确认时，
+`status` 为 `waiting_human`，并在 `interrupts` 中保留受控载荷。每个已知
+interrupt kind 还包含 `cli_prompt` 和兼容 `response_example`。所有路径都会同时输出：
+
+- `todos`：按 `order` 排列的用户进度，只含 ID、标题、状态和关联 Task ID；
+- `task_status_counts`：固定包含 pending、running、retrying、completed、partial、
+  failed、skipped；
+- 原有 `thread_id`、`status`、`summary`、`report_path` 和 `interrupts`。
+
+CLI 不输出完整 Task、文档正文、报告 Markdown 或大型产物。完整脱敏示例见
+[`examples/sample_task_progress.json`](../examples/sample_task_progress.json)。
+
+## CLI 恢复人工审核
+
+把选择保存为 JSON，例如 `review_response.json`：
+
+```json
+{
+  "selections": {
+    "<group_id>": "<selected_file_id>"
+  },
+  "review_note": "已核对业务内容"
+}
+```
+
+使用启动时完全相同的 `thread_id` 和 SQLite 数据库恢复：
+
+```bash
+file-governance resume review_response.json \
+  --thread-id governance-run-001 \
+  --checkpoint-path .artifacts/checkpoints/file-governance.sqlite3
+```
+
+`selections` 必须恰好覆盖全部待审核版本组，且每个文件 ID 必须属于对应版本组。
+
+恢复型 `error_recovery` interrupt 使用独立的 action 协议。例如重试：
+
+```json
+{
+  "action": "retry",
+  "note": "已确认可以重新执行"
+}
+```
+
+跳过关联文件使用 `{"action": "skip_file"}`，终止运行使用
+`{"action": "abort"}`。修正输入目录时必须提供绝对目录：
+
+```json
+{
+  "action": "provide_path",
+  "replacement_path": "/data/replacement-input"
+}
+```
+
+CLI 只接受当前 interrupt `allowed_actions` 中的动作；非 provide_path 动作不得
+携带 replacement_path。恢复文件仍通过同一个 `resume` 子命令提交，CLI 会由
+checkpoint 中的 interrupt kind 交给对应图节点校验。
+`memory` 后端只适合同一 Python 进程，不能用于两个独立 CLI 进程之间的恢复。
+
+## Python 调用
+
+不需要跨进程恢复时，可以直接使用默认的内存 Checkpointer：
+
+```python
+from app.graphs.file_governance import file_governance_graph
+from app.state.factories import create_initial_state
+
+state = create_initial_state(
+    {
+        "root_directory": "/data/input",
+        "recursive": True,
+        "allowed_extensions": [".xlsx", ".docx", ".pdf"],
+        "max_files": 500,
+        "grouping_similarity_threshold": 0.72,
+        "auto_select_threshold": 0.82,
+        "pdf_match_threshold": 0.82,
+        "delivery_log_path": None,
+        "use_llm_summary": False,
+    },
+    {
+        "input_root": "/data/input",
+        "input_readonly": True,
+        "artifact_root": "/data/artifacts/content",
+        "report_root": "/data/artifacts/reports",
+    },
+    # 0.5.2 仍默认关闭真实模型；旧单模型配置会规范化为离线 Mock Profile。
+    prompt_config={"enabled": False},
+    hook_config={"enabled": False},
+    llm_config={
+        "enabled": False,
+        "provider": "mock",
+        "model": "mock-structured-v1",
+    },
+)
+
+config = {"configurable": {"thread_id": "governance-run-001"}}
+result = file_governance_graph.invoke(state, config=config)
+```
+
+需要持久化时，由调用方管理 Checkpointer 生命周期：
+
+```python
+from app.graphs.file_governance import build_file_governance_graph
+from app.storage.checkpoints import open_checkpointer
+
+with open_checkpointer(
+    "sqlite",
+    database_path="/data/artifacts/checkpoints/file-governance.sqlite3",
+    input_root="/data/input",
+) as checkpointer:
+    graph = build_file_governance_graph(checkpointer=checkpointer)
+    result = graph.invoke(state, config=config)
+```
+
+## 默认配置
+
+`configs/default.yaml` 记录部署默认值，包括：
+
+- 扫描扩展名、最大文件数和解析资源上限；
+- 文档分组及自动选择阈值；
+- PDF 来源匹配阈值、本地发送日志读取上限和歧义分差；
+- 默认关闭的 Prompt、Hooks、执行顺序和失败策略；
+- 默认关闭真实模型的旧单模型兼容写法、Profile 规范化边界和回退配置；
+- `.artifacts/content/normalized` 和 `intermediate` 产物布局；
+- Markdown 报告目录；
+- SQLite checkpoint 后端及数据库路径；
+- 默认关闭的 Memory、哈希命名空间、召回上限和独立应用数据库路径；
+- 默认关闭的 Context Compact、Token 阈值、预览保留量和摘要持久化配置；
+- 默认关闭的十表应用数据库、父目录自动创建、SQL 日志和文件锁等待配置。
+
+当前 CLI 以请求 JSON 为直接运行配置；YAML 用于记录统一部署默认值。0.6.0 的
+Memory、Context Compact 和十表应用数据库均已接入 CLI、API、Worker 与主图；
+迁移命令继续读取
+`alembic.ini` 或 `FILE_GOVERNANCE_DATABASE_PATH`，不会在普通治理运行中静默
+修改表结构。
+
+## 测试
+
+```bash
+python -m pytest
+python -m ruff check app tests alembic scripts
+python -m compileall -q app tests alembic scripts
+```
+
+新的测试结构覆盖：
+
+- 1.0.0 Python/CLI 前台、API 后台、Cron、Worker 和报告下载端到端链路；
+- 两类人工中断在 API/Worker 重启后的 checkpoint 恢复、幂等和计数语义；
+- 邮件 MCP 成功、本地日志降级、32 文件只读不变性及 PDF 有界并发；
+- SQLite 迁移、备份恢复副本与 PostgreSQL Docker 拓扑/迁移/Repository；
+- 文件名归一化、内容支持的合组和无关文档隔离；
+- 候选对、差异、重复边、分叉和线性版本链；
+- 可解释候选评分、自动推荐和人工选择限制；
+- 本地发送日志协议、只读边界、大小限制和时间字段校验；
+- PDF 来源及发送记录的哈希、内容摘要、名称和歧义匹配规则；
+- Evidence 子图的 Send 并行汇合、空分支、日志降级和包装字段隔离；
+- Recommendation 子图的证据加权、分叉审核、空输入和包装字段隔离；
+- 四子图端到端顺序、发送证据加权、报告展示和非致命 Evidence 降级；
+- 真实 DOCX 顶层治理及原文件字节不变；
+- SQLite Checkpointer 关闭后重新打开并恢复 `interrupt()`；
+- 最小 CLI 的真实请求文件调用；
+- Prompt 资源中的只读、证据和人工确认规则；
+- Prompt/Hook 默认关闭、显式配置复制和非法失败策略拒绝；
+- Prompt 路径范围、符号链接、UTF-8、大小、动态规则和 SHA-256；
+- 静态 Hook 注册、顺序执行、跳过事件、block/ignore 和状态写入白名单；
+- 请求预检、状态补充、报告检查、最小审计与只读清理内置 Hook。
+- Prompt/Hook 顶层节点顺序、旧状态关闭兼容和 CLI 请求信封字段隔离；
+- before_run 阻断、Prompt 加载失败、after_run ignore/block 及生命周期失败报告。
+- Prompt 和 Hooks 同时关闭时与 0.2.0 参照顶层路径的业务结果兼容性。
+- 固定 Task DAG 的确定性创建、幂等补齐、角色映射和已有状态保护；
+- 重复 ID、重复依赖、未知依赖、自依赖和循环依赖拒绝；
+- Todo 对 Task 状态的确定性纯投影、正常跳过和失败阻断语义。
+- Team Orchestration 的状态同步/分派双路径、无效 DAG 截断和固定团队初始化；
+- Task 更新的依赖检查、终态幂等、产物引用合并和错误收口；
+- 私有 task_update/dispatch_request 消费、转换器白名单和顶层包装字段隔离；
+- 重复调用子图时 Task、Todo 和时间字段不重复、不重置。
+- Content、Version、Evidence 唯一角色选择及 assignment/result/error 消息往返；
+- 模型失败与伪造引用的协调者回退、fallback 审计和 Task 引用登记；
+- 动态团队成员、角色篡改、协调者 Task 分派和 Worktree 节点缺失检查；
+- 顶层四业务 Task 的顺序推进、无需人工审核时的正常跳过和报告完成；
+- interrupt 期间 Human Review running、恢复后的审核与报告 Task 完成；
+- 业务失败源 Task、下游阻断跳过、失败报告收口和 Todo blocked 语义；
+- 无数据报告不会遗留 pending Todo，以及 0.3.0 业务与报告内容兼容性。
+- CLI 最终、人工暂停和恢复输出中的 Todo 顺序与七状态 Task 计数；
+- CLI 字段白名单对文档正文、完整报告和 Task 产物引用的隔离；
+- nodes 目录函数与所有 LangGraph `add_node()` 注册关系的一致性；
+- LLM 配置未知字段、直接密钥、非法范围和环境变量名称拒绝；
+- 旧单模型配置转换、重复 Profile、未知任务路由和不存在的 Profile 引用拒绝；
+- LangChain 主流 Provider 注册、别名、按需依赖报错、专有参数和统一 Token 用量提取；
+- Content、Version、Evidence 三个子图跨 Claude、DeepSeek、Qwen Profile 的离线路由；
+- Mock 结构化调用、Token 记录、确定性超时和非法 Pydantic 输出失败审计；
+- OpenAI 兼容中转站的结构化参数、Header、extra_body 和缺失环境变量拒绝；
+- 三个 Subagent 输出的额外字段拒绝和产物引用白名单；
+- Content、Evidence 阶段后分派以及 Version Analysis 内部摘要升级；
+- Version Subagent 成功来源登记与模型不可用时的确定性事实一致性；
+- LangChain 多 Provider 适配成功、Mock 成功、确定性超时、缺失 API Key 和非法
+  Pydantic 输出；
+- Subagent 越权产物引用拒绝，以及 Content、Version、Evidence 分别失败后的安全回退；
+- 关闭真实 LLM 时与 0.4.0 确定性参照图的治理结论一致性；
+- SQLite checkpoint 恢复状态和原始数据库字节均不包含 API Key 实际值、私有 Prompt
+  或长正文尾部；
+- 应用数据库路径与 checkpoint 文件隔离、七个 Repository 的事务提交和异常回滚；
+- Docker PostgreSQL 从空库迁移、0005 回退重放、Repository JSON 往返、
+  `SKIP LOCKED` 双 Worker 领取和后台任务收口；
+- 默认 SQLite Compose 与 PostgreSQL override 合并模型、健康依赖和迁移门禁；
+- Alembic `upgrade head`、0002 单独回退、`downgrade base`、再次升级及 ORM
+  元数据一致性；
+- 错误恢复跨运行隔离、重试次数倒退拒绝、节点输入摘要不可变和结果复用查询；
+- 模拟相邻图节点使用不同 Session，且每个上下文退出后不保留活动事务；
+- Error Recovery 子图的有限重试、固定降级、独立人工中断和终止分支；
+- 顶层子图未捕获异常进入 Recovery、成功后回到声明后继及结果复用不重复执行；
+- Memory 策略的长正文/凭据拒绝、有界历史偏好和自由文本隔离；
+- 释放并重建数据库连接后的长期 Memory 召回；
+- 应用数据库原始字节不包含文档长正文、API Key 或完整模型 Prompt；
+- Token 估算的中英文确定性、阈值跳过和两个阶段字段压缩边界；
+- Context Compact 条件子图、未跟踪临时载荷、中间产物和数据库有界摘要；
+- 启用与关闭压缩时 `version_edges`、`branches`、`decisions` 和人工选择完全一致；
+- 0.5.0 状态缺少 Skills、Memory、Context Compact 和数据库字段时安全补齐；
+- 0.6.0 状态缺少 Recovery、Node Execution 和 Degradation 字段时安全补齐；
+- 默认 YAML 与代码恢复策略一致、未知配置拒绝和确定性有限退避；
+- 重试耗尽后的安全降级、人工恢复选择及关闭策略时的无动作语义；
+- 旧版 `create_error_record()` 稳定 ID 与 fatal 语义兼容，以及新恢复字段完整性；
+- 完整暂停恢复运行写入全部五张应用表，并保持应用数据库与 checkpoint 隔离；
+- 大型 Python Tool 输出只保存受控产物引用，数据库原始字节不包含长正文；
+- 完整运行前后逐字节比较原始输入文件，确保没有任何修改；
+- Skill 注册表未知字段、路径越界、重复 ID、职责不匹配和正文摘要校验；
+- Content、Version、Evidence 分派期间只加载当前 Task Skill，并在收口后恢复
+  全部 Skill 为 `available`；
+- 正常完成、无需审核、人工暂停恢复、无数据、业务失败、非致命警告和 checkpoint
+  重放七条 0.4.0 发布验收路径。
+- transient 重试成功、parse 文件级跳过、Subagent/Memory/Skill/Context 固定回退；
+- 恢复型人工 checkpoint 的状态引用隔离、节点执行数据库幂等复用和
+  0.6.0 checkpoint 到 0.7.0 的治理结论兼容性。
+
+## Docker
+
+构建镜像：
+
+```bash
+docker build --build-arg APP_VERSION=1.0.0 -t file-manage-agent:1.0.0 .
+```
+
+默认镜像只安装 OpenAI 演示集成。按需构建其他 Provider，例如：
+
+```bash
+docker build \
+  --build-arg APP_VERSION=1.0.0 \
+  --build-arg LLM_EXTRAS=anthropic,deepseek,qwen \
+  -t file-manage-agent:1.0.0-mainstream .
+```
+
+镜像默认启动监听 `0.0.0.0:8000` 的 HTTP API。应用数据库首次使用前先在同一个
+可写产物卷中执行迁移：
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:1.0.0 \
+  python -m alembic upgrade head
+```
+
+启动 API：
+
+```bash
+docker run --rm -p 8000:8000 \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:1.0.0
+```
+
+使用同一个应用数据库、checkpoint 和只读输入挂载启动 Worker：
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:1.0.0 \
+  file-governance-worker \
+  --database-path /data/artifacts/database/file-governance-app.sqlite3
+```
+
+使用同一个持久化卷启动 Scheduler：
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  file-manage-agent:1.0.0 \
+  file-governance-scheduler \
+  --database-path /data/artifacts/database/file-governance-app.sqlite3 \
+  --checkpoint-path /data/artifacts/checkpoints/file-governance-background.sqlite3
+```
+
+开发演示可以一次启动迁移、API、Worker、Scheduler 和模拟邮件 MCP：
+
+```bash
+docker compose up --build
+```
+
+默认命令继续使用 named volume 中的 SQLite 应用数据库。要仅通过 Docker 启用
+PostgreSQL，先从示例创建本地环境文件并修改密码；Compose URL 插值不做编码，
+因此本拓扑要求用户名、密码和数据库名只使用 `A-Z/a-z/0-9/._~-`：
+
+```bash
+cp .env.example .env
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  up --build
+```
+
+PostgreSQL 数据保存在独立的 `file-governance-postgresql-data` named volume。
+迁移容器会等待 `pg_isready` 健康检查通过再执行 `alembic upgrade head`，API、
+Worker 和 Scheduler 随后等待迁移成功。需要停止服务但保留数据库时执行：
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.postgresql.yml \
+  down
+```
+
+只有明确需要删除演示数据库时才额外添加 `--volumes`。应用数据库切换为
+PostgreSQL 后，LangGraph checkpoint 仍保存在共享产物卷中的独立 SQLite 文件。
+
+Compose 中 `/data/input` 始终只读，API、Worker 和 Scheduler 共享同一个应用
+数据库和 checkpoint，模拟 MCP 只读取镜像内公开示例数据。四个
+长期进程都把日志写为单行 JSON。镜像已安装 Git，但构建上下文不包含 `.git`；如需演示显式
+仓库写入 Task，必须另外把测试 Git 仓库以可写方式挂载到
+`/workspace/repository`，并在受信任请求中显式设置 `project_git_root`。
+
+实际运行时必须只读挂载输入目录和可选发送日志，单独挂载可写产物目录。
+请求中的 `delivery_log_path` 应指向 `/data/evidence/delivery_log.json`；不使用
+本地证据时应设为 `null`。当请求启用任一真实 Provider 时，必须通过
+`--env-file` 显式加载项目根目录下被忽略的本地 `.env`：
+
+```bash
+docker run --rm \
+  --env-file /local/file-manage-agent/.env \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  --mount type=bind,src=/local/delivery_log.json,dst=/data/evidence/delivery_log.json,readonly \
+  --mount type=bind,src=/local/request.json,dst=/config/request.json,readonly \
+  file-manage-agent:1.0.0 \
+  file-governance run /config/request.json --thread-id governance-run-001 \
+  --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3 \
+  --application-database-path /data/artifacts/database/file-governance-app.sqlite3
+```
+
+恢复时使用同样的产物挂载，并额外挂载人工选择 JSON：
+
+```bash
+docker run --rm \
+  --mount type=bind,src=/local/business-files,dst=/data/input,readonly \
+  --mount type=bind,src=/local/agent-artifacts,dst=/data/artifacts \
+  --mount type=bind,src=/local/review_response.json,dst=/config/review.json,readonly \
+  file-manage-agent:1.0.0 \
+  file-governance resume /config/review.json --thread-id governance-run-001 \
+  --checkpoint-path /data/artifacts/checkpoints/file-governance.sqlite3
+```
+
+## 当前未实现
+
+- PostgreSQL LangGraph Checkpointer；应用数据库已经支持 PostgreSQL，
+  checkpoint 本批仍使用独立 SQLite 文件；
+- 配置驱动的 before_model、after_model Hook；本批只有固定 Prompt/审计安全检查；
+- 未安装的可选 LangChain Provider 包；基础安装不会一次性包含全部模型 SDK；
+- Worktree 自动合并、Pull Request 或复杂冲突处理；
+- OCR、旧版 `.doc`/`.xls`、宏文件和加密文档处理。
