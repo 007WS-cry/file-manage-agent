@@ -454,6 +454,69 @@ class ComparisonJob(TypedDict):
     # 当前比较任务状态。
 
 
+SemanticChangeType = Literal[
+    "amount",
+    "date_or_term",
+    "responsible_party",
+    "delivery_scope",
+    "payment_term",
+    "breach_liability",
+    "approval_status",
+    "contact_or_recipient",
+    "wording_only",
+    "formatting_only",
+    "no_material_change",
+]
+# Version Subagent 允许输出的封闭业务变更类型集合。
+
+ChangeSignificance = Literal["low", "medium", "high"]
+# 单项语义变更的业务重要性等级。
+
+ReviewPriority = Literal["not_assessed", "low", "medium", "high"]
+# 确定性规则根据结构化语义变更计算的人工审核优先级。
+
+
+class ChangeEvidenceRecord(TypedDict):
+    """可提供给 Version Subagent 的有界差异证据。"""
+
+    evidence_ref: str
+    # 当前文件对内稳定且可白名单校验的差异引用。
+
+    source: Literal["key_field", "text_diff", "structure"]
+    # 证据来自结构化关键字段、标准化段落差异还是文档结构。
+
+    old_value: str | None
+    # 较早版本中的有界值；方向未知时表示候选 A。
+
+    new_value: str | None
+    # 较新版本中的有界值；方向未知时表示候选 B。
+
+
+class SemanticChangeRecord(TypedDict):
+    """经 Pydantic 和证据白名单校验后的单项业务语义变更。"""
+
+    change_type: SemanticChangeType
+    # 受控业务变更类型，不允许模型自由创建系统动作类型。
+
+    significance: ChangeSignificance
+    # 模型对业务重要性的结构化判断。
+
+    old_value: str | None
+    # 变更前的业务值；证据不足或版本方向未知时为 None。
+
+    new_value: str | None
+    # 变更后的业务值；证据不足或版本方向未知时为 None。
+
+    business_impact: str
+    # 对潜在业务影响的简短说明，不构成系统动作。
+
+    evidence_refs: list[str]
+    # 只能引用当前输入 ``change_evidence`` 中的差异证据。
+
+    confidence: float
+    # 当前语义分类的模型置信度，范围为零到一。
+
+
 class DiffRecord(TypedDict):
     """两个疑似版本之间的内容差异和先后判断。"""
 
@@ -483,6 +546,18 @@ class DiffRecord(TypedDict):
 
     key_changes: list[str]
     # 金额、日期、条款和表格值等关键修改。
+
+    change_evidence: list[ChangeEvidenceRecord]
+    # 供语义分类复核的有界关键字段和段落差异证据。
+
+    semantic_changes: list[SemanticChangeRecord]
+    # Version Subagent 产生并通过证据白名单校验的业务语义变更。
+
+    review_priority: ReviewPriority
+    # 规则引擎根据语义变更计算的人工审核优先级。
+
+    review_reasons: list[str]
+    # 规则引擎提高审核优先级的可解释原因。
 
     summary: str
     # 当前生效的关键修改摘要。
@@ -2088,7 +2163,10 @@ class VersionSubagentInput(TypedDict):
     # 当前文件对比较记录 ID。
 
     file_labels: list[str]
-    # 两个候选版本的安全显示名称。
+    # 两个候选版本的安全显示名称；方向已知时依次为较早、较新版本。
+
+    version_order_known: bool
+    # 文件标签和差异值是否已经按较早版本到较新版本排列。
 
     structural_similarity: float
     # 当前确定性结构相似度。
@@ -2098,6 +2176,9 @@ class VersionSubagentInput(TypedDict):
 
     key_changes: list[str]
     # 确定性比较已发现的关键字段变化。
+
+    change_evidence: list[ChangeEvidenceRecord]
+    # 有长度上限且带稳定引用的关键字段和段落差异。
 
     ordering_signals: list[str]
     # 支撑版本先后关系的确定性证据。
@@ -2141,17 +2222,65 @@ class ContentSubagentOutput(BaseModel):
     # 详细结果的产物引用，必须经过引用白名单校验。
 
 
+class SemanticChangeAnalysis(BaseModel):
+    """Version Subagent 对一项差异的受控业务语义分类。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回业务语义分类协议之外的字段。
+
+    change_type: SemanticChangeType
+    # 受控业务变更类型。
+
+    significance: ChangeSignificance
+    # 当前变更的业务重要性等级。
+
+    old_value: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+    ] | None = None
+    # 证据中可复核的旧值；版本方向未知或不存在旧值时为 None。
+
+    new_value: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+    ] | None = None
+    # 证据中可复核的新值；版本方向未知或不存在新值时为 None。
+
+    business_impact: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
+    ]
+    # 对业务影响的有界解释，不构成系统执行动作。
+
+    evidence_refs: list[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=2048),
+        ]
+    ] = Field(min_length=1, max_length=50)
+    # 只能来自当前 change_evidence 白名单的 diff: 引用。
+
+    confidence: float = Field(ge=0.0, le=1.0)
+    # 当前分类的模型置信度，范围为零到一。
+
+
 class VersionSubagentOutput(BaseModel):
     """Version Subagent 允许返回的结构化结果。"""
 
     model_config = ConfigDict(extra="forbid")
-    # 禁止模型返回摘要和产物引用之外的字段。
+    # 禁止模型返回摘要、语义变更和产物引用之外的字段。
 
     summary: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
     ]
     # 当前版本差异和先后关系的简短中文解释。
+
+    semantic_changes: list[SemanticChangeAnalysis] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+    # 基于输入差异证据的结构化业务语义分类；没有证据时允许为空。
 
     artifact_refs: list[str] = Field(default_factory=list, max_length=50)
     # 详细版本解释的产物引用。

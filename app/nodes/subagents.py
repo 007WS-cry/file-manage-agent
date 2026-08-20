@@ -661,7 +661,7 @@ def invoke_version_structured_llm(state: VersionSubagentGraphState) -> dict:
 
 
 def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
-    """校验 Version 输出只含摘要和输入白名单中的产物引用。
+    """校验 Version 输出、差异证据引用和输入白名单中的产物引用。
 
     Args:
         state: 已取得可选模型输出的 Version 子图状态。
@@ -672,6 +672,48 @@ def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
     try:
         output = validate_structured_output(state.get("output"), VersionSubagentOutput)
         validate_output_artifact_refs(output, allowed_refs=state["input"]["artifact_refs"])
+        evidence_by_ref = {
+            item["evidence_ref"]: item
+            for item in state["input"].get("change_evidence", [])
+        }
+        allowed_evidence_refs = set(evidence_by_ref)
+        seen_classifications: set[tuple[str, tuple[str, ...]]] = set()
+        for index, semantic_change in enumerate(output.semantic_changes):
+            evidence_refs = semantic_change.evidence_refs
+            if len(evidence_refs) != len(set(evidence_refs)):
+                raise ValueError(
+                    f"semantic_changes[{index}].evidence_refs 不得包含重复引用"
+                )
+            invented_refs = sorted(set(evidence_refs) - allowed_evidence_refs)
+            if invented_refs:
+                raise ValueError(
+                    "Version Subagent 返回了未授权差异证据引用："
+                    + invented_refs[0]
+                )
+            cited_evidence = [evidence_by_ref[item] for item in evidence_refs]
+            for value_name in ("old_value", "new_value"):
+                semantic_value = getattr(semantic_change, value_name)
+                if semantic_value is None:
+                    continue
+                if not any(
+                    semantic_value in str(evidence.get(value_name) or "")
+                    for evidence in cited_evidence
+                ):
+                    raise ValueError(
+                        f"semantic_changes[{index}].{value_name} 无法由所引差异证据复核"
+                    )
+            if not state["input"].get("version_order_known", False) and (
+                semantic_change.old_value is not None
+                or semantic_change.new_value is not None
+            ):
+                raise ValueError("版本方向未知时 semantic_changes 不得断言 old/new value")
+            classification_key = (
+                semantic_change.change_type,
+                tuple(sorted(evidence_refs)),
+            )
+            if classification_key in seen_classifications:
+                raise ValueError("semantic_changes 不得重复分类同一差异证据")
+            seen_classifications.add(classification_key)
         return {"output": output}
     except (KeyError, TypeError, ValueError) as error:
         return {

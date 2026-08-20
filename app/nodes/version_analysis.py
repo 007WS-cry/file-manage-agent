@@ -3,6 +3,7 @@ from __future__ import annotations
 from app.services.document_grouping import (
     group_related_documents as group_related_documents_service,
 )
+from app.services.semantic_change_analysis import calculate_review_priority
 from app.services.task_system import build_task_id
 from app.services.version_graph import (
     build_version_chains as build_version_chains_service,
@@ -25,6 +26,7 @@ from app.services.version_graph import (
 from app.state.models import (
     ComparisonJob,
     DiffRecord,
+    SemanticChangeRecord,
     VersionAnalysisGraphState,
     VersionSubagentInput,
 )
@@ -311,7 +313,14 @@ def prepare_version_subagent_input(state: VersionAnalysisGraphState) -> dict:
         item["file_id"]: item for item in state.get("documents", [])
     }
     try:
-        file_ids = [diff["file_a_id"], diff["file_b_id"]]
+        version_order_known = bool(
+            diff["older_file_id"] is not None and diff["newer_file_id"] is not None
+        )
+        file_ids = (
+            [diff["older_file_id"], diff["newer_file_id"]]
+            if version_order_known
+            else [diff["file_a_id"], diff["file_b_id"]]
+        )
         labels = [file_by_id[file_id]["file_name"] for file_id in file_ids]
         if labels[0] == labels[1]:
             labels = [
@@ -329,9 +338,11 @@ def prepare_version_subagent_input(state: VersionAnalysisGraphState) -> dict:
             task_id=build_task_id(state["run"]["run_id"], "version_analysis"),
             comparison_id=diff["id"],
             file_labels=labels,
+            version_order_known=version_order_known,
             structural_similarity=diff["structural_similarity"],
             content_similarity=diff["content_similarity"],
             key_changes=build_bounded_protocol_text_list(diff["key_changes"]),
+            change_evidence=[dict(item) for item in diff.get("change_evidence", [])],
             ordering_signals=build_bounded_protocol_text_list(
                 diff["ordering_signals"]
             ),
@@ -394,7 +405,7 @@ def summarize_key_changes_with_subagent(
 
 
 def apply_subagent_summary(state: VersionAnalysisGraphState) -> dict:
-    """把成功 Version Subagent 摘要及协议来源写入当前差异草稿。
+    """把成功 Version 摘要、语义分类和规则审核优先级写入差异草稿。
 
     Args:
         state: 路由已确认模型调用成功、输出合法且未使用回退的版本分析状态。
@@ -423,9 +434,17 @@ def apply_subagent_summary(state: VersionAnalysisGraphState) -> dict:
             "current_version_subagent_output": None,
         }
     updated = dict(diff)
+    semantic_changes = [
+        SemanticChangeRecord(**item.model_dump(mode="python"))
+        for item in output.semantic_changes
+    ]
+    review_priority, review_reasons = calculate_review_priority(semantic_changes)
     updated.update(
         {
             "summary": output.summary,
+            "semantic_changes": semantic_changes,
+            "review_priority": review_priority,
+            "review_reasons": review_reasons,
             "summary_source": "version_subagent",
             "summary_message_id": message["message_id"],
             "summary_artifact_ref": (

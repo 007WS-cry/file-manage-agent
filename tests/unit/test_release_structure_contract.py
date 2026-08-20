@@ -3,7 +3,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-"""本文件验证 1.0.0 的路由、状态归属和中文文档字符串目录契约。"""
+"""本文件验证 1.0.2 的路由、状态归属和中文文档字符串目录契约。"""
 
 
 # 当前仓库根目录，用于读取应用、迁移、脚本和测试源码。

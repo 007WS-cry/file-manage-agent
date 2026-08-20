@@ -10,6 +10,9 @@ from app.services.recommendation import (
     apply_pdf_source_rules as apply_pdf_source_rules_service,
 )
 from app.services.recommendation import (
+    apply_semantic_review_rules as apply_semantic_review_rules_service,
+)
+from app.services.recommendation import (
     calculate_decision_confidence as calculate_decision_confidence_service,
 )
 from app.services.recommendation import create_scored_decision
@@ -24,6 +27,10 @@ from app.services.recommendation import (
 )
 from app.services.recommendation import (
     select_recommended_file as select_recommended_file_service,
+)
+from app.services.semantic_change_analysis import (
+    REVIEW_PRIORITY_RANK,
+    highest_group_review_priority,
 )
 from app.state.models import DecisionRecord, RecommendationCandidateSet, RecommendationGraphState
 from app.utils.error_context import create_node_error
@@ -303,6 +310,22 @@ def calculate_decision_confidence(state: RecommendationGraphState) -> dict:
     return {"decisions": decisions, "errors": errors}
 
 
+def apply_semantic_review_rules(state: RecommendationGraphState) -> dict:
+    """按固定规则把高重要性语义变更升级为强制人工审核。
+
+    Args:
+        state: 已计算推荐置信度并包含版本差异的 Recommendation 子图状态。
+
+    Returns:
+        只更新推荐记录的 LangGraph 状态增量。
+    """
+    decisions = [
+        apply_semantic_review_rules_service(decision, state.get("diffs", []))
+        for decision in state.get("decisions", [])
+    ]
+    return {"decisions": decisions}
+
+
 def preserve_complete_version_chains(state: RecommendationGraphState) -> dict:
     """为每项推荐写入完整组内版本保留清单。
 
@@ -355,9 +378,17 @@ def mark_human_review_items(state: RecommendationGraphState) -> dict:
         待审核版本组 ID、空选择映射和保留的审核说明。
     """
     pending_group_ids = sorted(
-        decision["group_id"]
-        for decision in state.get("decisions", [])
-        if decision["needs_human_review"]
+        (
+            decision["group_id"]
+            for decision in state.get("decisions", [])
+            if decision["needs_human_review"]
+        ),
+        key=lambda group_id: (
+            -REVIEW_PRIORITY_RANK[
+                highest_group_review_priority(state.get("diffs", []), group_id)
+            ],
+            group_id,
+        ),
     )
     previous_review = state.get(
         "human_review",

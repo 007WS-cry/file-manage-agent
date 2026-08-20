@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "1.0.0"
-description = "具备端到端验收、人工恢复与双数据库部署能力的 LangGraph 只读文件版本治理 Agent"
+version = "1.0.2"
+description = "具备语义变更分析、确定性人工审核规则与双数据库部署能力的 LangGraph 只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

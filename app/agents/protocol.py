@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Literal, cast
 
 from app.state.models import (
+    ChangeEvidenceRecord,
     ContentSubagentInput,
     EvidenceSubagentInput,
     TeamMessage,
@@ -82,9 +83,11 @@ VERSION_INPUT_FIELDS = frozenset(
         "task_id",
         "comparison_id",
         "file_labels",
+        "version_order_known",
         "structural_similarity",
         "content_similarity",
         "key_changes",
+        "change_evidence",
         "ordering_signals",
         "artifact_refs",
     }
@@ -365,6 +368,88 @@ def _normalize_probability(value: object, *, field_name: str) -> float:
     return normalized
 
 
+def _normalize_change_evidence(value: object) -> list[ChangeEvidenceRecord]:
+    """校验 Version Prompt 使用的有界差异证据和稳定引用。
+
+    Args:
+        value: 等待校验的差异证据列表；旧协议缺少该字段时可以为 None。
+
+    Returns:
+        已复制、去重且通过类型、长度和总字符数校验的差异证据。
+
+    Raises:
+        TeamProtocolError: 证据结构、来源、引用或字符边界违反协议时抛出。
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TeamProtocolError("change_evidence 必须是列表")
+    if len(value) > 40:
+        raise TeamProtocolError("change_evidence 不得超过 40 项")
+
+    normalized: list[ChangeEvidenceRecord] = []
+    seen_refs: set[str] = set()
+    total_characters = 0
+    allowed_fields = frozenset(
+        {"evidence_ref", "source", "old_value", "new_value"}
+    )
+    for index, raw_item in enumerate(value):
+        if not isinstance(raw_item, Mapping):
+            raise TeamProtocolError(f"change_evidence[{index}] 必须是对象")
+        _reject_unknown_fields(
+            raw_item,
+            allowed_fields=allowed_fields,
+            payload_name=f"change_evidence[{index}]",
+        )
+        evidence_ref = _normalize_required_text(
+            raw_item.get("evidence_ref"),
+            field_name=f"change_evidence[{index}].evidence_ref",
+            max_characters=MAX_ARTIFACT_REF_CHARACTERS,
+        )
+        if not evidence_ref.startswith("diff:"):
+            raise TeamProtocolError("change_evidence.evidence_ref 必须使用 diff: 引用")
+        if evidence_ref in seen_refs:
+            raise TeamProtocolError(f"change_evidence 包含重复引用：{evidence_ref}")
+        seen_refs.add(evidence_ref)
+        source = raw_item.get("source")
+        if source not in {"key_field", "text_diff", "structure"}:
+            raise TeamProtocolError(
+                f"change_evidence[{index}].source 必须是 key_field、text_diff 或 structure"
+            )
+
+        values: dict[str, str | None] = {}
+        for field_name in ("old_value", "new_value"):
+            raw_value = raw_item.get(field_name)
+            values[field_name] = (
+                None
+                if raw_value is None
+                else _normalize_required_text(
+                    raw_value,
+                    field_name=f"change_evidence[{index}].{field_name}",
+                    max_characters=MAX_STRUCTURED_STRING_CHARACTERS,
+                )
+            )
+        if values["old_value"] is None and values["new_value"] is None:
+            raise TeamProtocolError("change_evidence 每项至少包含一个差异值")
+        total_characters += len(evidence_ref) + sum(
+            len(item) for item in values.values() if item is not None
+        )
+        if total_characters > 8_000:
+            raise TeamProtocolError("change_evidence 全部文本不得超过 8000 个字符")
+        normalized.append(
+            ChangeEvidenceRecord(
+                evidence_ref=evidence_ref,
+                source=cast(
+                    Literal["key_field", "text_diff", "structure"],
+                    source,
+                ),
+                old_value=values["old_value"],
+                new_value=values["new_value"],
+            )
+        )
+    return normalized
+
+
 def validate_content_subagent_input(
     payload: Mapping[str, object],
 ) -> ContentSubagentInput:
@@ -431,15 +516,28 @@ def validate_version_subagent_input(
         allowed_fields=VERSION_INPUT_FIELDS,
         payload_name="Version Subagent 输入",
     )
+    version_order_known = payload.get("version_order_known", False)
+    if not isinstance(version_order_known, bool):
+        raise TeamProtocolError("version_order_known 必须是布尔值")
+    comparison_id = _normalize_required_text(
+        payload.get("comparison_id"),
+        field_name="comparison_id",
+        max_characters=256,
+    )
+    change_evidence = _normalize_change_evidence(
+        payload.get("change_evidence", [])
+    )
+    expected_evidence_prefix = f"diff:{comparison_id}:"
+    if any(
+        not item["evidence_ref"].startswith(expected_evidence_prefix)
+        for item in change_evidence
+    ):
+        raise TeamProtocolError("change_evidence 引用必须属于当前 comparison_id")
     return VersionSubagentInput(
         task_id=_normalize_required_text(
             payload.get("task_id"), field_name="task_id", max_characters=256
         ),
-        comparison_id=_normalize_required_text(
-            payload.get("comparison_id"),
-            field_name="comparison_id",
-            max_characters=256,
-        ),
+        comparison_id=comparison_id,
         file_labels=_normalize_text_list(
             payload.get("file_labels"),
             field_name="file_labels",
@@ -447,6 +545,7 @@ def validate_version_subagent_input(
             max_item_characters=256,
             exact_items=2,
         ),
+        version_order_known=version_order_known,
         structural_similarity=_normalize_probability(
             payload.get("structural_similarity"),
             field_name="structural_similarity",
@@ -461,6 +560,7 @@ def validate_version_subagent_input(
             max_item_characters=MAX_STRUCTURED_STRING_CHARACTERS,
             max_total_characters=MAX_TEXT_LIST_TOTAL_CHARACTERS,
         ),
+        change_evidence=change_evidence,
         ordering_signals=_normalize_text_list(
             payload.get("ordering_signals"),
             field_name="ordering_signals",

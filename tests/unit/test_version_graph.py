@@ -122,6 +122,9 @@ def test_build_linear_version_chain_from_document_diff(tmp_path: Path) -> None:
     assert diff["older_file_id"] == "v1"
     assert diff["newer_file_id"] == "v2"
     assert diff["key_changes"]
+    assert diff["change_evidence"]
+    assert diff["semantic_changes"] == []
+    assert diff["review_priority"] == "not_assessed"
     assert [(item["parent_file_id"], item["child_file_id"]) for item in edges] == [("v1", "v2")]
     assert chains[0]["ordered_file_ids"] == ["v1", "v2"]
     assert chains[0]["is_complete"] is True

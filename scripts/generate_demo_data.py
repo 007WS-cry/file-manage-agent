@@ -26,7 +26,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         包含输出目录和文件数量参数的解析器。
     """
     parser = argparse.ArgumentParser(
-        description="生成 1.0.0 端到端演示所需的只读 DOCX 数据和请求清单。"
+        description="生成 1.0.2 端到端演示所需的只读 DOCX 数据和请求清单。"
     )
     parser.add_argument(
         "--output-root",

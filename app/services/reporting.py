@@ -11,6 +11,30 @@ from app.utils.runtime import paths_overlap, utc_now_iso
 """本模块负责版本摘要 Markdown、值转义、隔离持久化和统一报告状态构造。"""
 
 
+SEMANTIC_CHANGE_LABELS = {
+    "amount": "金额变化",
+    "date_or_term": "日期或期限变化",
+    "responsible_party": "责任主体变化",
+    "delivery_scope": "交付范围变化",
+    "payment_term": "付款条件变化",
+    "breach_liability": "违约责任变化",
+    "approval_status": "审批状态变化",
+    "contact_or_recipient": "联系人或收件人变化",
+    "wording_only": "纯措辞优化",
+    "formatting_only": "格式调整",
+    "no_material_change": "无实质变化",
+}
+# 语义变更类型到中文报告标签的固定映射。
+
+REVIEW_PRIORITY_LABELS = {
+    "not_assessed": "未评估",
+    "low": "低",
+    "medium": "中",
+    "high": "高",
+}
+# 审核优先级到中文报告标签的固定映射。
+
+
 def escape_markdown_cell(value: object) -> str:
     """转义 Markdown 表格单元格中的竖线和换行。
 
@@ -172,6 +196,34 @@ def build_version_summary_lines(
             f"{escape_markdown_cell(right_name)}`（{source}）："
             f"{escape_markdown_cell(diff['summary'])}"
         )
+        priority = diff.get("review_priority", "not_assessed")
+        lines.append(
+            "  - 语义审核优先级："
+            f"**{REVIEW_PRIORITY_LABELS.get(priority, escape_markdown_cell(priority))}**"
+        )
+        semantic_changes = diff.get("semantic_changes", [])
+        if not semantic_changes:
+            lines.append("  - 语义变更：未生成经过证据校验的业务分类。")
+        for change in semantic_changes:
+            change_label = SEMANTIC_CHANGE_LABELS.get(
+                change["change_type"],
+                change["change_type"],
+            )
+            old_value = change.get("old_value") or "未提供"
+            new_value = change.get("new_value") or "未提供"
+            refs = "、".join(
+                f"`{escape_markdown_cell(item)}`"
+                for item in change.get("evidence_refs", [])
+            )
+            lines.append(
+                "  - "
+                f"{escape_markdown_cell(change_label)} / "
+                f"{escape_markdown_cell(change['significance'])} "
+                f"（置信度 {change['confidence']:.2f}）："
+                f"{escape_markdown_cell(old_value)} → {escape_markdown_cell(new_value)}；"
+                f"影响：{escape_markdown_cell(change['business_impact'])}；"
+                f"证据：{refs}"
+            )
         message_id = diff.get("summary_message_id")
         if message_id:
             lines.append(f"  - Team Message：`{escape_markdown_cell(message_id)}`")

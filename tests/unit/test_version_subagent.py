@@ -17,6 +17,9 @@ VERSION_ARTIFACT_REFS = [
     "artifact://normalized/version-002",
 ]
 
+# Version 语义输出测试允许引用的固定差异证据。
+VERSION_EVIDENCE_REF = "diff:comparison-001:paragraph-18-to-18"
+
 
 def _version_state() -> VersionSubagentGraphState:
     """创建可直接调用 Version Subagent 图的完整初始状态。
@@ -29,9 +32,18 @@ def _version_state() -> VersionSubagentGraphState:
             "task_id": "run-001:version_analysis",
             "comparison_id": "comparison-001",
             "file_labels": ["合同-v1.docx", "合同-v2.docx"],
+            "version_order_known": True,
             "structural_similarity": 0.91,
             "content_similarity": 0.88,
             "key_changes": ["金额由 1000 调整为 1200"],
+            "change_evidence": [
+                {
+                    "evidence_ref": VERSION_EVIDENCE_REF,
+                    "source": "text_diff",
+                    "old_value": "付款期限为30天",
+                    "new_value": "付款期限为60天",
+                }
+            ],
             "ordering_signals": ["v2 修改时间较晚"],
             "artifact_refs": list(VERSION_ARTIFACT_REFS),
         },
@@ -53,10 +65,131 @@ def test_version_subagent_returns_strict_structured_output() -> None:
     result = version_subagent_graph.invoke(_version_state())
 
     assert isinstance(result["output"], VersionSubagentOutput)
-    assert set(result["output"].model_dump()) == {"summary", "artifact_refs"}
+    assert set(result["output"].model_dump()) == {
+        "summary",
+        "semantic_changes",
+        "artifact_refs",
+    }
     assert set(result["output"].artifact_refs).issubset(set(VERSION_ARTIFACT_REFS))
     assert result["team_messages"][-1]["message_type"] == "result"
     assert result["llm_calls"][-1]["agent_id"] == "version-subagent"
+
+
+def test_version_subagent_accepts_evidence_backed_semantic_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """受控业务分类必须引用当前文件对已有的差异证据。"""
+    original_client = LLMClient
+
+    def create_semantic_client(config):
+        """创建返回合法付款条件语义分类的 Mock Client。"""
+        return original_client(
+            config,
+            providers={
+                "mock": MockLLMProvider(
+                    response_payload={
+                        "summary": "付款期限从30天延长到60天。",
+                        "semantic_changes": [
+                            {
+                                "change_type": "payment_term",
+                                "significance": "high",
+                                "old_value": "30天",
+                                "new_value": "60天",
+                                "business_impact": "回款周期延长",
+                                "evidence_refs": [VERSION_EVIDENCE_REF],
+                                "confidence": 0.94,
+                            }
+                        ],
+                        "artifact_refs": [],
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setattr("app.nodes.subagents.LLMClient", create_semantic_client)
+    result = version_subagent_graph.invoke(_version_state())
+
+    change = result["output"].semantic_changes[0]
+    assert result["fallback_used"] is False
+    assert change.change_type == "payment_term"
+    assert change.significance == "high"
+    assert change.evidence_refs == [VERSION_EVIDENCE_REF]
+
+
+def test_version_subagent_rejects_invented_diff_evidence_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型伪造 diff 引用时必须拒绝语义结果并进入确定性回退。"""
+    original_client = LLMClient
+
+    def create_inventing_client(config):
+        """创建返回白名单外差异引用的 Mock Client。"""
+        return original_client(
+            config,
+            providers={
+                "mock": MockLLMProvider(
+                    response_payload={
+                        "summary": "付款期限发生变化。",
+                        "semantic_changes": [
+                            {
+                                "change_type": "payment_term",
+                                "significance": "high",
+                                "old_value": "30天",
+                                "new_value": "60天",
+                                "business_impact": "回款周期延长",
+                                "evidence_refs": ["diff:invented:paragraph-1"],
+                                "confidence": 0.94,
+                            }
+                        ],
+                        "artifact_refs": [],
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setattr("app.nodes.subagents.LLMClient", create_inventing_client)
+    result = version_subagent_graph.invoke(_version_state())
+
+    assert result["fallback_used"] is True
+    assert result["output"].semantic_changes == []
+
+
+def test_version_subagent_rejects_values_not_present_in_cited_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """old/new 值即使引用合法，也必须能在所引差异证据中逐字复核。"""
+    original_client = LLMClient
+
+    def create_hallucinating_client(config):
+        """创建引用合法但虚构新值的 Mock Client。"""
+        return original_client(
+            config,
+            providers={
+                "mock": MockLLMProvider(
+                    response_payload={
+                        "summary": "付款期限发生变化。",
+                        "semantic_changes": [
+                            {
+                                "change_type": "payment_term",
+                                "significance": "high",
+                                "old_value": "30天",
+                                "new_value": "90天",
+                                "business_impact": "回款周期延长",
+                                "evidence_refs": [VERSION_EVIDENCE_REF],
+                                "confidence": 0.94,
+                            }
+                        ],
+                        "artifact_refs": [],
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setattr("app.nodes.subagents.LLMClient", create_hallucinating_client)
+    result = version_subagent_graph.invoke(_version_state())
+
+    assert result["fallback_used"] is True
+    assert result["output"].semantic_changes == []
 
 
 def test_version_subagent_falls_back_when_model_invents_artifact_ref(

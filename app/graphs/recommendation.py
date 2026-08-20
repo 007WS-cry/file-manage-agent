@@ -7,6 +7,7 @@ from app.nodes.recommendation import (
     apply_branch_rules,
     apply_delivery_rules,
     apply_pdf_source_rules,
+    apply_semantic_review_rules,
     calculate_decision_confidence,
     explain_recommendations,
     find_editable_leaf_versions,
@@ -40,6 +41,7 @@ def build_recommendation_graph():
     builder.add_node("select_main_versions", select_main_versions)
     builder.add_node("explain_recommendations", explain_recommendations)
     builder.add_node("calculate_decision_confidence", calculate_decision_confidence)
+    builder.add_node("apply_semantic_review_rules", apply_semantic_review_rules)
     builder.add_node("preserve_complete_version_chains", preserve_complete_version_chains)
     builder.add_node("mark_human_review_items", mark_human_review_items)
     builder.add_node("validate_recommendation_results", validate_recommendation_results)
@@ -59,8 +61,9 @@ def build_recommendation_graph():
     builder.add_edge("explain_recommendations", "calculate_decision_confidence")
     builder.add_edge(
         "calculate_decision_confidence",
-        "preserve_complete_version_chains",
+        "apply_semantic_review_rules",
     )
+    builder.add_edge("apply_semantic_review_rules", "preserve_complete_version_chains")
     builder.add_edge("preserve_complete_version_chains", "mark_human_review_items")
     builder.add_edge("mark_human_review_items", "validate_recommendation_results")
     builder.add_edge(
