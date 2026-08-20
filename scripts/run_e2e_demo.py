@@ -100,7 +100,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         包含演示根目录、数据库后端和运行链路参数的解析器。
     """
     parser = argparse.ArgumentParser(
-        description="运行 1.0.2 前台、后台与 Cron 端到端演示并复核输入不变性。"
+        description="运行 1.0.3 前台、后台与 Cron 端到端演示并复核输入不变性。"
     )
     parser.add_argument(
         "--demo-root",
@@ -432,7 +432,7 @@ def execute_cron_demo(
         schedule_response = client.post(
             "/schedules",
             json={
-                "name": "1.0.2 端到端演示",
+                "name": "1.0.3 端到端演示",
                 "cron_expression": "0 2 * * *",
                 "timezone": "Asia/Shanghai",
                 "enabled": True,
@@ -528,7 +528,7 @@ def run_demo(
     current_manifest = assert_input_manifest_unchanged(resolved_root, baseline)
     summary = {
         "schema_version": "1.0",
-        "release_version": "1.0.2",
+        "release_version": "1.0.3",
         "database_backend": database_backend,
         "mode": mode,
         "results": results,

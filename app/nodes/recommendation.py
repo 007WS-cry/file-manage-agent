@@ -32,6 +32,7 @@ from app.services.semantic_change_analysis import (
     REVIEW_PRIORITY_RANK,
     highest_group_review_priority,
 )
+from app.services.version_relation_fusion import group_has_relation_review
 from app.state.models import DecisionRecord, RecommendationCandidateSet, RecommendationGraphState
 from app.utils.error_context import create_node_error
 
@@ -311,7 +312,7 @@ def calculate_decision_confidence(state: RecommendationGraphState) -> dict:
 
 
 def apply_semantic_review_rules(state: RecommendationGraphState) -> dict:
-    """按固定规则把高重要性语义变更升级为强制人工审核。
+    """按固定规则把高语义风险或版本关系冲突升级为人工审核。
 
     Args:
         state: 已计算推荐置信度并包含版本差异的 Recommendation 子图状态。
@@ -384,6 +385,7 @@ def mark_human_review_items(state: RecommendationGraphState) -> dict:
             if decision["needs_human_review"]
         ),
         key=lambda group_id: (
+            -int(group_has_relation_review(state.get("diffs", []), group_id)),
             -REVIEW_PRIORITY_RANK[
                 highest_group_review_priority(state.get("diffs", []), group_id)
             ],

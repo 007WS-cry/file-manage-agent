@@ -115,10 +115,31 @@ datetime 不得直接写回严格状态协议。
 | `review_priority` | 规则引擎计算的 `not_assessed`、`low`、`medium` 或 `high` |
 | `review_reasons` | 规则提高审核优先级的有界解释 |
 
-`VersionSubagentOutput` 只允许 `summary`、`semantic_changes` 和 `artifact_refs`。
+1.0.2 的 `VersionSubagentOutput` 允许 `summary`、`semantic_changes` 和 `artifact_refs`。
 LLM 不能返回审核动作或审核优先级。高重要性语义变更是否强制人工审核，由
 Recommendation 子图中的确定性规则决定。人工审核中断可展示截断后的 old/new 值、
 业务影响、置信度和 `diff:` 引用，但不得携带完整文档正文。
+
+### 1.0.3 双轨版本关系扩展
+
+1.0.3 为 `DiffRecord` 增加双轨版本关系字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `deterministic_relation` | 相似度、方向、格式和哈希规则生成的关系候选 |
+| `deterministic_relation_confidence` | 确定性关系置信度 |
+| `relation_constraints` | 哈希、父子、导出、语义重复、并行分支和无关文件硬约束 |
+| `llm_relation` | 经 Schema 和关系证据白名单校验的 LLM 候选 |
+| `resolved_relation` | 允许版本图消费的最终关系 |
+| `relation_resolution` | 确定性、共识、受限采纳、冲突审核或约束拒绝 |
+| `relation_confidence` | 双轨融合后的关系置信度 |
+| `relation_review_required` | 是否因冲突或越权候选强制人工审核 |
+| `relation_review_reasons` | 双轨融合和审核升级的有界解释 |
+
+`VersionSubagentInput` 新增确定性关系、约束和有界 `relation_evidence`；
+`VersionSubagentOutput` 新增可选 `relation_assessment`。非 `uncertain` 候选必须引用
+输入已有的 `diff:` 关系证据。LLM 只提出候选，版本图只读取 `resolved_relation`；
+冲突或违反硬约束的候选不会建立父子边，并由确定性规则强制人工审核。
 
 ## 错误恢复协议
 
@@ -167,8 +188,8 @@ API Schema 不直接返回 `FileGovernanceState`：
 
 ## 版本兼容
 
-1.0.2 的语义字段由版本比较重新生成，不新增数据库迁移；既有 1.0.0 状态扩展仍保持
+1.0.3 的语义和关系字段由版本比较重新生成，不新增数据库迁移；既有 1.0.0 状态扩展仍保持
 向后补齐，不更改 0.8.2 数据库迁移链。升级前应备份应用数据库和
 checkpoint；升级后执行 `alembic upgrade head`。正在等待人工输入的后台任务必须保留
-原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.2 API 使用当前
+原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.3 API 使用当前
 `interrupt_id` 恢复。

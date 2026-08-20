@@ -4,6 +4,7 @@ import re
 from collections.abc import Iterable
 
 from app.services.semantic_change_analysis import highest_group_review_priority
+from app.services.version_relation_fusion import group_has_relation_review
 from app.state.models import (
     BranchRecord,
     DecisionRecord,
@@ -506,28 +507,42 @@ def apply_semantic_review_rules(
     decision: DecisionRecord,
     diffs: Iterable[DiffRecord],
 ) -> DecisionRecord:
-    """用确定性规则把高重要性语义变更升级为强制人工审核。
+    """用确定性规则把高语义风险或关系冲突升级为强制人工审核。
 
-    Version Subagent 不能输出系统动作。本函数只读取已经通过 Schema 和证据
-    白名单校验的 ``DiffRecord.review_priority``，并由固定规则决定是否强制审核。
+    Version Subagent 不能输出系统动作。本函数只读取已经通过 Schema、证据
+    白名单和双轨融合的差异字段，并由固定规则决定是否强制审核。
 
     Args:
         decision: 已完成候选评分和置信度计算的主版本推荐。
         diffs: 当前运行全部文件对差异及其规则审核优先级。
 
     Returns:
-        高优先级语义变更已强制标记人工审核的新推荐记录。
+        高优先级语义变更或关系冲突已强制标记人工审核的新推荐记录。
     """
     updated = dict(decision)
     priority = highest_group_review_priority(diffs, decision["group_id"])
-    if priority == "high":
+    relation_review_required = group_has_relation_review(
+        diffs,
+        decision["group_id"],
+    )
+    if priority == "high" or relation_review_required:
         updated["needs_human_review"] = True
         updated["selected_by"] = "unresolved"
+        rule_reasons = []
+        if priority == "high":
+            rule_reasons.append(
+                "语义变更规则：存在高重要性业务变更，强制进入人工审核"
+            )
+        if relation_review_required:
+            rule_reasons.append(
+                "版本关系规则：确定性算法与 LLM 候选冲突或候选违反硬约束，"
+                "强制进入人工审核"
+            )
         updated["reasons"] = list(
             dict.fromkeys(
                 [
                     *decision["reasons"],
-                    "语义变更规则：存在高重要性业务变更，强制进入人工审核",
+                    *rule_reasons,
                 ]
             )
         )

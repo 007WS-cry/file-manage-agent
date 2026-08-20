@@ -475,6 +475,79 @@ ChangeSignificance = Literal["low", "medium", "high"]
 ReviewPriority = Literal["not_assessed", "low", "medium", "high"]
 # 确定性规则根据结构化语义变更计算的人工审核优先级。
 
+VersionRelationType = Literal[
+    "direct_revision",
+    "parallel_branch",
+    "derived_export",
+    "semantic_duplicate",
+    "unrelated",
+    "uncertain",
+]
+# 确定性算法和 Version Subagent 共用的封闭版本关系类型集合。
+
+VersionRelationResolution = Literal[
+    "deterministic_only",
+    "consensus",
+    "llm_supported",
+    "conflict_review",
+    "constrained_rejection",
+]
+# 双轨版本关系融合后允许写入状态的固定决议类型。
+
+
+class VersionRelationConstraints(TypedDict):
+    """限制 LLM 候选关系能否影响版本图的确定性硬约束。"""
+
+    exact_hash_match: bool
+    # 原始文件 SHA-256 是否完全一致；为真时 LLM 不能覆盖重复事实。
+
+    parent_child_supported: bool
+    # 时间方向、内容与结构是否共同支持建立父子版本边。
+
+    export_supported: bool
+    # 文件格式、方向和内容是否支持建立可编辑源到 PDF 导出边。
+
+    semantic_duplicate_supported: bool
+    # 内容与结构相似度是否足以支持语义重复候选。
+
+    parallel_branch_supported: bool
+    # 同组既有比较是否支持两个文件来自共同基础版本的并行分支候选。
+
+    unrelated_supported: bool
+    # 内容与结构是否均明显不足以支持同一版本关系。
+
+
+class RelationEvidenceRecord(TypedDict):
+    """供 Version Subagent 判断版本关系的有界可引用证据。"""
+
+    evidence_ref: str
+    # 当前或同组既有文件对的稳定 diff: 证据引用。
+
+    comparison_id: str
+    # 产生该证据的文件对差异记录 ID。
+
+    evidence_type: Literal["similarity", "ordering", "file_type", "change", "context"]
+    # 证据属于相似度、排序、格式、变更还是同组关系上下文。
+
+    description: str
+    # 不包含完整正文的有界确定性证据说明。
+
+
+class VersionRelationAssessmentRecord(TypedDict):
+    """经 Schema 和关系证据白名单校验后的 LLM 关系候选。"""
+
+    relation: VersionRelationType
+    # LLM 提出的封闭版本关系类型。
+
+    reason: str
+    # 只基于所引证据的简短关系判断理由。
+
+    evidence_refs: list[str]
+    # 只能引用当前 Version 输入 relation_evidence 中已有的 diff: 引用。
+
+    confidence: float
+    # LLM 对候选关系的置信度，范围为零到一。
+
 
 class ChangeEvidenceRecord(TypedDict):
     """可提供给 Version Subagent 的有界差异证据。"""
@@ -559,6 +632,33 @@ class DiffRecord(TypedDict):
     review_reasons: list[str]
     # 规则引擎提高审核优先级的可解释原因。
 
+    deterministic_relation: VersionRelationType
+    # 文件元数据、相似度和结构规则产生的确定性关系候选。
+
+    deterministic_relation_confidence: float
+    # 确定性关系候选的置信度，范围为零到一。
+
+    relation_constraints: VersionRelationConstraints
+    # 限制 LLM 候选关系影响版本图的硬约束快照。
+
+    llm_relation: VersionRelationAssessmentRecord | None
+    # Version Subagent 返回的受控关系候选；未调用或回退时为 None。
+
+    resolved_relation: VersionRelationType
+    # 双轨融合后允许版本图消费的最终关系。
+
+    relation_resolution: VersionRelationResolution
+    # 最终关系来自确定性、共识、受限采纳还是冲突审核。
+
+    relation_confidence: float
+    # 双轨融合后的关系置信度，范围为零到一。
+
+    relation_review_required: bool
+    # 双轨冲突或硬约束拒绝是否强制进入人工审核。
+
+    relation_review_reasons: list[str]
+    # 关系冲突、约束拒绝或共识增强的有界解释。
+
     summary: str
     # 当前生效的关键修改摘要。
 
@@ -593,8 +693,15 @@ class VersionEdge(TypedDict):
     child_file_id: str
     # 推测的较新版本文件 ID。
 
-    relation: Literal["derived_from", "duplicate_of", "uncertain"]
-    # 版本关系类型：派生、完全重复或暂不确定。
+    relation: Literal[
+        "derived_from",
+        "derived_export",
+        "duplicate_of",
+        "semantic_duplicate",
+        "parallel_branch",
+        "uncertain",
+    ]
+    # 版本图边类型：修订、导出、哈希重复、语义重复、并行分支或不确定。
 
     evidence: list[str]
     # 支撑该版本关系的证据。
@@ -2180,6 +2287,18 @@ class VersionSubagentInput(TypedDict):
     change_evidence: list[ChangeEvidenceRecord]
     # 有长度上限且带稳定引用的关键字段和段落差异。
 
+    deterministic_relation: VersionRelationType
+    # 确定性算法给出的关系候选。
+
+    deterministic_relation_confidence: float
+    # 确定性关系候选的置信度。
+
+    relation_constraints: VersionRelationConstraints
+    # LLM 关系候选必须遵守的确定性硬约束。
+
+    relation_evidence: list[RelationEvidenceRecord]
+    # 当前文件对及同组既有比较的有界关系证据。
+
     ordering_signals: list[str]
     # 支撑版本先后关系的确定性证据。
 
@@ -2264,11 +2383,38 @@ class SemanticChangeAnalysis(BaseModel):
     # 当前分类的模型置信度，范围为零到一。
 
 
+class VersionRelationAssessment(BaseModel):
+    """Version Subagent 基于受控证据提出的候选版本关系。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回候选关系协议之外的字段或系统动作。
+
+    relation: VersionRelationType
+    # 候选关系必须属于固定的六种版本关系类型。
+
+    reason: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
+    ]
+    # 只基于所引关系证据的有界中文理由。
+
+    evidence_refs: list[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=2048),
+        ]
+    ] = Field(default_factory=list, max_length=50)
+    # 非 uncertain 候选必须引用当前 relation_evidence 白名单。
+
+    confidence: float = Field(ge=0.0, le=1.0)
+    # 当前候选关系的模型置信度，范围为零到一。
+
+
 class VersionSubagentOutput(BaseModel):
     """Version Subagent 允许返回的结构化结果。"""
 
     model_config = ConfigDict(extra="forbid")
-    # 禁止模型返回摘要、语义变更和产物引用之外的字段。
+    # 禁止模型返回摘要、语义变更、关系候选和产物引用之外的字段。
 
     summary: Annotated[
         str,
@@ -2281,6 +2427,9 @@ class VersionSubagentOutput(BaseModel):
         max_length=50,
     )
     # 基于输入差异证据的结构化业务语义分类；没有证据时允许为空。
+
+    relation_assessment: VersionRelationAssessment | None = None
+    # 基于 relation_evidence 的关系候选；模型未提出候选或回退时为 None。
 
     artifact_refs: list[str] = Field(default_factory=list, max_length=50)
     # 详细版本解释的产物引用。

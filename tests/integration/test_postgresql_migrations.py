@@ -6,7 +6,7 @@ from sqlalchemy import inspect
 from alembic import command
 from app.storage.database import create_application_engine
 
-"""本文件验证 Docker PostgreSQL 可以从空库迁移到 1.0.2，并完成回退与重放。"""
+"""本文件验证 Docker PostgreSQL 可以从空库迁移到 1.0.3，并完成回退与重放。"""
 
 
 # 应用数据库完整迁移后必须存在的十张业务和运行时表。

@@ -11,8 +11,10 @@ from app.state.models import (
     ChangeEvidenceRecord,
     ContentSubagentInput,
     EvidenceSubagentInput,
+    RelationEvidenceRecord,
     TeamMessage,
     TeamState,
+    VersionRelationConstraints,
     VersionSubagentInput,
 )
 from app.utils.runtime import utc_now_iso
@@ -88,9 +90,47 @@ VERSION_INPUT_FIELDS = frozenset(
         "content_similarity",
         "key_changes",
         "change_evidence",
+        "deterministic_relation",
+        "deterministic_relation_confidence",
+        "relation_constraints",
+        "relation_evidence",
         "ordering_signals",
         "artifact_refs",
     }
+)
+
+# 双轨版本关系协议允许使用的封闭关系类型集合。
+VERSION_RELATION_TYPES = frozenset(
+    {
+        "direct_revision",
+        "parallel_branch",
+        "derived_export",
+        "semantic_duplicate",
+        "unrelated",
+        "uncertain",
+    }
+)
+
+# 关系约束快照必须包含的全部布尔字段。
+VERSION_RELATION_CONSTRAINT_FIELDS = frozenset(
+    {
+        "exact_hash_match",
+        "parent_child_supported",
+        "export_supported",
+        "semantic_duplicate_supported",
+        "parallel_branch_supported",
+        "unrelated_supported",
+    }
+)
+
+# 单条关系证据允许使用的固定字段集合。
+RELATION_EVIDENCE_FIELDS = frozenset(
+    {"evidence_ref", "comparison_id", "evidence_type", "description"}
+)
+
+# 关系证据允许使用的封闭来源类型集合。
+RELATION_EVIDENCE_TYPES = frozenset(
+    {"similarity", "ordering", "file_type", "change", "context"}
 )
 
 # Evidence Subagent 输入协议允许的固定字段。
@@ -450,6 +490,126 @@ def _normalize_change_evidence(value: object) -> list[ChangeEvidenceRecord]:
     return normalized
 
 
+def _normalize_relation_constraints(value: object) -> VersionRelationConstraints:
+    """校验并复制限制 LLM 关系候选的布尔约束快照。
+
+    Args:
+        value: 确定性版本关系服务生成的约束映射。
+
+    Returns:
+        字段完整且全部为布尔值的独立约束对象。
+
+    Raises:
+        TeamProtocolError: 约束不是对象、字段不完整或值不是布尔值时抛出。
+    """
+    if value is None:
+        value = {
+            field_name: False for field_name in VERSION_RELATION_CONSTRAINT_FIELDS
+        }
+    if not isinstance(value, Mapping):
+        raise TeamProtocolError("relation_constraints 必须是对象")
+    _reject_unknown_fields(
+        value,
+        allowed_fields=VERSION_RELATION_CONSTRAINT_FIELDS,
+        payload_name="relation_constraints",
+    )
+    missing_fields = sorted(VERSION_RELATION_CONSTRAINT_FIELDS - set(value))
+    if missing_fields:
+        raise TeamProtocolError(
+            "relation_constraints 缺少字段：" + ", ".join(missing_fields)
+        )
+    for field_name in VERSION_RELATION_CONSTRAINT_FIELDS:
+        if not isinstance(value[field_name], bool):
+            raise TeamProtocolError(f"relation_constraints.{field_name} 必须是布尔值")
+    return VersionRelationConstraints(
+        exact_hash_match=cast(bool, value["exact_hash_match"]),
+        parent_child_supported=cast(bool, value["parent_child_supported"]),
+        export_supported=cast(bool, value["export_supported"]),
+        semantic_duplicate_supported=cast(
+            bool,
+            value["semantic_duplicate_supported"],
+        ),
+        parallel_branch_supported=cast(
+            bool,
+            value["parallel_branch_supported"],
+        ),
+        unrelated_supported=cast(bool, value["unrelated_supported"]),
+    )
+
+
+def _normalize_relation_evidence(value: object) -> list[RelationEvidenceRecord]:
+    """校验当前和同组比较产生的有界版本关系证据。
+
+    Args:
+        value: Version Subagent 输入中的关系证据列表。
+
+    Returns:
+        已复制、去重并通过引用归属和文本上限校验的关系证据。
+
+    Raises:
+        TeamProtocolError: 证据结构、引用、类型或字符边界不符合协议时抛出。
+    """
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise TeamProtocolError("relation_evidence 必须是列表")
+    if len(value) > 50:
+        raise TeamProtocolError("relation_evidence 不得超过 50 项")
+    normalized: list[RelationEvidenceRecord] = []
+    seen_refs: set[str] = set()
+    total_characters = 0
+    for index, raw_item in enumerate(value):
+        if not isinstance(raw_item, Mapping):
+            raise TeamProtocolError(f"relation_evidence[{index}] 必须是对象")
+        _reject_unknown_fields(
+            raw_item,
+            allowed_fields=RELATION_EVIDENCE_FIELDS,
+            payload_name=f"relation_evidence[{index}]",
+        )
+        evidence_ref = _normalize_required_text(
+            raw_item.get("evidence_ref"),
+            field_name=f"relation_evidence[{index}].evidence_ref",
+            max_characters=MAX_ARTIFACT_REF_CHARACTERS,
+        )
+        comparison_id = _normalize_required_text(
+            raw_item.get("comparison_id"),
+            field_name=f"relation_evidence[{index}].comparison_id",
+            max_characters=256,
+        )
+        if not evidence_ref.startswith(f"diff:{comparison_id}:"):
+            raise TeamProtocolError(
+                f"relation_evidence[{index}].evidence_ref 与 comparison_id 不匹配"
+            )
+        if evidence_ref in seen_refs:
+            raise TeamProtocolError(f"relation_evidence 包含重复引用：{evidence_ref}")
+        seen_refs.add(evidence_ref)
+        evidence_type = raw_item.get("evidence_type")
+        if evidence_type not in RELATION_EVIDENCE_TYPES:
+            raise TeamProtocolError(
+                f"relation_evidence[{index}].evidence_type 不在允许范围内"
+            )
+        description = _normalize_required_text(
+            raw_item.get("description"),
+            field_name=f"relation_evidence[{index}].description",
+            max_characters=MAX_STRUCTURED_STRING_CHARACTERS,
+        )
+        total_characters += len(evidence_ref) + len(description)
+        if total_characters > MAX_TEXT_LIST_TOTAL_CHARACTERS:
+            raise TeamProtocolError("relation_evidence 全部文本不得超过 8000 个字符")
+        normalized.append(
+            RelationEvidenceRecord(
+                evidence_ref=evidence_ref,
+                comparison_id=comparison_id,
+                evidence_type=cast(
+                    Literal["similarity", "ordering", "file_type", "change", "context"],
+                    evidence_type,
+                ),
+                description=description,
+            )
+        )
+    return normalized
+
+
 def validate_content_subagent_input(
     payload: Mapping[str, object],
 ) -> ContentSubagentInput:
@@ -527,12 +687,18 @@ def validate_version_subagent_input(
     change_evidence = _normalize_change_evidence(
         payload.get("change_evidence", [])
     )
+    relation_evidence = _normalize_relation_evidence(
+        payload.get("relation_evidence", [])
+    )
     expected_evidence_prefix = f"diff:{comparison_id}:"
     if any(
         not item["evidence_ref"].startswith(expected_evidence_prefix)
         for item in change_evidence
     ):
         raise TeamProtocolError("change_evidence 引用必须属于当前 comparison_id")
+    deterministic_relation = payload.get("deterministic_relation", "uncertain")
+    if deterministic_relation not in VERSION_RELATION_TYPES:
+        raise TeamProtocolError("deterministic_relation 不在允许的关系类型中")
     return VersionSubagentInput(
         task_id=_normalize_required_text(
             payload.get("task_id"), field_name="task_id", max_characters=256
@@ -561,6 +727,25 @@ def validate_version_subagent_input(
             max_total_characters=MAX_TEXT_LIST_TOTAL_CHARACTERS,
         ),
         change_evidence=change_evidence,
+        deterministic_relation=cast(
+            Literal[
+                "direct_revision",
+                "parallel_branch",
+                "derived_export",
+                "semantic_duplicate",
+                "unrelated",
+                "uncertain",
+            ],
+            deterministic_relation,
+        ),
+        deterministic_relation_confidence=_normalize_probability(
+            payload.get("deterministic_relation_confidence", 0.0),
+            field_name="deterministic_relation_confidence",
+        ),
+        relation_constraints=_normalize_relation_constraints(
+            payload.get("relation_constraints")
+        ),
+        relation_evidence=relation_evidence,
         ordering_signals=_normalize_text_list(
             payload.get("ordering_signals"),
             field_name="ordering_signals",

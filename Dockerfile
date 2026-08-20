@@ -1,11 +1,11 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=1.0.2
+ARG APP_VERSION=1.0.3
 ARG LLM_EXTRAS=
 
 LABEL org.opencontainers.image.title="file-manage-agent" \
     org.opencontainers.image.version="${APP_VERSION}" \
-    org.opencontainers.image.description="具备语义变更分析、确定性人工审核规则与双数据库部署能力的只读文件版本治理 Agent"
+    org.opencontainers.image.description="具备受约束双轨版本关系判定、语义变更分析与确定性审核规则的只读文件版本治理 Agent"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -63,5 +63,5 @@ VOLUME ["/data/input", "/data/artifacts", "/data/evidence"]
 
 EXPOSE 8000 8001
 
-# 1.0.2 默认启动 HTTP API；Worker、Scheduler 或模拟邮件 MCP 可通过命令参数整体覆盖。
+# 1.0.3 默认启动 HTTP API；Worker、Scheduler 或模拟邮件 MCP 可通过命令参数整体覆盖。
 CMD ["file-governance-api", "--host", "0.0.0.0", "--port", "8000"]

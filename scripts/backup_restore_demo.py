@@ -34,7 +34,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         包含后端、动作、工作目录和受控恢复参数的解析器。
     """
     parser = argparse.ArgumentParser(
-        description="演示 1.0.2 SQLite 或 Docker PostgreSQL 数据库的备份与恢复校验。"
+        description="演示 1.0.3 SQLite 或 Docker PostgreSQL 数据库的备份与恢复校验。"
     )
     parser.add_argument(
         "--backend",
@@ -693,7 +693,7 @@ def run_demo(arguments: argparse.Namespace) -> dict[str, Any]:
         )
     summary = {
         "schema_version": "1.0",
-        "release_version": "1.0.2",
+        "release_version": "1.0.3",
         "backend": arguments.backend,
         "details": details,
     }

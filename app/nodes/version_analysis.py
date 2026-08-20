@@ -23,11 +23,16 @@ from app.services.version_graph import (
 from app.services.version_graph import (
     infer_version_direction as infer_version_direction_service,
 )
+from app.services.version_relation_fusion import (
+    build_relation_evidence,
+    fuse_version_relations,
+)
 from app.state.models import (
     ComparisonJob,
     DiffRecord,
     SemanticChangeRecord,
     VersionAnalysisGraphState,
+    VersionRelationAssessmentRecord,
     VersionSubagentInput,
 )
 from app.utils.error_context import create_node_error
@@ -334,6 +339,13 @@ def prepare_version_subagent_input(state: VersionAnalysisGraphState) -> dict:
             content_ref = document_by_file_id[file_id]["content_ref"]
             if content_ref not in artifact_refs:
                 artifact_refs.append(content_ref)
+        relation_evidence, relation_constraints = build_relation_evidence(
+            diff,
+            state.get("files", []),
+            state.get("diffs", []),
+        )
+        updated_diff = dict(diff)
+        updated_diff["relation_constraints"] = relation_constraints
         request = VersionSubagentInput(
             task_id=build_task_id(state["run"]["run_id"], "version_analysis"),
             comparison_id=diff["id"],
@@ -343,12 +355,19 @@ def prepare_version_subagent_input(state: VersionAnalysisGraphState) -> dict:
             content_similarity=diff["content_similarity"],
             key_changes=build_bounded_protocol_text_list(diff["key_changes"]),
             change_evidence=[dict(item) for item in diff.get("change_evidence", [])],
+            deterministic_relation=diff["deterministic_relation"],
+            deterministic_relation_confidence=diff[
+                "deterministic_relation_confidence"
+            ],
+            relation_constraints=relation_constraints,
+            relation_evidence=relation_evidence,
             ordering_signals=build_bounded_protocol_text_list(
                 diff["ordering_signals"]
             ),
             artifact_refs=artifact_refs,
         )
         return {
+            "current_diff": DiffRecord(**updated_diff),
             "current_version_subagent_input": request,
             "current_version_subagent_output": None,
         }
@@ -405,13 +424,13 @@ def summarize_key_changes_with_subagent(
 
 
 def apply_subagent_summary(state: VersionAnalysisGraphState) -> dict:
-    """把成功 Version 摘要、语义分类和规则审核优先级写入差异草稿。
+    """把 Version 摘要、语义分类和受约束关系候选写入差异草稿。
 
     Args:
         state: 路由已确认模型调用成功、输出合法且未使用回退的版本分析状态。
 
     Returns:
-        只替换摘要和来源字段并清空单次分派输入输出的差异草稿。
+        写入摘要、语义审核规则和双轨关系融合结果并清空单次分派状态。
     """
     diff = state.get("current_diff")
     output = state.get("current_version_subagent_output")
@@ -439,12 +458,37 @@ def apply_subagent_summary(state: VersionAnalysisGraphState) -> dict:
         for item in output.semantic_changes
     ]
     review_priority, review_reasons = calculate_review_priority(semantic_changes)
+    llm_relation = (
+        VersionRelationAssessmentRecord(
+            **output.relation_assessment.model_dump(mode="python")
+        )
+        if output.relation_assessment is not None
+        else None
+    )
+    (
+        resolved_relation,
+        relation_resolution,
+        relation_confidence,
+        relation_review_required,
+        relation_review_reasons,
+    ) = fuse_version_relations(
+        diff["deterministic_relation"],
+        diff["deterministic_relation_confidence"],
+        diff["relation_constraints"],
+        llm_relation,
+    )
     updated.update(
         {
             "summary": output.summary,
             "semantic_changes": semantic_changes,
             "review_priority": review_priority,
             "review_reasons": review_reasons,
+            "llm_relation": llm_relation,
+            "resolved_relation": resolved_relation,
+            "relation_resolution": relation_resolution,
+            "relation_confidence": relation_confidence,
+            "relation_review_required": relation_review_required,
+            "relation_review_reasons": relation_review_reasons,
             "summary_source": "version_subagent",
             "summary_message_id": message["message_id"],
             "summary_artifact_ref": (

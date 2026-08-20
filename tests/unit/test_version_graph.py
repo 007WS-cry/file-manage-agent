@@ -197,3 +197,48 @@ def test_detect_version_branch_from_shared_parent() -> None:
     assert len(branches) == 1
     assert branches[0]["root_file_id"] == "root"
     assert branches[0]["child_file_ids"] == ["left", "right"]
+
+
+def test_version_graph_only_consumes_fused_relation(tmp_path: Path) -> None:
+    """版本图应消费融合结果，并且不为最终判定无关的文件对建立边。"""
+    input_root = tmp_path / "input"
+    artifact_root = tmp_path / "artifacts"
+    input_root.mkdir()
+    left_path = input_root / "方案_v1.docx"
+    right_path = input_root / "方案_v2.docx"
+    left_path.write_text("方案 A 金额 1000", encoding="utf-8")
+    right_path.write_text("方案 B 金额 9000", encoding="utf-8")
+    left_file = make_file_record(left_path, "left", "2026-01-01T00:00:00+00:00")
+    right_file = make_file_record(right_path, "right", "2026-01-02T00:00:00+00:00")
+    left_document = normalize_document_content(
+        left_file,
+        make_raw_content("方案 A 金额 1000"),
+        artifact_root,
+        input_root=input_root,
+    )
+    right_document = normalize_document_content(
+        right_file,
+        make_raw_content("方案 B 金额 9000"),
+        artifact_root,
+        input_root=input_root,
+    )
+    group = {
+        "id": "group",
+        "label": "方案",
+        "file_ids": ["left", "right"],
+        "grouping_signals": ["测试分组"],
+        "confidence": 0.8,
+    }
+    diff = compare_document_pair(
+        "group",
+        left_file,
+        right_file,
+        left_document,
+        right_document,
+    )
+    diff["resolved_relation"] = "unrelated"
+    diff["relation_resolution"] = "llm_supported"
+
+    edges = build_version_edges([group], [left_file, right_file], [diff])
+
+    assert edges == []

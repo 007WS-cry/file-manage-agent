@@ -4,12 +4,12 @@ File Manage Agent 是一个基于 LangGraph 的只读文件版本治理工具。
 和文本型 PDF，识别内容相近的文件版本，分析差异与证据，并生成可解释的主版本建议和
 Markdown 报告。
 
-当前版本 `1.0.2`。
+当前版本 `1.0.3`。
 
 ## 主要能力
 
 - **原文件只读**：不会删除、移动、重命名或覆盖业务文件。
-- **版本关系分析**：完成内容提取、相似文件分组、版本链、分叉和差异识别。
+- **双轨版本关系分析**：融合确定性判断与 LLM 语义候选，识别直接修订、并行分支、导出版本、语义重复和无关文件。
 - **语义变更分析**：把金额、期限、责任主体等差异分类并由确定性规则提升人工审核优先级。
 - **可解释推荐**：结合内容、PDF 来源和发送记录推荐主版本；低置信度结果交由人工确认。
 - **离线可用**：默认关闭真实 LLM，使用确定性规则和本地 Mock 即可运行。
@@ -124,6 +124,11 @@ Copy-Item .env.example .env
 [`examples/sample_llm_request.json`](examples/sample_llm_request.json)及
 [完整技术参考](docs/technical-reference-1.0.0.md)。
 
+启用 Version Subagent 后，模型只会提出带 `diff:` 证据引用的关系候选。哈希重复、
+父子方向、导出格式和相似度约束仍由确定性程序控制；双轨冲突或候选违反约束时，
+系统不会自动改写版本图，而会把该版本组交给人工审核。详见
+[双轨版本关系判定](docs/version-relation-dual-track.md)。
+
 ## 运行方式
 
 | 场景 | 入口 |
@@ -151,8 +156,10 @@ Copy-Item .env.example .env
 - [人工确认与后台恢复](docs/resume-and-interview.md)
 - [1.0.0 架构说明](docs/architecture-1.0.0.md)
 - [开发与测试](docs/development.md)
-- [1.0.2 发布说明](docs/release-1.0.2.md)
+- [1.0.3 发布说明](docs/release-1.0.3.md)
+- [双轨版本关系判定](docs/version-relation-dual-track.md)
 - [语义级变更分析](docs/semantic-change-analysis.md)
+- [1.0.2 发布说明](docs/release-1.0.2.md)
 - [1.0.0 发布说明](docs/release-1.0.0.md)
 - [1.0.0 完整技术参考](docs/technical-reference-1.0.0.md)
 

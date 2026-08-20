@@ -11,6 +11,7 @@ from typing import Any
 from app.services.content_normalizer import load_normalized_content
 from app.services.document_grouping import calculate_text_similarity
 from app.services.semantic_change_analysis import build_change_evidence
+from app.services.version_relation_fusion import infer_deterministic_relation
 from app.state.models import (
     BranchRecord,
     ComparisonJob,
@@ -358,6 +359,20 @@ def compare_document_pair(
         old_structure=dict(old_payload["structure"]),
         new_structure=dict(new_payload["structure"]),
     )
+    (
+        deterministic_relation,
+        deterministic_relation_confidence,
+        relation_constraints,
+        relation_reasons,
+    ) = infer_deterministic_relation(
+        left_file,
+        right_file,
+        content_similarity=content_similarity,
+        structural_similarity=structural_similarity,
+        older_file_id=older_id,
+        newer_file_id=newer_id,
+        ordering_confidence=ordering_confidence,
+    )
 
     if key_changes:
         summary = f"检测到 {len(key_changes)} 项关键字段变化。"
@@ -387,6 +402,15 @@ def compare_document_pair(
         semantic_changes=[],
         review_priority="not_assessed",
         review_reasons=[],
+        deterministic_relation=deterministic_relation,
+        deterministic_relation_confidence=deterministic_relation_confidence,
+        relation_constraints=relation_constraints,
+        llm_relation=None,
+        resolved_relation=deterministic_relation,
+        relation_resolution="deterministic_only",
+        relation_confidence=deterministic_relation_confidence,
+        relation_review_required=False,
+        relation_review_reasons=relation_reasons,
         summary=summary,
         summary_source="deterministic",
         summary_message_id=None,
@@ -404,8 +428,8 @@ def build_version_edges(
     """从重复记录和文件对差异中构建稀疏、可解释的版本边。
 
     对每个较新版本只选择综合证据最强的一个父版本，避免全文件对比较产生
-    稠密传递边并把普通线性版本误判为分叉。无法判断方向的比较会保留为
-    ``uncertain`` 关系，但不会参与版本链拓扑排序。
+    稠密传递边并把普通线性版本误判为分叉。函数只消费双轨融合后的
+    ``resolved_relation``；无关关系不建边，冲突和约束拒绝保留为不确定边。
 
     Args:
         groups: 文档版本组。
@@ -442,8 +466,34 @@ def build_version_edges(
 
         directed_by_child: dict[str, list[DiffRecord]] = defaultdict(list)
         for diff in diffs_by_group.get(group["id"], []):
-            if diff["older_file_id"] and diff["newer_file_id"]:
+            relation = diff.get("resolved_relation", "uncertain")
+            if relation in {"direct_revision", "derived_export"} and (
+                diff["older_file_id"] and diff["newer_file_id"]
+            ):
                 directed_by_child[diff["newer_file_id"]].append(diff)
+                continue
+            if relation == "unrelated":
+                continue
+            if relation in {"semantic_duplicate", "parallel_branch"}:
+                edges.append(
+                    VersionEdge(
+                        id=_stable_id(
+                            "edge",
+                            group["id"],
+                            *sorted((diff["file_a_id"], diff["file_b_id"])),
+                            relation,
+                        ),
+                        group_id=group["id"],
+                        parent_file_id=min(diff["file_a_id"], diff["file_b_id"]),
+                        child_file_id=max(diff["file_a_id"], diff["file_b_id"]),
+                        relation=relation,
+                        evidence=(
+                            diff.get("relation_review_reasons", [])
+                            or [f"双轨融合关系：{relation}"]
+                        ),
+                        confidence=diff.get("relation_confidence", diff["confidence"]),
+                    )
+                )
                 continue
             edges.append(
                 VersionEdge(
@@ -457,8 +507,12 @@ def build_version_edges(
                     parent_file_id=min(diff["file_a_id"], diff["file_b_id"]),
                     child_file_id=max(diff["file_a_id"], diff["file_b_id"]),
                     relation="uncertain",
-                    evidence=diff["ordering_signals"] or ["缺少可用的版本先后信号"],
-                    confidence=diff["confidence"],
+                    evidence=(
+                        diff.get("relation_review_reasons", [])
+                        or diff["ordering_signals"]
+                        or ["缺少可用的版本先后信号"]
+                    ),
+                    confidence=diff.get("relation_confidence", diff["confidence"]),
                 )
             )
 
@@ -476,14 +530,34 @@ def build_version_edges(
                 continue
             edges.append(
                 VersionEdge(
-                    id=_stable_id("edge", group["id"], parent_id, child_id, "derived"),
+                    id=_stable_id(
+                        "edge",
+                        group["id"],
+                        parent_id,
+                        child_id,
+                        best_diff.get("resolved_relation", "direct_revision"),
+                    ),
                     group_id=group["id"],
                     parent_file_id=parent_id,
                     child_file_id=child_id,
-                    relation="derived_from",
-                    evidence=best_diff["ordering_signals"]
-                    + [f"内容相似度 {best_diff['content_similarity']:.2f}"],
-                    confidence=best_diff["confidence"],
+                    relation=(
+                        "derived_export"
+                        if best_diff.get("resolved_relation") == "derived_export"
+                        else "derived_from"
+                    ),
+                    evidence=list(
+                        dict.fromkeys(
+                            [
+                                *best_diff["ordering_signals"],
+                                f"内容相似度 {best_diff['content_similarity']:.2f}",
+                                *best_diff.get("relation_review_reasons", []),
+                            ]
+                        )
+                    ),
+                    confidence=best_diff.get(
+                        "relation_confidence",
+                        best_diff["confidence"],
+                    ),
                 )
             )
 
@@ -567,12 +641,14 @@ def build_version_chains(
         derived_edges = [
             edge
             for edge in group_edges
-            if edge["relation"] == "derived_from"
+            if edge["relation"] in {"derived_from", "derived_export"}
             and edge["parent_file_id"] in canonical_ids
             and edge["child_file_id"] in canonical_ids
         ]
         uncertain_edges = [
-            edge for edge in group_edges if edge["relation"] == "uncertain"
+            edge
+            for edge in group_edges
+            if edge["relation"] in {"uncertain", "parallel_branch", "semantic_duplicate"}
         ]
 
         adjacency: dict[str, set[str]] = {item_id: set() for item_id in canonical_ids}
@@ -611,7 +687,7 @@ def build_version_chains(
                 sorted(remaining, key=lambda item_id: _file_sort_key(file_by_id[item_id]))
             )
         if uncertain_edges:
-            warnings.append(f"存在 {len(uncertain_edges)} 条无法确定方向的关系")
+            warnings.append(f"存在 {len(uncertain_edges)} 条非拓扑或待复核关系")
 
         weak_adjacency: dict[str, set[str]] = {
             item_id: set() for item_id in canonical_ids
@@ -619,6 +695,13 @@ def build_version_chains(
         for edge in derived_edges:
             weak_adjacency[edge["parent_file_id"]].add(edge["child_file_id"])
             weak_adjacency[edge["child_file_id"]].add(edge["parent_file_id"])
+        for edge in uncertain_edges:
+            if (
+                edge["parent_file_id"] in weak_adjacency
+                and edge["child_file_id"] in weak_adjacency
+            ):
+                weak_adjacency[edge["parent_file_id"]].add(edge["child_file_id"])
+                weak_adjacency[edge["child_file_id"]].add(edge["parent_file_id"])
         visited: set[str] = set()
         if canonical_ids:
             stack = [next(iter(canonical_ids))]

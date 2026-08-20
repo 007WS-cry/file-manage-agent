@@ -118,6 +118,33 @@ def test_high_semantic_priority_forces_human_review() -> None:
     assert any("高重要性业务变更" in reason for reason in updated["reasons"])
 
 
+def test_relation_conflict_forces_human_review() -> None:
+    """双轨关系冲突必须由规则引擎升级为人工审核。"""
+    decision = {
+        "id": "decision:group-001",
+        "group_id": "group-001",
+        "candidate_scores": {"v1": 0.4, "v2": 0.95},
+        "recommended_file_id": "v2",
+        "reasons": ["规则推荐置信度充足"],
+        "confidence": 0.96,
+        "needs_human_review": False,
+        "selected_by": "rule",
+        "preserve_file_ids": ["v1", "v2"],
+    }
+    diff = {
+        "id": "diff-001",
+        "group_id": "group-001",
+        "review_priority": "low",
+        "relation_review_required": True,
+    }
+
+    updated = apply_semantic_review_rules(decision, [diff])
+
+    assert updated["needs_human_review"] is True
+    assert updated["selected_by"] == "unresolved"
+    assert any("版本关系规则" in reason for reason in updated["reasons"])
+
+
 def test_applying_version_output_runs_rule_engine_and_records_source() -> None:
     """成功语义输出写入 Diff 时应同步产生规则优先级和消息来源。"""
     state = {
@@ -127,6 +154,22 @@ def test_applying_version_output_runs_rule_engine_and_records_source() -> None:
             "semantic_changes": [],
             "review_priority": "not_assessed",
             "review_reasons": [],
+            "deterministic_relation": "direct_revision",
+            "deterministic_relation_confidence": 0.86,
+            "relation_constraints": {
+                "exact_hash_match": False,
+                "parent_child_supported": True,
+                "export_supported": False,
+                "semantic_duplicate_supported": False,
+                "parallel_branch_supported": False,
+                "unrelated_supported": False,
+            },
+            "llm_relation": None,
+            "resolved_relation": "direct_revision",
+            "relation_resolution": "deterministic_only",
+            "relation_confidence": 0.86,
+            "relation_review_required": False,
+            "relation_review_reasons": ["确定性直接修订"],
             "summary": "确定性摘要",
             "summary_source": "deterministic",
             "summary_message_id": None,
