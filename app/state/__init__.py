@@ -1,6 +1,7 @@
 from app.state.models import (
     AgentMemberState,
     ApplicationDatabaseState,
+    ChangeEvidenceRecord,
     ContentSubagentGraphState,
     ContentSubagentInput,
     ContentSubagentOutput,
@@ -29,6 +30,8 @@ from app.state.models import (
     RecoveryHumanState,
     RecoveryPolicyState,
     RecoveryState,
+    SemanticChangeAnalysis,
+    SemanticChangeRecord,
     SkillInstructionState,
     SkillRecord,
     SkillRegistryState,
@@ -51,6 +54,7 @@ from app.state.reducers import merge_by_id, merge_by_message_id, merge_by_task_i
 __all__ = [
     "AgentMemberState",
     "ApplicationDatabaseState",
+    "ChangeEvidenceRecord",
     "ContentSubagentGraphState",
     "ContentSubagentInput",
     "ContentSubagentOutput",
@@ -79,6 +83,8 @@ __all__ = [
     "RecoveryHumanState",
     "RecoveryPolicyState",
     "RecoveryState",
+    "SemanticChangeAnalysis",
+    "SemanticChangeRecord",
     "SkillInstructionState",
     "SkillRecord",
     "SkillRegistryState",

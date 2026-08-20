@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 1.0.0 Task、恢复、后台任务、报告、计划、Worktree 和发布验收快照含运行信息
+# 1.0.2 Task、语义变更、恢复、后台任务、报告、计划、Worktree 和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -90,6 +90,9 @@ dispatch_result*.json
 coordinator_fallback*.json
 stage_dispatch*.json
 version_summary*.json
+change_evidence*.json
+semantic_change*.json
+review_priority*.json
 checkpoint_snapshot*.json
 checkpoint_dump*.json
 release_acceptance*.json

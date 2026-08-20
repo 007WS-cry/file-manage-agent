@@ -10,6 +10,7 @@ from typing import Any
 
 from app.services.content_normalizer import load_normalized_content
 from app.services.document_grouping import calculate_text_similarity
+from app.services.semantic_change_analysis import build_change_evidence
 from app.state.models import (
     BranchRecord,
     ComparisonJob,
@@ -335,9 +336,27 @@ def compare_document_pair(
         left_file,
         right_file,
     )
-    key_changes = describe_key_field_changes(
-        dict(left_payload["key_fields"]),
-        dict(right_payload["key_fields"]),
+    comparison_id = _stable_id(
+        "diff",
+        group_id,
+        *sorted((left_file["id"], right_file["id"])),
+    )
+    if older_id == right_file["id"]:
+        old_payload, new_payload = right_payload, left_payload
+    else:
+        # 方向未知时稳定保留候选 A -> B，并在 Version 输入中显式标记未知。
+        old_payload, new_payload = left_payload, right_payload
+    old_fields = dict(old_payload["key_fields"])
+    new_fields = dict(new_payload["key_fields"])
+    key_changes = describe_key_field_changes(old_fields, new_fields)
+    change_evidence = build_change_evidence(
+        comparison_id,
+        str(old_payload["normalized_text"]),
+        str(new_payload["normalized_text"]),
+        old_fields,
+        new_fields,
+        old_structure=dict(old_payload["structure"]),
+        new_structure=dict(new_payload["structure"]),
     )
 
     if key_changes:
@@ -355,11 +374,7 @@ def compare_document_pair(
         + 0.20 * structural_similarity
     )
     return DiffRecord(
-        id=_stable_id(
-            "diff",
-            group_id,
-            *sorted((left_file["id"], right_file["id"])),
-        ),
+        id=comparison_id,
         group_id=group_id,
         file_a_id=left_file["id"],
         file_b_id=right_file["id"],
@@ -368,6 +383,10 @@ def compare_document_pair(
         structural_similarity=round(structural_similarity, 4),
         content_similarity=round(content_similarity, 4),
         key_changes=key_changes,
+        change_evidence=change_evidence,
+        semantic_changes=[],
+        review_priority="not_assessed",
+        review_reasons=[],
         summary=summary,
         summary_source="deterministic",
         summary_message_id=None,

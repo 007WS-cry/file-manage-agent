@@ -110,8 +110,9 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 固定 Subagent 注册表、最小输入信封、assignment/result/error Team Message；
 - 模型失败、超时或引用越权时的确定性摘要回退和 fallback 审计。
 - Content、Evidence 阶段后分派，以及 Version 文件对摘要的内部 Team Orchestration 调用；
-- 只允许成功 Version Subagent 替换解释摘要的 `DiffRecord` 来源和消息审计字段；
-- 包含关键修改摘要、来源和可选受控引用的治理报告。
+- 只允许成功 Version Subagent 写入解释摘要和经过 `diff:` 证据白名单校验的语义分类；
+- 确定性规则根据语义类型和重要性计算审核优先级，高重要性变更强制进入人工审核；
+- 包含关键修改摘要、语义分类、审核优先级、来源和可选受控引用的治理报告。
 - 受版本控制的四项 Skill、严格 YAML 注册表和安全的按需 Markdown 加载器；
 - Task 类型、固定角色和 Agent 注册表三重约束的最小 Skill 选择；
 - Team Orchestration 中显式的选择、加载、绑定、释放节点及失败协调者回退；
@@ -151,7 +152,8 @@ router 连线保持不变；`0.7.2` 接通 APScheduler，并在 Team Orchestrati
 邮件 MCP 优先条件分支、自动本地降级、统一结构化日志和五服务 Compose 编排；
 `0.8.1` 固定主图准备与收口顺序，并让两类 interrupt 可以由后台 API 安全续跑；
 `0.8.2` 接入 SQLite/PostgreSQL 双应用数据库后端及完整部署拓扑；`1.0.0` 增加
-端到端验收、演示脚本、备份恢复闭环和正式交付文档。
+端到端验收、演示脚本、备份恢复闭环和正式交付文档；`1.0.2` 增加有界差异证据、
+业务语义分类、证据白名单校验和确定性人工审核优先级规则。
 
 ## 安全边界
 

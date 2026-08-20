@@ -4,12 +4,13 @@ File Manage Agent 是一个基于 LangGraph 的只读文件版本治理工具。
 和文本型 PDF，识别内容相近的文件版本，分析差异与证据，并生成可解释的主版本建议和
 Markdown 报告。
 
-当前稳定版本：`1.0.0`。
+当前版本 `1.0.2`。
 
 ## 主要能力
 
 - **原文件只读**：不会删除、移动、重命名或覆盖业务文件。
 - **版本关系分析**：完成内容提取、相似文件分组、版本链、分叉和差异识别。
+- **语义变更分析**：把金额、期限、责任主体等差异分类并由确定性规则提升人工审核优先级。
 - **可解释推荐**：结合内容、PDF 来源和发送记录推荐主版本；低置信度结果交由人工确认。
 - **离线可用**：默认关闭真实 LLM，使用确定性规则和本地 Mock 即可运行。
 - **多种运行方式**：支持 CLI、Python、HTTP API、后台 Worker 和 Cron 调度。
@@ -150,6 +151,8 @@ Copy-Item .env.example .env
 - [人工确认与后台恢复](docs/resume-and-interview.md)
 - [1.0.0 架构说明](docs/architecture-1.0.0.md)
 - [开发与测试](docs/development.md)
+- [1.0.2 发布说明](docs/release-1.0.2.md)
+- [语义级变更分析](docs/semantic-change-analysis.md)
 - [1.0.0 发布说明](docs/release-1.0.0.md)
 - [1.0.0 完整技术参考](docs/technical-reference-1.0.0.md)
 

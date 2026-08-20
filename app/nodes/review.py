@@ -6,6 +6,10 @@ from langgraph.types import interrupt
 
 from app.services.memory_policy import capture_human_choice_memory
 from app.services.recommendation import apply_human_selection as apply_human_selection_service
+from app.services.semantic_change_analysis import (
+    REVIEW_PRIORITY_RANK,
+    highest_group_review_priority,
+)
 from app.state.models import FileGovernanceState
 
 """本模块实现主版本人工审核的暂停与恢复，并保持既有 selections 输入协议。"""
@@ -15,11 +19,19 @@ def prepare_human_review(state: FileGovernanceState) -> dict:
     """在执行 interrupt 前把运行状态持久化为等待人工确认。"""
     run = dict(state["run"])
     run.update({"status": "waiting_human", "current_stage": "human_review"})
-    pending_ids = [
-        decision["group_id"]
-        for decision in state.get("decisions", [])
-        if decision["needs_human_review"]
-    ]
+    pending_ids = sorted(
+        (
+            decision["group_id"]
+            for decision in state.get("decisions", [])
+            if decision["needs_human_review"]
+        ),
+        key=lambda group_id: (
+            -REVIEW_PRIORITY_RANK[
+                highest_group_review_priority(state.get("diffs", []), group_id)
+            ],
+            group_id,
+        ),
+    )
     review = dict(state["human_review"])
     review["pending_group_ids"] = pending_ids
     return {"run": run, "human_review": review}
@@ -53,11 +65,40 @@ def request_human_review(state: FileGovernanceState) -> dict:
     for group_id in pending_ids:
         group = group_by_id[group_id]
         decision = decision_by_group[group_id]
+        group_diffs = [
+            diff for diff in state.get("diffs", []) if diff["group_id"] == group_id
+        ]
+        semantic_changes = [
+            {
+                "change_type": change["change_type"],
+                "significance": change["significance"],
+                "old_value": (
+                    str(change.get("old_value"))[:300]
+                    if change.get("old_value") is not None
+                    else None
+                ),
+                "new_value": (
+                    str(change.get("new_value"))[:300]
+                    if change.get("new_value") is not None
+                    else None
+                ),
+                "business_impact": change["business_impact"],
+                "evidence_refs": list(change["evidence_refs"]),
+                "confidence": change["confidence"],
+            }
+            for diff in group_diffs
+            for change in diff.get("semantic_changes", [])
+        ][:20]
         review_groups.append(
             {
                 "group_id": group_id,
                 "label": group["label"],
                 "confidence": decision["confidence"],
+                "semantic_review_priority": highest_group_review_priority(
+                    group_diffs,
+                    group_id,
+                ),
+                "semantic_changes": semantic_changes,
                 "recommended_file_id": decision["recommended_file_id"],
                 "reasons": decision["reasons"],
                 "candidates": [

@@ -104,6 +104,22 @@ datetime 不得直接写回严格状态协议。
 每个 pending group 必须且只能选择组内候选。自由文本说明不会进入长期 Memory，也不应
 出现在公开日志。
 
+### 1.0.2 语义审核扩展
+
+1.0.2 为 `DiffRecord` 增加以下字段，不改变原有版本方向、相似度和版本边事实：
+
+| 字段 | 含义 |
+| --- | --- |
+| `change_evidence` | 有数量和字符上限的关键字段、段落或结构差异，使用稳定 `diff:` 引用 |
+| `semantic_changes` | 经 Pydantic、引用白名单及 old/new 原文复核后的业务语义分类 |
+| `review_priority` | 规则引擎计算的 `not_assessed`、`low`、`medium` 或 `high` |
+| `review_reasons` | 规则提高审核优先级的有界解释 |
+
+`VersionSubagentOutput` 只允许 `summary`、`semantic_changes` 和 `artifact_refs`。
+LLM 不能返回审核动作或审核优先级。高重要性语义变更是否强制人工审核，由
+Recommendation 子图中的确定性规则决定。人工审核中断可展示截断后的 old/new 值、
+业务影响、置信度和 `diff:` 引用，但不得携带完整文档正文。
+
 ## 错误恢复协议
 
 `error_recovery` 的恢复值为：
@@ -151,7 +167,8 @@ API Schema 不直接返回 `FileGovernanceState`：
 
 ## 版本兼容
 
-1.0.0 的状态扩展保持向后补齐，不更改 0.8.2 数据库迁移链。升级前应备份应用数据库和
+1.0.2 的语义字段由版本比较重新生成，不新增数据库迁移；既有 1.0.0 状态扩展仍保持
+向后补齐，不更改 0.8.2 数据库迁移链。升级前应备份应用数据库和
 checkpoint；升级后执行 `alembic upgrade head`。正在等待人工输入的后台任务必须保留
-原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.0 API 使用当前
+原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.2 API 使用当前
 `interrupt_id` 恢复。

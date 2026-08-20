@@ -3,6 +3,19 @@
 本文说明 File Manage Agent 1.0.0 的源码结构、开发环境和质量检查。系统架构与状态协议
 分别见[架构说明](architecture-1.0.0.md)和[状态契约](state-contracts-1.0.0.md)。
 
+当前维护版本为 `1.0.2`；`1.0.0` 架构和状态文档继续作为稳定基线保留。
+
+## 中文注释契约
+
+- 每个 Python 文件必须在 import 区域之后放置中文模块 docstring，准确说明文件职责；
+- 每个类必须把中文 docstring 作为类体首项，状态或 Schema 字段逐项使用中文 `#` 注释；
+- 每个函数必须把中文 docstring 作为函数体首项，并按需要提供 `Args`、`Returns`、
+  `Raises`；工具函数的 docstring 会作为 LLM description 时，只描述真实能力、输入、
+  输出和安全边界，不承诺未实现的动作；
+- 每个新增模块级常量或变量必须紧邻中文 `#` 注释，说明用途、范围或安全限制；
+- 发布前运行 `test_release_structure_contract.py`，确保模块、类和函数的中文 docstring
+  契约没有回退。
+
 ## 源码结构
 
 ```text
