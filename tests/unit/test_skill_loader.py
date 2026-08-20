@@ -41,7 +41,7 @@ def test_loader_reads_only_explicit_skill_and_calculates_digest() -> None:
 
     assert loaded["skill_id"] == "version-relation"
     assert loaded["status"] == "loaded"
-    assert "# 版本关系解释 Skill" in loaded["content"]
+    assert "# 版本关系候选与解释 Skill" in loaded["content"]
     assert len(loaded["content_sha256"] or "") == 64
     assert registry["skills"][1]["status"] == "available"
     assert registry["skills"][1]["content"] == ""

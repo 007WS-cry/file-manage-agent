@@ -20,6 +20,9 @@ VERSION_ARTIFACT_REFS = [
 # Version 语义输出测试允许引用的固定差异证据。
 VERSION_EVIDENCE_REF = "diff:comparison-001:paragraph-18-to-18"
 
+# Version 关系输出测试允许引用的固定相似度证据。
+VERSION_RELATION_EVIDENCE_REF = "diff:comparison-001:similarity"
+
 
 def _version_state() -> VersionSubagentGraphState:
     """创建可直接调用 Version Subagent 图的完整初始状态。
@@ -42,6 +45,24 @@ def _version_state() -> VersionSubagentGraphState:
                     "source": "text_diff",
                     "old_value": "付款期限为30天",
                     "new_value": "付款期限为60天",
+                }
+            ],
+            "deterministic_relation": "direct_revision",
+            "deterministic_relation_confidence": 0.86,
+            "relation_constraints": {
+                "exact_hash_match": False,
+                "parent_child_supported": True,
+                "export_supported": False,
+                "semantic_duplicate_supported": False,
+                "parallel_branch_supported": False,
+                "unrelated_supported": False,
+            },
+            "relation_evidence": [
+                {
+                    "evidence_ref": VERSION_RELATION_EVIDENCE_REF,
+                    "comparison_id": "comparison-001",
+                    "evidence_type": "similarity",
+                    "description": "内容相似度 0.88；结构相似度 0.91",
                 }
             ],
             "ordering_signals": ["v2 修改时间较晚"],
@@ -68,6 +89,7 @@ def test_version_subagent_returns_strict_structured_output() -> None:
     assert set(result["output"].model_dump()) == {
         "summary",
         "semantic_changes",
+        "relation_assessment",
         "artifact_refs",
     }
     assert set(result["output"].artifact_refs).issubset(set(VERSION_ARTIFACT_REFS))
@@ -114,6 +136,80 @@ def test_version_subagent_accepts_evidence_backed_semantic_change(
     assert change.change_type == "payment_term"
     assert change.significance == "high"
     assert change.evidence_refs == [VERSION_EVIDENCE_REF]
+
+
+def test_version_subagent_accepts_evidence_backed_relation_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM 关系候选必须使用封闭类型并引用输入中的关系证据。"""
+    original_client = LLMClient
+
+    def create_relation_client(config):
+        """创建返回合法直接修订候选关系的 Mock Client。"""
+        return original_client(
+            config,
+            providers={
+                "mock": MockLLMProvider(
+                    response_payload={
+                        "summary": "两份合同构成直接修订关系。",
+                        "semantic_changes": [],
+                        "relation_assessment": {
+                            "relation": "direct_revision",
+                            "reason": "相似度和版本方向共同支持直接修订。",
+                            "evidence_refs": [VERSION_RELATION_EVIDENCE_REF],
+                            "confidence": 0.91,
+                        },
+                        "artifact_refs": [],
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setattr("app.nodes.subagents.LLMClient", create_relation_client)
+    result = version_subagent_graph.invoke(_version_state())
+
+    assessment = result["output"].relation_assessment
+    assert result["fallback_used"] is False
+    assert assessment is not None
+    assert assessment.relation == "direct_revision"
+    assert assessment.evidence_refs == [VERSION_RELATION_EVIDENCE_REF]
+
+
+def test_version_subagent_rejects_invented_relation_evidence_ref(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM 伪造关系证据引用时必须拒绝候选并进入确定性回退。"""
+    original_client = LLMClient
+
+    def create_inventing_relation_client(config):
+        """创建返回白名单外关系引用的 Mock Client。"""
+        return original_client(
+            config,
+            providers={
+                "mock": MockLLMProvider(
+                    response_payload={
+                        "summary": "两份合同构成直接修订关系。",
+                        "semantic_changes": [],
+                        "relation_assessment": {
+                            "relation": "direct_revision",
+                            "reason": "引用了不存在的比较证据。",
+                            "evidence_refs": ["diff:invented:similarity"],
+                            "confidence": 0.91,
+                        },
+                        "artifact_refs": [],
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.nodes.subagents.LLMClient",
+        create_inventing_relation_client,
+    )
+    result = version_subagent_graph.invoke(_version_state())
+
+    assert result["fallback_used"] is True
+    assert result["output"].relation_assessment is None
 
 
 def test_version_subagent_rejects_invented_diff_evidence_ref(

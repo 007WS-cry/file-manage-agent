@@ -661,7 +661,7 @@ def invoke_version_structured_llm(state: VersionSubagentGraphState) -> dict:
 
 
 def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
-    """校验 Version 输出、差异证据引用和输入白名单中的产物引用。
+    """校验 Version 输出及语义和关系证据引用白名单。
 
     Args:
         state: 已取得可选模型输出的 Version 子图状态。
@@ -714,6 +714,25 @@ def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
             if classification_key in seen_classifications:
                 raise ValueError("semantic_changes 不得重复分类同一差异证据")
             seen_classifications.add(classification_key)
+        relation_assessment = output.relation_assessment
+        if relation_assessment is not None:
+            relation_refs = relation_assessment.evidence_refs
+            if len(relation_refs) != len(set(relation_refs)):
+                raise ValueError("relation_assessment.evidence_refs 不得包含重复引用")
+            allowed_relation_refs = {
+                item["evidence_ref"]
+                for item in state["input"].get("relation_evidence", [])
+            }
+            invented_relation_refs = sorted(
+                set(relation_refs) - allowed_relation_refs
+            )
+            if invented_relation_refs:
+                raise ValueError(
+                    "Version Subagent 返回了未授权关系证据引用："
+                    + invented_relation_refs[0]
+                )
+            if relation_assessment.relation != "uncertain" and not relation_refs:
+                raise ValueError("非 uncertain 关系候选必须至少引用一项关系证据")
         return {"output": output}
     except (KeyError, TypeError, ValueError) as error:
         return {

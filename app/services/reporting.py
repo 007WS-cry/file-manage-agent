@@ -34,6 +34,25 @@ REVIEW_PRIORITY_LABELS = {
 }
 # 审核优先级到中文报告标签的固定映射。
 
+VERSION_RELATION_LABELS = {
+    "direct_revision": "直接修订",
+    "parallel_branch": "并行分支",
+    "derived_export": "导出版本",
+    "semantic_duplicate": "语义重复",
+    "unrelated": "无关文件",
+    "uncertain": "无法判断",
+}
+# 双轨版本关系类型到中文报告标签的固定映射。
+
+VERSION_RELATION_RESOLUTION_LABELS = {
+    "deterministic_only": "仅确定性结果",
+    "consensus": "双轨一致",
+    "llm_supported": "约束内采纳 LLM 候选",
+    "conflict_review": "双轨冲突待复核",
+    "constrained_rejection": "候选违反约束待复核",
+}
+# 双轨关系融合方式到中文报告标签的固定映射。
+
 
 def escape_markdown_cell(value: object) -> str:
     """转义 Markdown 表格单元格中的竖线和换行。
@@ -196,6 +215,32 @@ def build_version_summary_lines(
             f"{escape_markdown_cell(right_name)}`（{source}）："
             f"{escape_markdown_cell(diff['summary'])}"
         )
+        deterministic_relation = diff.get("deterministic_relation", "uncertain")
+        llm_relation = diff.get("llm_relation")
+        resolved_relation = diff.get(
+            "resolved_relation",
+            deterministic_relation,
+        )
+        relation_resolution = diff.get(
+            "relation_resolution",
+            "deterministic_only",
+        )
+        lines.append(
+            "  - 双轨版本关系：确定性="
+            f"**{VERSION_RELATION_LABELS.get(deterministic_relation, escape_markdown_cell(deterministic_relation))}**；"
+            "LLM="
+            f"**{VERSION_RELATION_LABELS.get(llm_relation['relation'], escape_markdown_cell(llm_relation['relation'])) if llm_relation else '未提出'}**；"
+            "最终="
+            f"**{VERSION_RELATION_LABELS.get(resolved_relation, escape_markdown_cell(resolved_relation))}**；"
+            f"融合={VERSION_RELATION_RESOLUTION_LABELS.get(relation_resolution, escape_markdown_cell(relation_resolution))}；"
+            f"置信度 {float(diff.get('relation_confidence', 0.0)):.2f}"
+        )
+        if diff.get("relation_review_required", False):
+            reasons = "；".join(diff.get("relation_review_reasons", []))
+            lines.append(
+                "  - **版本关系需要人工审核**："
+                f"{escape_markdown_cell(reasons or '双轨关系存在待复核问题')}"
+            )
         priority = diff.get("review_priority", "not_assessed")
         lines.append(
             "  - 语义审核优先级："

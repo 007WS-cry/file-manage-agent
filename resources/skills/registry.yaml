@@ -10,8 +10,8 @@ skills:
       - content
 
   - id: version-relation
-    name: 版本关系解释
-    description: 根据确定性差异、相似度和排序信号解释版本先后、派生和分叉关系。
+    name: 版本关系候选与解释
+    description: 根据确定性差异、关系证据和硬约束提出版本关系候选并解释融合依据。
     path: version-relation/SKILL.md
     task_types:
       - version_analysis

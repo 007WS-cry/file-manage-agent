@@ -22,12 +22,14 @@
 | [1.0.0 架构说明](architecture-1.0.0.md) | 组件关系、主图、后台运行、Cron 和安全边界 |
 | [1.0.0 状态契约](state-contracts-1.0.0.md) | LangGraph、后台任务、中断和持久化状态协议 |
 | [语义级变更分析](semantic-change-analysis.md) | 有界差异证据、Version Subagent 分类和确定性审核规则 |
+| [双轨版本关系判定](version-relation-dual-track.md) | 确定性关系、LLM 候选、硬约束融合和人工审核规则 |
 | [开发与测试](development.md) | 源码目录、开发环境、检查命令和文档维护约定 |
 
 ## 发布说明
 
 | 版本 | 文档 |
 | --- | --- |
+| 1.0.3 | [双轨版本关系发布说明](release-1.0.3.md) · [双轨版本关系专题](version-relation-dual-track.md) |
 | 1.0.2 | [语义级变更分析发布说明](release-1.0.2.md) · [语义级变更分析专题](semantic-change-analysis.md) |
 | 1.0.0 | [稳定版发布说明](release-1.0.0.md) |
 | 0.8.x | [后台运行时发布](release-0.8.0-background-runtime.md) · [主图收口与后台恢复](version-0.8.1-main-closure-runtime-resume.md) |

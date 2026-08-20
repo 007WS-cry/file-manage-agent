@@ -10,6 +10,7 @@ from app.services.semantic_change_analysis import (
     REVIEW_PRIORITY_RANK,
     highest_group_review_priority,
 )
+from app.services.version_relation_fusion import group_has_relation_review
 from app.state.models import FileGovernanceState
 
 """本模块实现主版本人工审核的暂停与恢复，并保持既有 selections 输入协议。"""
@@ -26,6 +27,7 @@ def prepare_human_review(state: FileGovernanceState) -> dict:
             if decision["needs_human_review"]
         ),
         key=lambda group_id: (
+            -int(group_has_relation_review(state.get("diffs", []), group_id)),
             -REVIEW_PRIORITY_RANK[
                 highest_group_review_priority(state.get("diffs", []), group_id)
             ],
@@ -89,6 +91,31 @@ def request_human_review(state: FileGovernanceState) -> dict:
             for diff in group_diffs
             for change in diff.get("semantic_changes", [])
         ][:20]
+        relation_assessments = [
+            {
+                "comparison_id": diff["id"],
+                "deterministic_relation": diff.get(
+                    "deterministic_relation",
+                    "uncertain",
+                ),
+                "llm_relation": (
+                    dict(diff["llm_relation"])
+                    if diff.get("llm_relation") is not None
+                    else None
+                ),
+                "resolved_relation": diff.get("resolved_relation", "uncertain"),
+                "resolution": diff.get(
+                    "relation_resolution",
+                    "deterministic_only",
+                ),
+                "confidence": diff.get("relation_confidence", 0.0),
+                "review_required": diff.get("relation_review_required", False),
+                "review_reasons": list(
+                    diff.get("relation_review_reasons", [])
+                )[:5],
+            }
+            for diff in group_diffs
+        ][:20]
         review_groups.append(
             {
                 "group_id": group_id,
@@ -99,6 +126,11 @@ def request_human_review(state: FileGovernanceState) -> dict:
                     group_id,
                 ),
                 "semantic_changes": semantic_changes,
+                "relation_review_required": group_has_relation_review(
+                    group_diffs,
+                    group_id,
+                ),
+                "relation_assessments": relation_assessments,
                 "recommended_file_id": decision["recommended_file_id"],
                 "reasons": decision["reasons"],
                 "candidates": [
