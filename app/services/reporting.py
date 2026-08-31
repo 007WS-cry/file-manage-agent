@@ -53,6 +53,27 @@ VERSION_RELATION_RESOLUTION_LABELS = {
 }
 # 双轨关系融合方式到中文报告标签的固定映射。
 
+BUSINESS_EVIDENCE_LABELS = {
+    "approved": "已批准",
+    "rejected": "已拒绝",
+    "superseded": "已作废或被替代",
+    "for_reference_only": "仅供参考",
+    "requires_revision": "需要继续修改",
+    "final_version": "最终版本",
+    "sent_but_unconfirmed": "已发送但未确认",
+    "ambiguous": "语义不明确",
+}
+# 业务证据类型到中文报告标签的固定映射。
+
+BUSINESS_EVIDENCE_RULE_ACTION_LABELS = {
+    "score_boost": "候选加权",
+    "exclude_candidate": "退出主版本竞争",
+    "exclude_and_review": "退出主版本竞争并强制人工审核",
+    "force_human_review": "强制人工审核",
+    "none": "不执行自动动作",
+}
+# 确定性业务证据规则动作到中文报告标签的固定映射。
+
 
 def escape_markdown_cell(value: object) -> str:
     """转义 Markdown 表格单元格中的竖线和换行。

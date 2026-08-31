@@ -4,6 +4,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
+from app.services.business_evidence import group_has_business_evidence_review
 from app.services.memory_policy import capture_human_choice_memory
 from app.services.recommendation import apply_human_selection as apply_human_selection_service
 from app.services.semantic_change_analysis import (
@@ -27,6 +28,12 @@ def prepare_human_review(state: FileGovernanceState) -> dict:
             if decision["needs_human_review"]
         ),
         key=lambda group_id: (
+            -int(
+                group_has_business_evidence_review(
+                    state.get("business_evidence", []),
+                    group_id,
+                )
+            ),
             -int(group_has_relation_review(state.get("diffs", []), group_id)),
             -REVIEW_PRIORITY_RANK[
                 highest_group_review_priority(state.get("diffs", []), group_id)
@@ -116,6 +123,22 @@ def request_human_review(state: FileGovernanceState) -> dict:
             }
             for diff in group_diffs
         ][:20]
+        business_evidence = [
+            {
+                "evidence_type": item["evidence_type"],
+                "target_file_id": item["target_file_id"],
+                "status": item["status"],
+                "actor_role": item["actor_role"],
+                "effective_time": item.get("effective_time"),
+                "reason": item["reason"],
+                "evidence_refs": list(item["evidence_refs"]),
+                "confidence": item["confidence"],
+                "rule_action": item["rule_action"],
+                "score_adjustment": item["score_adjustment"],
+            }
+            for item in state.get("business_evidence", [])
+            if item["group_id"] == group_id
+        ][:20]
         review_groups.append(
             {
                 "group_id": group_id,
@@ -131,6 +154,11 @@ def request_human_review(state: FileGovernanceState) -> dict:
                     group_id,
                 ),
                 "relation_assessments": relation_assessments,
+                "business_evidence_review_required": group_has_business_evidence_review(
+                    state.get("business_evidence", []),
+                    group_id,
+                ),
+                "business_evidence": business_evidence,
                 "recommended_file_id": decision["recommended_file_id"],
                 "reasons": decision["reasons"],
                 "candidates": [

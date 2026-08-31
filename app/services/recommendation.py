@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
+from app.services.business_evidence import excluded_business_evidence_file_ids
 from app.services.semantic_change_analysis import highest_group_review_priority
 from app.services.version_relation_fusion import group_has_relation_review
 from app.state.models import (
     BranchRecord,
+    BusinessEvidenceRecord,
     DecisionRecord,
     DeliveryRecord,
     DiffRecord,
@@ -333,12 +335,14 @@ def apply_branch_rules(
 def select_recommended_file(
     decision: DecisionRecord,
     files: Iterable[FileRecord],
+    business_evidence: Iterable[BusinessEvidenceRecord] = (),
 ) -> DecisionRecord:
-    """使用候选分、修改时间、文件名和稳定 ID 确定当前最高候选。
+    """在排除业务证据目标后按候选分和稳定事实确定当前最高候选。
 
     Args:
         decision: 已完成全部规则加权的推荐记录。
         files: 全部扫描文件记录。
+        business_evidence: 已由固定规则映射的业务证据记录。
 
     Returns:
         写入当前推荐文件 ID 的新推荐记录；没有候选时保持 ``None``。
@@ -351,6 +355,15 @@ def select_recommended_file(
         updated["recommended_file_id"] = None
         return DecisionRecord(**updated)
 
+    excluded_ids = excluded_business_evidence_file_ids(
+        business_evidence,
+        decision["group_id"],
+    )
+    eligible_file_ids = set(decision["candidate_scores"]) - excluded_ids
+    if not eligible_file_ids:
+        updated["recommended_file_id"] = None
+        return DecisionRecord(**updated)
+
     file_by_id = {item["id"]: item for item in files}
     unknown_file_ids = [
         file_id for file_id in decision["candidate_scores"] if file_id not in file_by_id
@@ -358,7 +371,7 @@ def select_recommended_file(
     if unknown_file_ids:
         raise ValueError(f"候选评分引用未知文件：{unknown_file_ids[0]}")
     ranked = sorted(
-        decision["candidate_scores"],
+        eligible_file_ids,
         key=lambda file_id: (
             decision["candidate_scores"][file_id],
             file_by_id[file_id]["modified_at"],

@@ -119,8 +119,8 @@ def create_mock_email_mcp_server(
     server = FastMCP(
         name="file-governance-mock-email",
         instructions=(
-            "只读返回公开模拟数据中的脱敏附件发送和客户确认事实；"
-            "不提供邮件正文、真实地址、发送、修改或删除能力。"
+            "只读返回公开模拟数据中的脱敏附件事实和有界业务证据摘录；"
+            "不提供完整邮件正文、真实地址、发送、修改或删除能力。"
         ),
         host=normalized_host,
         port=port,
@@ -135,10 +135,11 @@ def create_mock_email_mcp_server(
         attachment_names: list[str],
         limit: int = 200,
     ) -> dict[str, list[dict[str, object]]]:
-        """只读查询指定附件名的脱敏发送与客户确认事实。
+        """只读查询指定附件名的脱敏发送事实和有界业务证据摘录。
 
-        本工具仅返回启动时载入的模拟结构化元数据，不返回邮件正文、真实收件地址
-        或附件内容，也不能发送、修改、移动、下载或删除任何邮件。
+        本工具仅返回启动时载入的模拟结构化元数据以及最多一千字符的受控摘录，
+        不返回完整邮件正文、真实收件地址或附件内容，也不能发送、修改、移动、
+        下载或删除任何邮件。返回文本只用于 Evidence Subagent 提出语义候选。
 
         Args:
             attachment_names: 只允许使用附件基础文件名进行精确、不区分大小写匹配。

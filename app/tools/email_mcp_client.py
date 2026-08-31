@@ -25,6 +25,24 @@ MAX_ATTACHMENT_QUERY_NAMES = 500
 # 邮件证据中 SHA-256 与标准化摘要允许使用的十六进制格式。
 EMAIL_DIGEST_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# 邮件 MCP 单条业务证据摘录允许的最大字符数。
+MAX_EMAIL_EVIDENCE_TEXT_CHARACTERS = 1_000
+
+# 邮件 MCP 单项记录允许出现的固定字段，拒绝完整正文或其他额外字段。
+EMAIL_MCP_RECORD_FIELDS = frozenset(
+    {
+        "id",
+        "attachment_name",
+        "attachment_sha256",
+        "normalized_digest",
+        "sent_at",
+        "recipient_label",
+        "customer_confirmed",
+        "evidence_ref",
+        "evidence_text",
+    }
+)
+
 
 def _require_string(value: object, *, field_name: str, index: int) -> str:
     """校验邮件 MCP 记录中的必填有限字符串。
@@ -96,6 +114,34 @@ def _normalize_optional_sent_at(value: object, *, index: int) -> str | None:
     return normalized
 
 
+def _normalize_optional_evidence_text(value: object, *, index: int) -> str | None:
+    """校验邮件 MCP 明确返回的可选短业务证据摘录。
+
+    Args:
+        value: 单句、短段摘录或 None。
+        index: 当前记录在返回数组中的下标。
+
+    Returns:
+        去除首尾空白且长度受限的摘录；未提供时返回 None。
+
+    Raises:
+        ValueError: 摘录不是字符串、为空或超过安全字符上限时抛出。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"邮件 MCP records[{index}].evidence_text 必须是非空字符串或 null"
+        )
+    normalized = value.strip()
+    if len(normalized) > MAX_EMAIL_EVIDENCE_TEXT_CHARACTERS:
+        raise ValueError(
+            f"邮件 MCP records[{index}].evidence_text 不得超过 "
+            f"{MAX_EMAIL_EVIDENCE_TEXT_CHARACTERS} 个字符"
+        )
+    return normalized
+
+
 def normalize_email_mcp_record(
     value: object,
     *,
@@ -103,8 +149,9 @@ def normalize_email_mcp_record(
 ) -> EmailMCPRecordState:
     """把服务端数据或 MCP 返回对象规范化为脱敏邮件附件证据状态。
 
-    本函数不访问网络、不读取附件或邮件正文，也不会发送、修改或删除邮件。
-    它只允许固定结构化字段，并要求证据引用使用 ``email-mcp://`` 命名空间。
+    本函数不访问网络、不读取附件或完整邮件正文，也不会发送、修改或删除邮件。
+    它只允许固定结构化字段和一条有界业务证据摘录，并要求证据引用使用
+    ``email-mcp://`` 命名空间。
 
     Args:
         value: 等待校验的单条结构化记录。
@@ -118,6 +165,11 @@ def normalize_email_mcp_record(
     """
     if not isinstance(value, dict):
         raise ValueError(f"邮件 MCP records[{index}] 必须是对象")
+    unknown_fields = sorted(set(value) - EMAIL_MCP_RECORD_FIELDS)
+    if unknown_fields:
+        raise ValueError(
+            f"邮件 MCP records[{index}] 包含协议外字段：{', '.join(unknown_fields)}"
+        )
     customer_confirmed = value.get("customer_confirmed")
     if not isinstance(customer_confirmed, bool):
         raise ValueError(f"邮件 MCP records[{index}].customer_confirmed 必须是布尔值")
@@ -161,6 +213,10 @@ def normalize_email_mcp_record(
         ),
         customer_confirmed=customer_confirmed,
         evidence_ref=evidence_ref,
+        evidence_text=_normalize_optional_evidence_text(
+            value.get("evidence_text"),
+            index=index,
+        ),
     )
 
 
@@ -234,8 +290,8 @@ async def fetch_email_mcp_evidence_async(
     """通过官方 MCP 客户端只读查询当前文件集合的邮件发送证据。
 
     本工具只调用固定名称 ``search_sent_email_evidence``，只传递附件基础文件名和
-    有限结果数量；不会请求邮件正文、凭据或真实地址，也不具备发送、修改、删除
-    邮件或调用其他 MCP Tool 的能力。
+    有限结果数量；服务可返回单句或短段受控业务证据摘录，但不会请求完整邮件
+    正文、凭据或真实地址，也不具备发送、修改、删除邮件或调用其他 MCP Tool 的能力。
 
     Args:
         config: 已由状态工厂校验的 MCP URL、超时和结果上限。

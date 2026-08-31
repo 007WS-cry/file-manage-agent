@@ -494,6 +494,48 @@ VersionRelationResolution = Literal[
 ]
 # 双轨版本关系融合后允许写入状态的固定决议类型。
 
+BusinessEvidenceType = Literal[
+    "approved",
+    "rejected",
+    "superseded",
+    "for_reference_only",
+    "requires_revision",
+    "final_version",
+    "sent_but_unconfirmed",
+    "ambiguous",
+]
+# Evidence Subagent 允许输出的封闭业务证据类型集合。
+
+BusinessEvidenceStatus = Literal[
+    "approved",
+    "rejected",
+    "superseded",
+    "reference_only",
+    "revision_required",
+    "final",
+    "unconfirmed",
+    "ambiguous",
+]
+# 业务证据类型对应的规范化状态集合。
+
+BusinessEvidenceActorRole = Literal[
+    "customer",
+    "counterparty",
+    "internal",
+    "sender",
+    "unknown",
+]
+# 受控证据摘录中允许识别的参与者角色集合。
+
+BusinessEvidenceRuleAction = Literal[
+    "score_boost",
+    "exclude_candidate",
+    "exclude_and_review",
+    "force_human_review",
+    "none",
+]
+# 确定性规则引擎允许从业务证据派生的动作集合。
+
 
 class VersionRelationConstraints(TypedDict):
     """限制 LLM 候选关系能否影响版本图的确定性硬约束。"""
@@ -1295,6 +1337,9 @@ class DeliveryLogEntry(TypedDict):
     evidence_ref: str
     # 指向原始日志记录的稳定引用。
 
+    evidence_text: str | None
+    # 用户受控提供的单句或短段业务证据摘录；未提供时为 None。
+
 
 class EmailMCPRecordState(TypedDict):
     """邮件 MCP 返回、尚未匹配到治理文件版本的脱敏附件证据。"""
@@ -1321,7 +1366,10 @@ class EmailMCPRecordState(TypedDict):
     # 邮件线程中是否存在客户确认、批准或接受的结构化标记。
 
     evidence_ref: str
-    # 不包含正文的稳定 MCP 证据引用。
+    # 指向受控摘录或附件事实的稳定 MCP 证据引用。
+
+    evidence_text: str | None
+    # MCP 服务明确返回的有界业务证据摘录；不允许包含完整邮件正文。
 
 
 class PdfExportRecord(TypedDict):
@@ -1386,6 +1434,68 @@ class DeliveryRecord(TypedDict):
 
     confidence: float
     # 发送证据匹配到该版本的置信度。
+
+    evidence_text: str | None
+    # 可交给 Evidence Subagent 的有界业务证据摘录；未提供时为 None。
+
+
+class ControlledEvidenceSnippet(TypedDict):
+    """允许 Evidence Subagent 读取的一条有界业务证据摘录。"""
+
+    evidence_ref: str
+    # 当前摘录在本地日志或邮件系统中的稳定引用。
+
+    target_file_id: str
+    # 确定性匹配已经关联到的目标文件 ID。
+
+    source: Literal["local_log", "email_mcp", "manual"]
+    # 摘录来自本地日志、邮件 MCP 还是受控人工证据。
+
+    text: str
+    # 用户或外部服务明确提供的单句或短段文本，不得是完整邮件正文。
+
+    effective_time: str | None
+    # 证据对应的带时区时间；来源没有时间时为 None。
+
+
+class BusinessEvidenceRecord(TypedDict):
+    """经 LLM 分类和确定性规则映射后的业务证据记录。"""
+
+    id: str
+    # 由版本组、目标文件、证据类型和引用确定性生成的唯一 ID。
+
+    group_id: str
+    # 当前业务证据所属的版本组 ID。
+
+    evidence_type: BusinessEvidenceType
+    # Evidence Subagent 提出的封闭业务证据类型。
+
+    target_file_id: str
+    # 证据明确指向且已由确定性匹配确认的文件 ID。
+
+    status: BusinessEvidenceStatus
+    # 与证据类型一致的规范化业务状态。
+
+    actor_role: BusinessEvidenceActorRole
+    # 受控摘录中表达批准、拒绝或修改要求的参与者角色。
+
+    effective_time: str | None
+    # 必须来自所引证据元数据的有效时间；来源没有时间时为 None。
+
+    reason: str
+    # 仅基于受控摘录的简短业务解释，不包含系统动作指令。
+
+    evidence_refs: list[str]
+    # 只能引用当前 Evidence 输入白名单中的稳定证据引用。
+
+    confidence: float
+    # Evidence Subagent 对当前语义分类的置信度，范围为零到一。
+
+    rule_action: BusinessEvidenceRuleAction
+    # 由固定映射生成的候选加权、排除、人工审核或无动作标记。
+
+    score_adjustment: float
+    # 确定性规则允许施加的最大候选分增量；非加权动作固定为零。
 
 
 class RecommendationCandidateSet(TypedDict):
@@ -2321,6 +2431,9 @@ class EvidenceSubagentInput(TypedDict):
     delivery_evidence_summary: str
     # 本地发送记录匹配的简短结构化摘要。
 
+    evidence_snippets: list[ControlledEvidenceSnippet]
+    # 已匹配到组内文件且有总量限制的受控业务证据摘录。
+
     artifact_refs: list[str]
     # PDF 匹配和发送证据的产物引用。
 
@@ -2435,17 +2548,68 @@ class VersionSubagentOutput(BaseModel):
     # 详细版本解释的产物引用。
 
 
+class BusinessEvidenceAnalysis(BaseModel):
+    """Evidence Subagent 对一条受控业务证据摘录的语义分类。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回业务证据分类协议之外的字段或系统动作。
+
+    evidence_type: BusinessEvidenceType
+    # 模型提出的封闭业务证据类型。
+
+    target_file_id: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
+    ]
+    # 证据指向的文件 ID，必须与所引受控摘录一致。
+
+    status: BusinessEvidenceStatus
+    # 与 evidence_type 固定对应的规范化业务状态。
+
+    actor_role: BusinessEvidenceActorRole
+    # 从摘录语义识别出的参与者角色；无法确定时必须为 unknown。
+
+    effective_time: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+    ] | None = None
+    # 证据生效时间，只能复用所引摘录元数据中的带时区时间。
+
+    reason: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
+    ]
+    # 对证据语义的有界中文解释，不构成系统执行动作。
+
+    evidence_refs: list[
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=2048),
+        ]
+    ] = Field(min_length=1, max_length=20)
+    # 必须引用当前 evidence_snippets 白名单中的稳定证据引用。
+
+    confidence: float = Field(ge=0.0, le=1.0)
+    # 当前业务证据分类的模型置信度，范围为零到一。
+
+
 class EvidenceSubagentOutput(BaseModel):
     """Evidence Subagent 允许返回的结构化结果。"""
 
     model_config = ConfigDict(extra="forbid")
-    # 禁止模型返回摘要和产物引用之外的字段。
+    # 禁止模型返回摘要、业务证据候选和产物引用之外的字段。
 
     summary: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
     ]
     # PDF 来源和客户发送证据的简短中文说明。
+
+    business_evidence: list[BusinessEvidenceAnalysis] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+    # 基于受控摘录提出的业务证据候选；没有摘录或无法判断时允许为空。
 
     artifact_refs: list[str] = Field(default_factory=list, max_length=50)
     # 详细证据分析的产物引用。
@@ -2695,6 +2859,9 @@ class FileGovernanceState(TypedDict):
 
     deliveries: Annotated[list[DeliveryRecord], merge_by_id]
     # 文件曾发送给客户或获得确认的证据。
+
+    business_evidence: Annotated[list[BusinessEvidenceRecord], merge_by_id]
+    # Evidence Subagent 候选经白名单校验和固定规则映射后的业务证据。
 
     decisions: Annotated[list[DecisionRecord], merge_by_id]
     # 每个版本组各自的主版本推荐结果。
@@ -3003,6 +3170,9 @@ class RecommendationGraphState(TypedDict):
 
     deliveries: Annotated[list[DeliveryRecord], merge_by_id]
     # 客户发送和确认记录。
+
+    business_evidence: Annotated[list[BusinessEvidenceRecord], merge_by_id]
+    # 已经通过证据引用校验且只允许由确定性规则消费的业务证据。
 
     memory: MemoryState
     # 供候选评分读取的历史选择，以及本阶段产生的短期摘要。

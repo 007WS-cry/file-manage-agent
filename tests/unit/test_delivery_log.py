@@ -31,6 +31,7 @@ def make_delivery_payload() -> dict:
                 "recipient_label": "客户甲",
                 "customer_confirmed": True,
                 "evidence_ref": "local-log://delivery-001",
+                "evidence_text": "报价已确认，请以附件中的第二版为准。",
             }
         ],
     }
@@ -62,6 +63,7 @@ def test_load_local_delivery_log_validates_and_never_modifies_source(
     assert entries[0]["id"] == "delivery-001"
     assert entries[0]["attachment_sha256"] == "a" * 64
     assert entries[0]["customer_confirmed"] is True
+    assert entries[0]["evidence_text"] == "报价已确认，请以附件中的第二版为准。"
     assert log_path.read_bytes() == original_bytes
 
 
@@ -105,6 +107,17 @@ def test_load_local_delivery_log_enforces_size_limit(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="读取上限"):
         load_local_delivery_log(log_path, max_bytes=8)
+
+
+def test_load_local_delivery_log_rejects_full_body_sized_excerpt(tmp_path: Path) -> None:
+    """超过单条上限的证据文本必须被拒绝，避免完整邮件正文进入状态。"""
+    payload = make_delivery_payload()
+    payload["deliveries"][0]["evidence_text"] = "证" * 1_001
+    log_path = tmp_path / "delivery_log.json"
+    write_payload(log_path, payload)
+
+    with pytest.raises(ValueError, match="不得超过 1000"):
+        load_local_delivery_log(log_path)
 
 
 def test_request_payload_resolves_delivery_log_relative_to_request(
@@ -159,3 +172,4 @@ def test_request_validation_normalizes_evidence_defaults(tmp_path: Path) -> None
     assert update["request"]["delivery_log_path"] is None
     assert state["pdf_exports"] == []
     assert state["deliveries"] == []
+    assert state["business_evidence"] == []

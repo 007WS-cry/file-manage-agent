@@ -6,6 +6,7 @@ from app.utils.task_tracking import (
     apply_task_status,
     build_content_dispatch_requests,
     build_evidence_dispatch_requests,
+    dispatch_evidence_subagent_requests,
     dispatch_stage_subagent_requests,
     has_orchestration_failure,
     public_task_update,
@@ -120,27 +121,31 @@ def sync_evidence_task_status(state: FileGovernanceState) -> dict:
 
 
 def dispatch_evidence_subagent_task(state: FileGovernanceState) -> dict:
-    """在 Evidence 完成后按版本组分派 Evidence Subagent 解释任务。
+    """在 Evidence 完成后分派业务证据理解任务并固化规则输入。
 
-    输入只包含 PDF 来源匹配摘要、发送证据摘要和受控引用，不读取完整 PDF、
-    邮件或业务正文。Subagent 结果只提供解释文本，不能修改确定性证据匹配或
-    Recommendation 使用的评分事实。
+    输入只包含 PDF 来源匹配摘要、发送证据摘要、有界业务摘录和受控引用，
+    不读取完整 PDF、完整邮件或业务正文。Subagent 只能输出语义候选；证据
+    引用、目标文件和时间通过校验后，再由代码映射为 Recommendation 规则输入。
 
     Args:
         state: 已完成 Evidence Task 同步且已启动 Recommendation Task 的顶层状态。
 
     Returns:
-        固定团队、Task、Todo、Team Message、LLM 审计及新增错误的顶层更新。
+        固定团队、业务证据、Team Message、LLM 审计及新增错误的顶层更新。
     """
     try:
         requests = build_evidence_dispatch_requests(state)
-        working_state, errors = dispatch_stage_subagent_requests(state, requests)
+        working_state, business_evidence, errors = dispatch_evidence_subagent_requests(
+            state,
+            requests,
+        )
         return {
             "team": working_state["team"],
             "tasks": list(working_state.get("tasks", [])),
             "todos": list(working_state.get("todos", [])),
             "team_messages": list(working_state.get("team_messages", [])),
             "llm_calls": list(working_state.get("llm_calls", [])),
+            "business_evidence": business_evidence,
             "errors": errors,
         }
     except Exception as error:
