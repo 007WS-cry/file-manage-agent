@@ -4,13 +4,14 @@ File Manage Agent 是一个基于 LangGraph 的只读文件版本治理工具。
 和文本型 PDF，识别内容相近的文件版本，分析差异与证据，并生成可解释的主版本建议和
 Markdown 报告。
 
-当前版本 `1.0.3`。
+当前版本 `1.0.4`。
 
 ## 主要能力
 
 - **原文件只读**：不会删除、移动、重命名或覆盖业务文件。
 - **双轨版本关系分析**：融合确定性判断与 LLM 语义候选，识别直接修订、并行分支、导出版本、语义重复和无关文件。
 - **语义变更分析**：把金额、期限、责任主体等差异分类并由确定性规则提升人工审核优先级。
+- **业务证据理解**：Evidence Subagent 从受控邮件或日志摘录识别批准、作废、仅供参考、继续修改和最终版本等证据，再由确定性规则执行加权、排除或人工审核。
 - **可解释推荐**：结合内容、PDF 来源和发送记录推荐主版本；低置信度结果交由人工确认。
 - **离线可用**：默认关闭真实 LLM，使用确定性规则和本地 Mock 即可运行。
 - **多种运行方式**：支持 CLI、Python、HTTP API、后台 Worker 和 Cron 调度。
@@ -129,6 +130,12 @@ Copy-Item .env.example .env
 系统不会自动改写版本图，而会把该版本组交给人工审核。详见
 [双轨版本关系判定](docs/version-relation-dual-track.md)。
 
+启用 Evidence Subagent 后，本地发送日志或邮件 MCP 可以提供最多 1000 字符的受控
+`evidence_text` 摘录。模型只能输出封闭业务证据类型，并且目标文件、时间与引用必须
+来自输入白名单；模型不能输出评分或执行动作。明确批准按固定权重加分，作废和仅供
+参考文件退出主版本竞争，继续修改则强制人工审核。详见
+[业务证据语义理解](docs/business-evidence-analysis.md)。
+
 ## 运行方式
 
 | 场景 | 入口 |
@@ -145,6 +152,7 @@ Copy-Item .env.example .env
 - 请求必须设置 `workspace.input_readonly = true`。
 - 输入目录不能与产物、报告、数据库或 checkpoint 目录重叠。
 - 不要在请求、日志或版本库中保存 API Key、数据库密码或真实邮件正文。
+- `evidence_text` 只应保存完成当前判断所需的单句或短段摘录，不得复制完整邮件正文。
 - 报告应通过 CLI 返回路径或受控 HTTP 下载接口获取。
 - 部署前请阅读 [安全策略](SECURITY.md)。
 
@@ -156,6 +164,8 @@ Copy-Item .env.example .env
 - [人工确认与后台恢复](docs/resume-and-interview.md)
 - [1.0.0 架构说明](docs/architecture-1.0.0.md)
 - [开发与测试](docs/development.md)
+- [1.0.4 发布说明](docs/release-1.0.4.md)
+- [业务证据语义理解](docs/business-evidence-analysis.md)
 - [1.0.3 发布说明](docs/release-1.0.3.md)
 - [双轨版本关系判定](docs/version-relation-dual-track.md)
 - [语义级变更分析](docs/semantic-change-analysis.md)

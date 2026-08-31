@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+from app.services.business_evidence import (
+    apply_business_evidence_review as apply_business_evidence_review_service,
+)
+from app.services.business_evidence import (
+    apply_business_evidence_scoring as apply_business_evidence_scoring_service,
+)
+from app.services.business_evidence import (
+    excluded_business_evidence_file_ids,
+    group_has_business_evidence_review,
+)
 from app.services.recommendation import (
     apply_branch_rules as apply_branch_rules_service,
 )
@@ -184,6 +194,40 @@ def apply_pdf_source_rules(state: RecommendationGraphState) -> dict:
     return {"decisions": decisions, "errors": errors}
 
 
+def apply_business_evidence_rules(state: RecommendationGraphState) -> dict:
+    """把已验证业务证据候选交给固定加权与排除规则执行。
+
+    Args:
+        state: 已应用发送和 PDF 规则且包含固化业务证据的子图状态。
+
+    Returns:
+        应用候选加权或排除规则后的推荐记录，以及状态引用错误。
+    """
+    decisions: list[DecisionRecord] = []
+    errors = []
+    for decision in state.get("decisions", []):
+        try:
+            decisions.append(
+                apply_business_evidence_scoring_service(
+                    decision,
+                    state.get("business_evidence", []),
+                    state.get("deliveries", []),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            errors.append(
+                create_node_error(
+                    state,
+                    stage="recommendation",
+                    node_name="apply_business_evidence_rules",
+                    category="validation",
+                    message=str(exc),
+                    fatal=True,
+                )
+            )
+    return {"decisions": decisions, "errors": errors}
+
+
 def apply_branch_rules(state: RecommendationGraphState) -> dict:
     """把版本分叉加入推荐解释并保留所有分支供人工判断。
 
@@ -217,6 +261,7 @@ def select_main_versions(state: RecommendationGraphState) -> dict:
                 select_recommended_file_service(
                     decision,
                     state.get("files", []),
+                    state.get("business_evidence", []),
                 )
             )
         except (KeyError, TypeError, ValueError) as exc:
@@ -327,6 +372,25 @@ def apply_semantic_review_rules(state: RecommendationGraphState) -> dict:
     return {"decisions": decisions}
 
 
+def apply_business_evidence_review_rules(state: RecommendationGraphState) -> dict:
+    """按固定规则把修改要求、拒绝或冲突业务证据升级为人工审核。
+
+    Args:
+        state: 已计算推荐置信度并完成语义变更审核规则的子图状态。
+
+    Returns:
+        只更新推荐记录的 LangGraph 状态增量。
+    """
+    decisions = [
+        apply_business_evidence_review_service(
+            decision,
+            state.get("business_evidence", []),
+        )
+        for decision in state.get("decisions", [])
+    ]
+    return {"decisions": decisions}
+
+
 def preserve_complete_version_chains(state: RecommendationGraphState) -> dict:
     """为每项推荐写入完整组内版本保留清单。
 
@@ -385,6 +449,12 @@ def mark_human_review_items(state: RecommendationGraphState) -> dict:
             if decision["needs_human_review"]
         ),
         key=lambda group_id: (
+            -int(
+                group_has_business_evidence_review(
+                    state.get("business_evidence", []),
+                    group_id,
+                )
+            ),
             -int(group_has_relation_review(state.get("diffs", []), group_id)),
             -REVIEW_PRIORITY_RANK[
                 highest_group_review_priority(state.get("diffs", []), group_id)
@@ -459,8 +529,15 @@ def validate_recommendation_results(state: RecommendationGraphState) -> dict:
         if any(not 0.0 <= score <= 1.0 for score in decision["candidate_scores"].values()):
             messages.append(f"版本组 {group_id} 包含非法候选评分")
         recommended_file_id = decision["recommended_file_id"]
-        if candidate_ids and recommended_file_id not in candidate_ids:
-            messages.append(f"版本组 {group_id} 的推荐文件不属于候选集合")
+        excluded_ids = excluded_business_evidence_file_ids(
+            state.get("business_evidence", []),
+            group_id,
+        )
+        eligible_candidate_ids = candidate_ids - excluded_ids
+        if recommended_file_id is not None and recommended_file_id not in eligible_candidate_ids:
+            messages.append(f"版本组 {group_id} 的推荐文件不属于可竞争候选集合")
+        if recommended_file_id is None and eligible_candidate_ids:
+            messages.append(f"版本组 {group_id} 存在可竞争候选但没有推荐文件")
         if not candidate_ids and recommended_file_id is not None:
             messages.append(f"无候选版本组 {group_id} 不应包含推荐文件")
         if not 0.0 <= decision["confidence"] <= 1.0:

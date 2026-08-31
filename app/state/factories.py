@@ -1292,6 +1292,7 @@ def create_initial_state(
         version_chains=[],
         pdf_exports=[],
         deliveries=[],
+        business_evidence=[],
         decisions=[],
         node_executions=[],
         degradations=[],

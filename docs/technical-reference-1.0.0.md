@@ -47,6 +47,7 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 干净 Worktree 安全移除、脏 Worktree 和隔离分支保留、关闭失败现场保留；
 - 官方 MCP Python SDK 的 Streamable HTTP 只读邮件证据客户端和脱敏模拟服务；
 - 邮件 MCP 成功时生成 `email_mcp` DeliveryRecord，关闭或不可用时自动使用本地日志；
+- 1.0.4 允许 Evidence Subagent 从有界 `evidence_text` 中提出业务证据候选，再由固定规则加权、排除或转人工审核；
 - API、Worker、Scheduler 和模拟邮件 MCP 共用字段稳定的单行 JSON 日志；
 - Docker Compose 一次编排迁移、API、Worker、Scheduler 与模拟邮件 MCP；
 - 32 个真实 DOCX、32 个并发 PDF 任务及最高 500 文件演示生成能力；
@@ -507,7 +508,7 @@ Evidence 业务图，避免本批改变 `0.4.0` 的确定性治理结论。详�
 - 只有审计状态为 `success` 且未使用 fallback 的 Version 输出可以替换 `summary`；
 - 超时、缺少 API Key、Pydantic 非法或协议失败时保留确定性摘要；
 - `sync_evidence_task_status` 后按版本组分派 Evidence Subagent，再进入 Recommendation；
-- Content 和 Evidence 输出只增加解释消息与受控引用，不改变文档事实或证据评分；
+- Content 输出只增加解释消息；Evidence 输出可以产生经过白名单校验的业务语义候选，但评分、排除和审核动作只由确定性规则执行；
 - 生命周期 Hook 显式禁止修改固定 Team、Task、Todo、Team Message 和 LLM 审计；
 - 最终报告展示关键修改摘要、摘要来源、Team Message ID 和可选解释引用。
 

@@ -28,6 +28,9 @@ STARTED_AT = "2026-07-22T08:00:00+00:00"
 # Mock 输出和 Task 共同登记的受控产物引用。
 CONTROLLED_ARTIFACT_REF = "artifact://subagent/controlled-result-001"
 
+# Evidence 业务语义集成测试使用的受控句子级引用。
+CONTROLLED_EVIDENCE_REF = "email-mcp://message-982:sentence-3"
+
 
 def _dispatch_state(dispatch_request: Mapping[str, object]) -> TeamOrchestrationGraphState:
     """创建包含单个角色分派请求的完整 Team Orchestration 状态。
@@ -86,13 +89,22 @@ def _version_request() -> dict[str, object]:
 
 
 def _evidence_request() -> dict[str, object]:
-    """创建只包含 PDF 与发送摘要的 Evidence 分派请求。"""
+    """创建包含摘要和有界业务证据摘录的 Evidence 分派请求。"""
     return {
         "task_id": f"{RUN_ID}:evidence",
         "group_id": "group-001",
         "pdf_evidence_summary": "PDF 与合同 v2 的内容指纹相符。",
         "delivery_evidence_summary": "发送日志记录了合同 v2 的本地路径。",
-        "artifact_refs": [CONTROLLED_ARTIFACT_REF],
+        "evidence_snippets": [
+            {
+                "evidence_ref": CONTROLLED_EVIDENCE_REF,
+                "target_file_id": "contract-v2",
+                "source": "email_mcp",
+                "text": "报价已确认。",
+                "effective_time": "2026-07-12T10:30:00+08:00",
+            }
+        ],
+        "artifact_refs": [CONTROLLED_ARTIFACT_REF, CONTROLLED_EVIDENCE_REF],
     }
 
 
@@ -187,6 +199,50 @@ def test_orchestration_rejects_dynamic_team_members() -> None:
         error["node_name"] == "initialize_fixed_agent_team" and error["fatal"]
         for error in result["errors"]
     )
+
+
+def test_orchestration_preserves_validated_business_evidence_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Team Orchestration 应保留已通过引用与事实落点校验的业务证据候选。"""
+    original_client = LLMClient
+
+    def create_business_evidence_client(config):
+        """创建返回明确批准业务证据的 Mock LLM Client。"""
+        return original_client(
+            config,
+            providers={
+                "mock": MockLLMProvider(
+                    response_payload={
+                        "summary": "客户已明确确认第二版。",
+                        "business_evidence": [
+                            {
+                                "evidence_type": "approved",
+                                "target_file_id": "contract-v2",
+                                "status": "approved",
+                                "actor_role": "customer",
+                                "effective_time": "2026-07-12T10:30:00+08:00",
+                                "reason": "受控摘录明确包含确认表达。",
+                                "evidence_refs": [CONTROLLED_EVIDENCE_REF],
+                                "confidence": 0.96,
+                            }
+                        ],
+                        "artifact_refs": [CONTROLLED_EVIDENCE_REF],
+                    }
+                )
+            },
+        )
+
+    monkeypatch.setattr(
+        "app.nodes.subagents.LLMClient",
+        create_business_evidence_client,
+    )
+    result = team_orchestration_graph.invoke(_dispatch_state(_evidence_request()))
+
+    output = result["dispatch_result"]
+    assert isinstance(output, EvidenceSubagentOutput)
+    assert output.business_evidence[0].evidence_type == "approved"
+    assert output.business_evidence[0].target_file_id == "contract-v2"
 
 
 def test_orchestration_rejects_worktree_tool_configuration() -> None:

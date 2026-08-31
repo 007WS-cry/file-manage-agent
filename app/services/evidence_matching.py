@@ -371,6 +371,7 @@ def match_delivery_log_entry(
         match_method=match_method,
         customer_confirmed=entry["customer_confirmed"],
         confidence=confidence,
+        evidence_text=entry.get("evidence_text"),
     )
 
 

@@ -141,6 +141,24 @@ Recommendation 子图中的确定性规则决定。人工审核中断可展示�
 输入已有的 `diff:` 关系证据。LLM 只提出候选，版本图只读取 `resolved_relation`；
 冲突或违反硬约束的候选不会建立父子边，并由确定性规则强制人工审核。
 
+### 1.0.4 业务证据理解扩展
+
+1.0.4 为 Evidence 输入、输出和顶层状态增加以下受控字段：
+
+| 状态 | 字段 | 含义 |
+| --- | --- | --- |
+| `DeliveryLogEntry` / `EmailMCPRecordState` | `evidence_text` | 最多 1000 字符的可选业务证据摘录 |
+| `DeliveryRecord` | `evidence_text` | 只在确定性附件匹配后继续传递的摘录 |
+| `EvidenceSubagentInput` | `evidence_snippets` | 带目标文件、来源、时间和引用的有界摘录白名单 |
+| `EvidenceSubagentOutput` | `business_evidence` | 模型提出的封闭业务证据候选 |
+| `FileGovernanceState` | `business_evidence` | 经事实落点校验并由代码补齐规则动作的记录 |
+| `RecommendationGraphState` | `business_evidence` | 只供确定性加权、排除和审核节点读取的规则输入 |
+
+`BusinessEvidenceRecord.rule_action` 与 `score_adjustment` 不来自模型，而是由固定映射
+生成。顶层记录不保存原始 `evidence_text`，只保存语义类型、目标文件、简短理由、
+证据引用和规则结果。旧日志不含 `evidence_text` 时获得 `None`，Evidence 回退输出的
+`business_evidence` 为空，因此原确定性路径保持兼容。
+
 ## 错误恢复协议
 
 `error_recovery` 的恢复值为：
@@ -188,8 +206,8 @@ API Schema 不直接返回 `FileGovernanceState`：
 
 ## 版本兼容
 
-1.0.3 的语义和关系字段由版本比较重新生成，不新增数据库迁移；既有 1.0.0 状态扩展仍保持
+1.0.4 的业务证据、语义和关系字段在运行时重新生成，不新增数据库迁移；既有 1.0.0 状态扩展仍保持
 向后补齐，不更改 0.8.2 数据库迁移链。升级前应备份应用数据库和
 checkpoint；升级后执行 `alembic upgrade head`。正在等待人工输入的后台任务必须保留
-原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.3 API 使用当前
+原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.4 API 使用当前
 `interrupt_id` 恢复。

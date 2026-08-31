@@ -161,6 +161,7 @@ def make_recommendation_state(
         ],
         pdf_exports=pdf_exports,
         deliveries=deliveries,
+        business_evidence=[],
         candidate_sets=[],
         decisions=[],
         human_review={
@@ -202,6 +203,36 @@ def test_recommendation_graph_branch_forces_human_review() -> None:
     assert decision["needs_human_review"] is True
     assert result["human_review"]["pending_group_ids"] == ["group"]
     assert any("版本分叉" in reason for reason in decision["reasons"])
+
+
+def test_recommendation_graph_requires_revision_forces_human_review() -> None:
+    """Evidence 的继续修改语义必须由固定规则覆盖高分自动选择结果。"""
+    state = make_recommendation_state()
+    state["business_evidence"] = [
+        {
+            "id": "business-evidence:revision",
+            "group_id": "group",
+            "evidence_type": "requires_revision",
+            "target_file_id": "source",
+            "status": "revision_required",
+            "actor_role": "customer",
+            "effective_time": "2026-01-05T00:00:00+00:00",
+            "reason": "客户要求继续修改。",
+            "evidence_refs": ["email-mcp://thread-1:sentence-2"],
+            "confidence": 0.98,
+            "rule_action": "force_human_review",
+            "score_adjustment": 0.0,
+        }
+    ]
+
+    result = recommendation_graph.invoke(state)
+
+    decision = result["decisions"][0]
+    assert decision["recommended_file_id"] == "source"
+    assert decision["needs_human_review"] is True
+    assert decision["selected_by"] == "unresolved"
+    assert result["human_review"]["pending_group_ids"] == ["group"]
+    assert any("requires_revision" in reason for reason in decision["reasons"])
 
 
 def test_recommendation_graph_accepts_empty_business_state() -> None:

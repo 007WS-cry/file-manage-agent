@@ -39,6 +39,7 @@ from app.llm.model_profiles import (
     resolve_model_profile as resolve_configured_model_profile,
 )
 from app.llm.schemas import validate_output_artifact_refs, validate_structured_output
+from app.services.business_evidence import validate_business_evidence_analyses
 from app.state.models import (
     ContentSubagentGraphState,
     ContentSubagentOutput,
@@ -1012,7 +1013,7 @@ def invoke_evidence_structured_llm(state: EvidenceSubagentGraphState) -> dict:
 
 
 def validate_evidence_subagent_output(state: EvidenceSubagentGraphState) -> dict:
-    """校验 Evidence 输出只含摘要和输入白名单中的产物引用。
+    """校验 Evidence 输出的摘要、业务候选及全部事实引用白名单。
 
     Args:
         state: 已取得可选模型输出的 Evidence 子图状态。
@@ -1023,6 +1024,10 @@ def validate_evidence_subagent_output(state: EvidenceSubagentGraphState) -> dict
     try:
         output = validate_structured_output(state.get("output"), EvidenceSubagentOutput)
         validate_output_artifact_refs(output, allowed_refs=state["input"]["artifact_refs"])
+        validate_business_evidence_analyses(
+            output,
+            state["input"]["evidence_snippets"],
+        )
         return {"output": output}
     except (KeyError, TypeError, ValueError) as error:
         return {

@@ -6,11 +6,14 @@ from typing import Literal, cast
 from app.agents.protocol import (
     MAX_ARTIFACT_REFS,
     MAX_CONTENT_PREVIEW_CHARACTERS,
+    MAX_EVIDENCE_SNIPPETS,
+    MAX_EVIDENCE_SNIPPETS_TOTAL_CHARACTERS,
     MAX_EVIDENCE_SUMMARY_CHARACTERS,
     MAX_STRUCTURED_STRING_CHARACTERS,
     MAX_TEXT_LIST_TOTAL_CHARACTERS,
 )
 from app.graphs.team_orchestration import team_orchestration_graph
+from app.services.business_evidence import build_business_evidence_records
 from app.services.task_system import build_task_execution_id, build_task_id
 from app.state.converters import (
     file_governance_to_team_orchestration_state,
@@ -19,9 +22,12 @@ from app.state.converters import (
     version_analysis_to_team_orchestration_state,
 )
 from app.state.models import (
+    BusinessEvidenceRecord,
     ContentSubagentInput,
+    ControlledEvidenceSnippet,
     ErrorRecord,
     EvidenceSubagentInput,
+    EvidenceSubagentOutput,
     FileGovernanceState,
     TaskItem,
     TaskStatusUpdate,
@@ -54,7 +60,7 @@ BUSINESS_OUTPUT_REFS: dict[str, tuple[str, ...]] = {
         "branches",
         "version_chains",
     ),
-    "evidence": ("pdf_exports", "deliveries"),
+    "evidence": ("pdf_exports", "deliveries", "business_evidence"),
     "recommendation": ("decisions", "human_review"),
 }
 
@@ -105,6 +111,36 @@ def run_version_subagent_orchestration(
     )
     subgraph_result = team_orchestration_graph.invoke(subgraph_input)
     return team_orchestration_state_to_version_analysis_update(subgraph_result)
+
+
+def run_evidence_subagent_orchestration(
+    state: FileGovernanceState,
+    dispatch_request: EvidenceSubagentInput,
+) -> tuple[dict, EvidenceSubagentOutput | None]:
+    """执行一次 Evidence 分派并单独提取经过子图验证的结构化结果。
+
+    顶层公开更新仍使用 Team Orchestration 白名单转换，不会保存一次性分派命令；
+    只有通过 Pydantic、证据引用和事实落点校验的 Evidence 输出会返回给调用方，
+    供后续代码生成确定性业务证据记录。
+
+    Args:
+        state: 已完成确定性 Evidence 匹配的顶层治理工作状态。
+        dispatch_request: 当前版本组的摘要、有界摘录和受控引用。
+
+    Returns:
+        团队公开状态更新，以及可选的已验证 Evidence Pydantic 输出。
+    """
+    subgraph_input = file_governance_to_team_orchestration_state(
+        state,
+        dispatch_request=dispatch_request,
+    )
+    subgraph_result = team_orchestration_graph.invoke(subgraph_input)
+    raw_output = subgraph_result.get("dispatch_result")
+    output = raw_output if isinstance(raw_output, EvidenceSubagentOutput) else None
+    return (
+        team_orchestration_state_to_file_governance_update(subgraph_result),
+        output.model_copy(deep=True) if output is not None else None,
+    )
 
 
 def build_bounded_protocol_text_list(
@@ -195,13 +231,13 @@ def _bounded_evidence_summary(parts: list[str], *, empty_message: str) -> str:
 def build_evidence_dispatch_requests(
     state: FileGovernanceState,
 ) -> list[EvidenceSubagentInput]:
-    """为每个版本组构造只含确定性证据摘要和受控引用的 Evidence 输入。
+    """为每个版本组构造确定性摘要、有界业务摘录和受控引用输入。
 
     Args:
         state: 已完成 PDF 来源和本地发送记录匹配的顶层治理状态。
 
     Returns:
-        按版本组 ID 排序且不包含 PDF、邮件或业务文件正文的请求列表。
+        按版本组 ID 排序且不包含 PDF、完整邮件或业务文件正文的请求列表。
     """
     task_id = build_task_id(state["run"]["run_id"], "evidence")
     file_names = {
@@ -230,6 +266,8 @@ def build_evidence_dispatch_requests(
             artifact_refs.append(f"state://pdf_exports/{item['id']}")
 
         delivery_parts = []
+        evidence_snippets: list[ControlledEvidenceSnippet] = []
+        evidence_snippet_characters = 0
         for item in delivery_records:
             file_id = item.get("file_id")
             delivered_name = file_names.get(file_id, file_id or "未匹配文件")
@@ -240,6 +278,24 @@ def build_evidence_dispatch_requests(
             )
             if item["evidence_ref"] not in artifact_refs:
                 artifact_refs.append(item["evidence_ref"])
+            evidence_text = str(item.get("evidence_text") or "").strip()
+            if (
+                evidence_text
+                and file_id is not None
+                and len(evidence_snippets) < MAX_EVIDENCE_SNIPPETS
+                and evidence_snippet_characters + len(evidence_text)
+                <= MAX_EVIDENCE_SNIPPETS_TOTAL_CHARACTERS
+            ):
+                evidence_snippets.append(
+                    ControlledEvidenceSnippet(
+                        evidence_ref=item["evidence_ref"],
+                        target_file_id=file_id,
+                        source=item["evidence_source"],
+                        text=evidence_text,
+                        effective_time=item.get("sent_at"),
+                    )
+                )
+                evidence_snippet_characters += len(evidence_text)
 
         requests.append(
             EvidenceSubagentInput(
@@ -253,6 +309,7 @@ def build_evidence_dispatch_requests(
                     delivery_parts,
                     empty_message="当前版本组没有已匹配的发送或客户确认记录。",
                 ),
+                evidence_snippets=evidence_snippets,
                 artifact_refs=artifact_refs[:MAX_ARTIFACT_REFS],
             )
         )
@@ -312,6 +369,39 @@ def dispatch_stage_subagent_requests(
         if has_orchestration_failure(dispatch_errors):
             break
     return working_state, errors
+
+
+def dispatch_evidence_subagent_requests(
+    state: FileGovernanceState,
+    requests: Sequence[EvidenceSubagentInput],
+) -> tuple[FileGovernanceState, list[BusinessEvidenceRecord], list[ErrorRecord]]:
+    """串行执行 Evidence 分派并把语义候选固化为确定性业务证据记录。
+
+    Args:
+        state: 已完成 PDF、邮件 MCP 和本地日志匹配的顶层治理状态。
+        requests: 按版本组稳定排序的 Evidence Subagent 最小输入序列。
+
+    Returns:
+        已合并团队公开状态的工作状态、固定规则映射记录和新增结构化错误。
+    """
+    working_state = state
+    business_evidence: list[BusinessEvidenceRecord] = []
+    errors: list[ErrorRecord] = []
+    for request in requests:
+        update, output = run_evidence_subagent_orchestration(
+            working_state,
+            request,
+        )
+        working_state = apply_team_dispatch_update(working_state, update)
+        dispatch_errors = cast(list[ErrorRecord], update.get("errors", []))
+        errors.extend(dispatch_errors)
+        if output is not None:
+            business_evidence.extend(
+                build_business_evidence_records(request["group_id"], output)
+            )
+        if has_orchestration_failure(dispatch_errors):
+            break
+    return working_state, business_evidence, errors
 
 
 def _task_by_type(

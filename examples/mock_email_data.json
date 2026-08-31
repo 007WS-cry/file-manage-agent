@@ -9,7 +9,8 @@
       "sent_at": "2026-07-18T09:30:00+08:00",
       "recipient_label": "示例客户-A",
       "customer_confirmed": true,
-      "evidence_ref": "email-mcp://mock/thread-001/attachment-001"
+      "evidence_ref": "email-mcp://mock/thread-001/sentence-3",
+      "evidence_text": "最终版本已签字。"
     },
     {
       "id": "mock-email-evidence-002",
@@ -19,7 +20,8 @@
       "sent_at": "2026-07-17T16:15:00+08:00",
       "recipient_label": "示例客户-A",
       "customer_confirmed": false,
-      "evidence_ref": "email-mcp://mock/thread-000/attachment-002"
+      "evidence_ref": "email-mcp://mock/thread-000/sentence-2",
+      "evidence_text": "上一份合同作废，请以新版本为准。"
     }
   ]
 }

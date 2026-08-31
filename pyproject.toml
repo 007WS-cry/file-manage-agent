@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "1.0.3"
+version = "1.0.4"
 description = "具备受约束双轨版本关系判定、语义变更分析与确定性人工审核规则的 LangGraph 只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"

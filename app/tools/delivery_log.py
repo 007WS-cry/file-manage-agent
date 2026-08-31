@@ -18,6 +18,24 @@ SUPPORTED_DELIVERY_LOG_SCHEMA_VERSION = "1.0"
 # 用于校验 SHA-256 和标准化内容摘要的十六进制格式。
 SHA256_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 
+# 单条本地业务证据摘录允许的最大字符数，禁止把完整邮件正文写入图状态。
+MAX_DELIVERY_EVIDENCE_TEXT_CHARACTERS = 1_000
+
+# 本地发送记录单项允许出现的固定字段，拼写错误或额外正文会被拒绝。
+DELIVERY_ENTRY_FIELDS = frozenset(
+    {
+        "id",
+        "attachment_name",
+        "attachment_sha256",
+        "normalized_digest",
+        "sent_at",
+        "recipient_label",
+        "customer_confirmed",
+        "evidence_ref",
+        "evidence_text",
+    }
+)
+
 
 def _require_non_empty_string(value: Any, *, field_name: str, index: int) -> str:
     """校验发送记录中的必填非空字符串字段。
@@ -91,6 +109,32 @@ def _normalize_optional_sent_at(value: Any, *, index: int) -> str | None:
     return sent_at
 
 
+def _normalize_optional_evidence_text(value: Any, *, index: int) -> str | None:
+    """校验用户明确提供的可选短业务证据摘录。
+
+    Args:
+        value: 单句、短段摘录或 None。
+        index: 当前记录在 deliveries 数组中的下标。
+
+    Returns:
+        去除首尾空白且长度受限的摘录；未提供时返回 None。
+
+    Raises:
+        ValueError: 摘录不是字符串、为空或超过安全字符上限时抛出。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"deliveries[{index}].evidence_text 必须是非空字符串或 null")
+    normalized = value.strip()
+    if len(normalized) > MAX_DELIVERY_EVIDENCE_TEXT_CHARACTERS:
+        raise ValueError(
+            f"deliveries[{index}].evidence_text 不得超过 "
+            f"{MAX_DELIVERY_EVIDENCE_TEXT_CHARACTERS} 个字符"
+        )
+    return normalized
+
+
 def _parse_delivery_entry(value: Any, *, index: int) -> DeliveryLogEntry:
     """把一条 JSON 对象转换为经过校验的发送日志状态。
 
@@ -106,6 +150,11 @@ def _parse_delivery_entry(value: Any, *, index: int) -> DeliveryLogEntry:
     """
     if not isinstance(value, dict):
         raise ValueError(f"deliveries[{index}] 必须是对象")
+    unknown_fields = sorted(set(value) - DELIVERY_ENTRY_FIELDS)
+    if unknown_fields:
+        raise ValueError(
+            f"deliveries[{index}] 包含协议外字段：{', '.join(unknown_fields)}"
+        )
     customer_confirmed = value.get("customer_confirmed")
     if not isinstance(customer_confirmed, bool):
         raise ValueError(f"deliveries[{index}].customer_confirmed 必须是布尔值")
@@ -138,6 +187,10 @@ def _parse_delivery_entry(value: Any, *, index: int) -> DeliveryLogEntry:
             field_name="evidence_ref",
             index=index,
         ),
+        evidence_text=_normalize_optional_evidence_text(
+            value.get("evidence_text"),
+            index=index,
+        ),
     )
 
 
@@ -149,8 +202,9 @@ def load_local_delivery_log(
     """只读加载受信任路径中的本地发送记录 JSON。
 
     该工具只读取一个普通 UTF-8 JSON 文件，不访问网络、不打开附件、不执行
-    日志内容，也不会创建、修改或删除任何文件。为避免越权读取和资源耗尽，
-    工具拒绝符号链接、非普通文件、超限文件和不符合固定协议的数据。
+    日志内容，也不会创建、修改或删除任何文件。记录可选携带用户明确提供的
+    单句或短段 ``evidence_text``，但完整邮件正文和协议外字段会被拒绝。为避免
+    越权读取和资源耗尽，工具拒绝符号链接、非普通文件和超限文件。
 
     Args:
         path: 用户明确提供的本地发送记录 JSON 文件路径。

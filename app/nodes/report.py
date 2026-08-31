@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from app.services.reporting import (
+    BUSINESS_EVIDENCE_LABELS,
+    BUSINESS_EVIDENCE_RULE_ACTION_LABELS,
     build_recovery_report_lines,
     build_report_state,
     build_version_summary_lines,
@@ -129,6 +131,9 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
             unmatched_deliveries.append(delivery)
         else:
             deliveries_by_group.setdefault(delivery["group_id"], []).append(delivery)
+    business_evidence_by_group: dict[str, list] = {}
+    for item in state.get("business_evidence", []):
+        business_evidence_by_group.setdefault(item["group_id"], []).append(item)
 
     lines = [
         "# 文件版本治理报告",
@@ -256,6 +261,43 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
         else:
             lines.append("- 当前版本组没有已匹配的发送记录。")
 
+        lines.extend(["", "### 业务语义证据", ""])
+        group_business_evidence = business_evidence_by_group.get(group["id"], [])
+        if group_business_evidence:
+            lines.extend(
+                [
+                    "| 目标文件 | 类型 | 参与者 | 生效时间 | 置信度 | 确定性规则 | 证据引用 | 业务解释 |",
+                    "|---|---|---|---|---:|---|---|---|",
+                ]
+            )
+            for item in group_business_evidence:
+                target_file = file_by_id.get(item["target_file_id"])
+                target_name = (
+                    target_file["file_name"]
+                    if target_file is not None
+                    else item["target_file_id"]
+                )
+                refs = "；".join(item["evidence_refs"])
+                action_label = BUSINESS_EVIDENCE_RULE_ACTION_LABELS.get(
+                    item["rule_action"],
+                    item["rule_action"],
+                )
+                if item["score_adjustment"]:
+                    action_label += f"（最大 +{item['score_adjustment']:.2f}）"
+                lines.append(
+                    "| "
+                    f"{escape_markdown_cell(target_name)} | "
+                    f"{escape_markdown_cell(BUSINESS_EVIDENCE_LABELS.get(item['evidence_type'], item['evidence_type']))} | "
+                    f"{escape_markdown_cell(item['actor_role'])} | "
+                    f"{escape_markdown_cell(item['effective_time'] or '未知')} | "
+                    f"{item['confidence']:.2f} | "
+                    f"{escape_markdown_cell(action_label)} | "
+                    f"{escape_markdown_cell(refs)} | "
+                    f"{escape_markdown_cell(item['reason'])} |"
+                )
+        else:
+            lines.append("- 当前版本组没有经过白名单校验的业务语义证据。")
+
     if unmatched_deliveries:
         lines.extend(
             [
@@ -295,7 +337,8 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
         f"完成 {len(state.get('version_groups', []))} 个文档组的版本治理，"
         f"产生 {len(state.get('decisions', []))} 个主版本结果、"
         f"{len(state.get('pdf_exports', []))} 条 PDF 来源记录和"
-        f"{len(state.get('deliveries', []))} 条发送证据。"
+        f"{len(state.get('deliveries', []))} 条发送证据、"
+        f"{len(state.get('business_evidence', []))} 条业务语义证据。"
     )
     markdown = "\n".join(lines)
     warnings = [error["message"] for error in errors]

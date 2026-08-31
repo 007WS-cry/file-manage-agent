@@ -11,7 +11,7 @@
 | API | `file-governance-api` | 接收后台任务、查询状态、恢复任务和下载报告 |
 | Worker | `file-governance-worker` | 从应用数据库领取任务并执行治理图 |
 | Scheduler | `file-governance-scheduler` | 将持久化 Cron 计划转换为后台任务 |
-| 模拟邮件 MCP | `file-governance-mock-email-mcp` | 提供只读、脱敏的发送证据演示数据 |
+| 模拟邮件 MCP | `file-governance-mock-email-mcp` | 提供只读、脱敏的发送事实和有界业务证据摘录 |
 
 后台拓扑中，API、Worker 和 Scheduler 必须共享同一个应用数据库和 checkpoint 存储。
 应用数据库与 LangGraph checkpoint 是两套存储，不能指向同一个 SQLite 文件。

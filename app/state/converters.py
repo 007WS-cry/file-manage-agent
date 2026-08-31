@@ -576,6 +576,7 @@ def file_governance_to_recommendation_state(
         version_chains=list(state.get("version_chains", [])),
         pdf_exports=list(state.get("pdf_exports", [])),
         deliveries=list(state.get("deliveries", [])),
+        business_evidence=list(state.get("business_evidence", [])),
         memory=copy_memory_state(state.get("memory")),
         candidate_sets=[],
         decisions=[],

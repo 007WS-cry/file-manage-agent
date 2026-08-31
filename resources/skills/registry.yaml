@@ -19,8 +19,8 @@ skills:
       - version
 
   - id: evidence-confidence
-    name: 证据置信度解释
-    description: 结合 PDF 来源匹配与发送记录，说明证据强弱、限制和可支持的结论。
+    name: 业务证据理解与置信度
+    description: 结合确定性匹配和受控短摘录提出封闭业务证据候选，并说明证据限制。
     path: evidence-confidence/SKILL.md
     task_types:
       - evidence

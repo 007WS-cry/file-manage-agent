@@ -10,6 +10,7 @@ from typing import Any, Literal, cast
 from app.state.models import (
     ChangeEvidenceRecord,
     ContentSubagentInput,
+    ControlledEvidenceSnippet,
     EvidenceSubagentInput,
     RelationEvidenceRecord,
     TeamMessage,
@@ -29,6 +30,15 @@ MAX_STRUCTURED_SUMMARY_CHARACTERS = 8_000
 
 # Evidence Subagent 单项证据摘要允许的最大字符数。
 MAX_EVIDENCE_SUMMARY_CHARACTERS = 4_000
+
+# Evidence Subagent 单条受控业务证据摘录允许的最大字符数。
+MAX_EVIDENCE_SNIPPET_CHARACTERS = 1_000
+
+# 单次 Evidence 输入允许携带的受控业务证据摘录数量。
+MAX_EVIDENCE_SNIPPETS = 20
+
+# 单次 Evidence 输入全部受控业务证据摘录允许的总字符数。
+MAX_EVIDENCE_SNIPPETS_TOTAL_CHARACTERS = 8_000
 
 # Team Protocol 消息摘要允许的最大字符数，与 Pydantic 输出上限保持一致。
 MAX_TEAM_MESSAGE_SUMMARY_CHARACTERS = 4_000
@@ -140,9 +150,18 @@ EVIDENCE_INPUT_FIELDS = frozenset(
         "group_id",
         "pdf_evidence_summary",
         "delivery_evidence_summary",
+        "evidence_snippets",
         "artifact_refs",
     }
 )
+
+# 单条受控业务证据摘录允许出现的固定字段。
+EVIDENCE_SNIPPET_FIELDS = frozenset(
+    {"evidence_ref", "target_file_id", "source", "text", "effective_time"}
+)
+
+# 受控业务证据摘录允许声明的固定来源。
+EVIDENCE_SNIPPET_SOURCES = frozenset({"local_log", "email_mcp", "manual"})
 
 # TeamMessage 运行时校验必须覆盖的全部协议字段。
 TEAM_MESSAGE_FIELDS = frozenset(
@@ -610,6 +629,97 @@ def _normalize_relation_evidence(value: object) -> list[RelationEvidenceRecord]:
     return normalized
 
 
+def _normalize_evidence_snippets(value: object) -> list[ControlledEvidenceSnippet]:
+    """校验并复制 Evidence Subagent 可读取的受控业务证据摘录。
+
+    Args:
+        value: 等待校验的摘录对象列表。
+
+    Returns:
+        引用唯一、文本和总量受限且时间带时区的摘录列表。
+
+    Raises:
+        TeamProtocolError: 列表、字段、来源、时间、文本或引用不符合协议时抛出。
+    """
+    if not isinstance(value, list):
+        raise TeamProtocolError("evidence_snippets 必须是列表")
+    if len(value) > MAX_EVIDENCE_SNIPPETS:
+        raise TeamProtocolError(
+            f"evidence_snippets 不得超过 {MAX_EVIDENCE_SNIPPETS} 项"
+        )
+    normalized: list[ControlledEvidenceSnippet] = []
+    seen_refs: set[str] = set()
+    total_characters = 0
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise TeamProtocolError(f"evidence_snippets[{index}] 必须是对象")
+        _reject_unknown_fields(
+            item,
+            allowed_fields=EVIDENCE_SNIPPET_FIELDS,
+            payload_name=f"evidence_snippets[{index}]",
+        )
+        evidence_ref = _normalize_required_text(
+            item.get("evidence_ref"),
+            field_name=f"evidence_snippets[{index}].evidence_ref",
+            max_characters=MAX_ARTIFACT_REF_CHARACTERS,
+        )
+        if evidence_ref in seen_refs:
+            raise TeamProtocolError("evidence_snippets 不得包含重复 evidence_ref")
+        source = item.get("source")
+        if source not in EVIDENCE_SNIPPET_SOURCES:
+            raise TeamProtocolError(
+                f"evidence_snippets[{index}].source 不在允许的来源中"
+            )
+        text = _normalize_required_text(
+            item.get("text"),
+            field_name=f"evidence_snippets[{index}].text",
+            max_characters=MAX_EVIDENCE_SNIPPET_CHARACTERS,
+        )
+        total_characters += len(text)
+        if total_characters > MAX_EVIDENCE_SNIPPETS_TOTAL_CHARACTERS:
+            raise TeamProtocolError(
+                "evidence_snippets 全部文本超过受控总字符上限"
+            )
+        effective_time = item.get("effective_time")
+        normalized_time: str | None = None
+        if effective_time is not None:
+            normalized_time = _normalize_required_text(
+                effective_time,
+                field_name=f"evidence_snippets[{index}].effective_time",
+                max_characters=64,
+            )
+            try:
+                parsed_time = datetime.fromisoformat(
+                    normalized_time.replace("Z", "+00:00")
+                )
+            except ValueError as error:
+                raise TeamProtocolError(
+                    f"evidence_snippets[{index}].effective_time 必须是 ISO 8601 时间"
+                ) from error
+            if parsed_time.tzinfo is None:
+                raise TeamProtocolError(
+                    f"evidence_snippets[{index}].effective_time 必须包含时区"
+                )
+        normalized.append(
+            ControlledEvidenceSnippet(
+                evidence_ref=evidence_ref,
+                target_file_id=_normalize_required_text(
+                    item.get("target_file_id"),
+                    field_name=f"evidence_snippets[{index}].target_file_id",
+                    max_characters=256,
+                ),
+                source=cast(
+                    Literal["local_log", "email_mcp", "manual"],
+                    source,
+                ),
+                text=text,
+                effective_time=normalized_time,
+            )
+        )
+        seen_refs.add(evidence_ref)
+    return normalized
+
+
 def validate_content_subagent_input(
     payload: Mapping[str, object],
 ) -> ContentSubagentInput:
@@ -762,13 +872,13 @@ def validate_version_subagent_input(
 def validate_evidence_subagent_input(
     payload: Mapping[str, object],
 ) -> EvidenceSubagentInput:
-    """校验 Evidence Subagent 只收到 PDF、发送证据摘要和产物引用。
+    """校验 Evidence Subagent 只收到摘要、有界业务摘录和受控引用。
 
     Args:
         payload: 协调 Agent 生成的证据分析输入信封。
 
     Returns:
-        已规范化且不包含 PDF 或业务文件正文的证据输入对象。
+        已规范化且不包含 PDF、完整邮件或业务文件正文的证据输入对象。
 
     Raises:
         TeamProtocolError: 输入包含未知字段、正文或超长摘要时抛出。
@@ -780,6 +890,12 @@ def validate_evidence_subagent_input(
         allowed_fields=EVIDENCE_INPUT_FIELDS,
         payload_name="Evidence Subagent 输入",
     )
+    snippets = _normalize_evidence_snippets(payload.get("evidence_snippets", []))
+    artifact_refs = _normalize_artifact_refs(
+        payload.get("artifact_refs"), field_name="artifact_refs"
+    )
+    if any(item["evidence_ref"] not in artifact_refs for item in snippets):
+        raise TeamProtocolError("evidence_snippets 引用必须属于 artifact_refs 白名单")
     return EvidenceSubagentInput(
         task_id=_normalize_required_text(
             payload.get("task_id"), field_name="task_id", max_characters=256
@@ -797,9 +913,8 @@ def validate_evidence_subagent_input(
             field_name="delivery_evidence_summary",
             max_characters=MAX_EVIDENCE_SUMMARY_CHARACTERS,
         ),
-        artifact_refs=_normalize_artifact_refs(
-            payload.get("artifact_refs"), field_name="artifact_refs"
-        ),
+        evidence_snippets=snippets,
+        artifact_refs=artifact_refs,
     )
 
 

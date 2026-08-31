@@ -28,6 +28,7 @@ def make_email_record() -> dict[str, object]:
         "recipient_label": "customer-A",
         "customer_confirmed": True,
         "evidence_ref": "email-mcp://mock/thread-001/attachment-001",
+        "evidence_text": "最终版本已签字。",
     }
 
 
@@ -38,6 +39,7 @@ def test_normalize_email_mcp_record_accepts_fixed_protocol() -> None:
     assert record["attachment_name"] == "contract-v3.docx"
     assert record["attachment_sha256"] == "a" * 64
     assert record["customer_confirmed"] is True
+    assert record["evidence_text"] == "最终版本已签字。"
     assert record["evidence_ref"].startswith("email-mcp://")
 
 
@@ -56,6 +58,15 @@ def test_normalize_email_mcp_record_rejects_attachment_path() -> None:
     payload["attachment_name"] = "../contract-v3.docx"
 
     with pytest.raises(ValueError, match="基础文件名"):
+        normalize_email_mcp_record(payload, index=0)
+
+
+def test_normalize_email_mcp_record_rejects_protocol_extra_body() -> None:
+    """协议外完整正文型字段必须被拒绝，不能随 MCP 记录进入图状态。"""
+    payload = make_email_record()
+    payload["body"] = "完整邮件正文"
+
+    with pytest.raises(ValueError, match="协议外字段"):
         normalize_email_mcp_record(payload, index=0)
 
 
