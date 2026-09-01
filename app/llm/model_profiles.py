@@ -125,7 +125,9 @@ SUPPORTED_STRUCTURED_OUTPUT_METHODS = frozenset(
 )
 
 # 可以单独路由模型 Profile 的固定 Subagent 任务类型。
-SUPPORTED_MODEL_TASK_TYPES = frozenset({"content", "version", "evidence"})
+SUPPORTED_MODEL_TASK_TYPES = frozenset(
+    {"content", "version", "evidence", "recommendation_judge"}
+)
 
 # Profile ID 仅允许稳定的 ASCII 标识，避免日志和 checkpoint 出现控制字符。
 MODEL_PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -587,7 +589,7 @@ def resolve_model_profile(
     Args:
         config: 已规范化的多模型 LLM 配置状态。
         profile_id: 调用方显式指定的可选 Profile ID。
-        task_type: Content、Version 或 Evidence 固定任务类型。
+        task_type: Content、Version、Evidence 或 Recommendation Judge 固定任务类型。
 
     Returns:
         与配置解除可变引用关系的目标模型 Profile。

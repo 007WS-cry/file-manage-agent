@@ -48,7 +48,11 @@ def create_task(
         ("inventory", "content", ["file-content-analysis"]),
         ("version_analysis", "version", ["version-relation"]),
         ("evidence", "evidence", ["evidence-confidence"]),
-        ("recommendation", "coordinator", ["governance-report"]),
+        (
+            "recommendation",
+            "recommendation_judge",
+            ["recommendation-second-opinion"],
+        ),
         ("human_review", "coordinator", ["governance-report"]),
         ("report", "coordinator", ["governance-report"]),
     ],

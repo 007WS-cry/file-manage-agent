@@ -263,13 +263,14 @@ def test_role_assignment_uses_fixed_mapping_without_touching_runtime_fields() ->
         ("inventory", "content"),
         ("version_analysis", "version"),
         ("evidence", "evidence"),
+        ("recommendation", "recommendation_judge"),
     ],
 )
-def test_resolve_subagent_task_accepts_only_three_fixed_roles(
+def test_resolve_subagent_task_accepts_four_fixed_roles(
     task_type: str,
     expected_role: str,
 ) -> None:
-    """前三类 Task 应解析为唯一实际固定角色。"""
+    """前四类 Task 应解析为唯一实际固定角色。"""
     task = resolve_subagent_task(_create_tasks(), build_task_id(RUN_ID, task_type))
 
     assert task["task_type"] == task_type
@@ -281,7 +282,7 @@ def test_resolve_subagent_task_rejects_coordinator_and_failed_tasks() -> None:
     tasks = _create_tasks()
 
     with pytest.raises(ValueError, match="不允许分派"):
-        resolve_subagent_task(tasks, build_task_id(RUN_ID, "recommendation"))
+        resolve_subagent_task(tasks, build_task_id(RUN_ID, "human_review"))
 
     _replace_task(tasks, "inventory", status="failed", error="扫描失败")
     with pytest.raises(ValueError, match="不允许再次分派"):

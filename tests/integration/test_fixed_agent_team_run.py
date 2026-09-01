@@ -8,7 +8,7 @@ from docx import Document
 from app.graphs.file_governance import build_file_governance_graph
 from app.state.factories import create_initial_state
 
-"""本文件端到端验证三个固定 Subagent 已接入真实业务阶段且状态保持最小化。"""
+"""本文件端到端验证四个固定 Subagent 已接入真实业务阶段且状态保持最小化。"""
 
 # 放在长正文尾部、不得进入内容预览、Team Message 或模型审计的测试标记。
 FULL_BODY_TAIL_MARKER = "FULL-BODY-TAIL-MUST-NOT-ENTER-CHECKPOINT"
@@ -66,8 +66,8 @@ def create_fixed_team_state(tmp_path: Path) -> dict:
     )
 
 
-def test_three_fixed_subagents_run_through_business_stages(tmp_path: Path) -> None:
-    """Content、Version、Evidence 应经 Team Orchestration 返回最小消息和审计。"""
+def test_four_fixed_subagents_run_through_business_stages(tmp_path: Path) -> None:
+    """Content、Version、Evidence 和 Judge 应经编排返回最小消息和审计。"""
     result = build_file_governance_graph().invoke(
         create_fixed_team_state(tmp_path),
         config={"configurable": {"thread_id": "fixed-agent-team-run"}},
@@ -83,6 +83,7 @@ def test_three_fixed_subagents_run_through_business_stages(tmp_path: Path) -> No
         "content-subagent",
         "version-subagent",
         "evidence-subagent",
+        "recommendation-judge-subagent",
     }
     expected_message_fields = {
         "message_id",
@@ -101,6 +102,7 @@ def test_three_fixed_subagents_run_through_business_stages(tmp_path: Path) -> No
         "content-subagent",
         "version-subagent",
         "evidence-subagent",
+        "recommendation-judge-subagent",
     }
     assert all(member["status"] == "idle" for member in result["team"]["members"])
     assert all(member["current_task_id"] is None for member in result["team"]["members"])

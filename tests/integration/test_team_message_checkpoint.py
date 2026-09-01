@@ -120,6 +120,7 @@ def test_checkpoint_excludes_api_key_and_full_model_input(
         "content-subagent",
         "version-subagent",
         "evidence-subagent",
+        "recommendation-judge-subagent",
     }
     assert restored_state["llm"]["api_key_env"] == CHECKPOINT_API_KEY_ENV
     assert FORBIDDEN_API_KEY_VALUE not in restored_state["llm"].values()

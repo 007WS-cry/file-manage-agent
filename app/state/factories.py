@@ -73,10 +73,10 @@ def _resolve_default_prompt_source_path() -> str:
 # 默认 System Prompt 资源路径，兼容源码、容器和 wheel 安装布局。
 DEFAULT_PROMPT_SOURCE_PATH = _resolve_default_prompt_source_path()
 
-# 0.4.4 三个业务阶段和固定 Subagent 共用的 Team Protocol 版本。
+# 四个固定 Subagent 共用的 Team Protocol 版本。
 DEFAULT_TEAM_PROTOCOL_VERSION = "team-protocol-v1"
 
-# 0.4.4 固定团队允许的最大 Subagent 并发数；当前编排图仍按单请求串行调用。
+# 固定团队允许的最大 Subagent 并发数；当前编排图仍按单请求串行调用。
 DEFAULT_MAX_PARALLEL_AGENTS = 3
 
 # 每次新运行默认最多召回的长期 Memory 条目数量。
@@ -700,13 +700,13 @@ def create_hook_config_state(
 
 
 def create_team_state() -> TeamState:
-    """创建协调者和三个固定角色组成的初始 Agent Team 状态。
+    """创建协调者和四个固定角色组成的初始 Agent Team 状态。
 
     状态工厂只建立稳定成员、职责和协议状态，不创建模型 Client、执行 Subagent
     或分配业务 Task，因而不会产生网络、文件或其他外部副作用。
 
     Returns:
-        四个成员均为空闲、没有当前 Task 且 Skills 为空的固定 Team 状态。
+        五个成员均为空闲、没有当前 Task 且 Skills 为空的固定 Team 状态。
     """
     members = [
         AgentMemberState(
@@ -736,6 +736,14 @@ def create_team_state() -> TeamState:
         AgentMemberState(
             id="evidence-subagent",
             role="evidence",
+            status="idle",
+            current_task_id=None,
+            tool_names=[],
+            skill_ids=[],
+        ),
+        AgentMemberState(
+            id="recommendation-judge-subagent",
+            role="recommendation_judge",
             status="idle",
             current_task_id=None,
             tool_names=[],
@@ -1293,6 +1301,7 @@ def create_initial_state(
         pdf_exports=[],
         deliveries=[],
         business_evidence=[],
+        recommendation_judgments=[],
         decisions=[],
         node_executions=[],
         degradations=[],

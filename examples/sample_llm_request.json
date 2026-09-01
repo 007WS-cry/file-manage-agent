@@ -116,7 +116,8 @@
     "task_profile_ids": {
       "content": "content-claude",
       "version": "version-deepseek",
-      "evidence": "evidence-qwen"
+      "evidence": "evidence-qwen",
+      "recommendation_judge": "evidence-qwen"
     },
     "fallback_enabled": true
   },

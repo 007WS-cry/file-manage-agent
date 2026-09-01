@@ -4,7 +4,7 @@ File Manage Agent 是一个基于 LangGraph 的只读文件版本治理工具。
 和文本型 PDF，识别内容相近的文件版本，分析差异与证据，并生成可解释的主版本建议和
 Markdown 报告。
 
-当前版本 `1.0.4`。
+当前版本 `1.0.5`。
 
 ## 主要能力
 
@@ -12,6 +12,7 @@ Markdown 报告。
 - **双轨版本关系分析**：融合确定性判断与 LLM 语义候选，识别直接修订、并行分支、导出版本、语义重复和无关文件。
 - **语义变更分析**：把金额、期限、责任主体等差异分类并由确定性规则提升人工审核优先级。
 - **业务证据理解**：Evidence Subagent 从受控邮件或日志摘录识别批准、作废、仅供参考、继续修改和最终版本等证据，再由确定性规则执行加权、排除或人工审核。
+- **受约束推荐裁决**：Recommendation Judge 只读取压缩决策包并提供可弃权的第二意见；共识、冲突和低置信度由固定规则融合。
 - **可解释推荐**：结合内容、PDF 来源和发送记录推荐主版本；低置信度结果交由人工确认。
 - **离线可用**：默认关闭真实 LLM，使用确定性规则和本地 Mock 即可运行。
 - **多种运行方式**：支持 CLI、Python、HTTP API、后台 Worker 和 Cron 调度。
@@ -136,6 +137,11 @@ Copy-Item .env.example .env
 参考文件退出主版本竞争，继续修改则强制人工审核。详见
 [业务证据语义理解](docs/business-evidence-analysis.md)。
 
+启用 Recommendation Judge 后，每个版本组会在确定性推荐之后生成一个不含完整
+正文的压缩决策包。Judge 只能在候选白名单中选择或弃权：与高置信确定性结果
+一致时记录共识，冲突时强制人工审核，低置信场景中最多只能提升候选优先级，
+不能单方面解除审核。详见 [受约束 Recommendation Judge](docs/recommendation-judge.md)。
+
 ## 运行方式
 
 | 场景 | 入口 |
@@ -164,6 +170,8 @@ Copy-Item .env.example .env
 - [人工确认与后台恢复](docs/resume-and-interview.md)
 - [1.0.0 架构说明](docs/architecture-1.0.0.md)
 - [开发与测试](docs/development.md)
+- [1.0.5 发布说明](docs/release-1.0.5.md)
+- [受约束 Recommendation Judge](docs/recommendation-judge.md)
 - [1.0.4 发布说明](docs/release-1.0.4.md)
 - [业务证据语义理解](docs/business-evidence-analysis.md)
 - [1.0.3 发布说明](docs/release-1.0.3.md)

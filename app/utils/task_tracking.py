@@ -14,6 +14,10 @@ from app.agents.protocol import (
 )
 from app.graphs.team_orchestration import team_orchestration_graph
 from app.services.business_evidence import build_business_evidence_records
+from app.services.recommendation_judge import (
+    build_recommendation_judge_requests,
+    fuse_recommendation_judgments,
+)
 from app.services.task_system import build_task_execution_id, build_task_id
 from app.state.converters import (
     file_governance_to_team_orchestration_state,
@@ -25,10 +29,14 @@ from app.state.models import (
     BusinessEvidenceRecord,
     ContentSubagentInput,
     ControlledEvidenceSnippet,
+    DecisionRecord,
     ErrorRecord,
     EvidenceSubagentInput,
     EvidenceSubagentOutput,
     FileGovernanceState,
+    RecommendationJudgeInput,
+    RecommendationJudgeOutput,
+    RecommendationJudgeRecord,
     TaskItem,
     TaskStatusUpdate,
     TeamState,
@@ -61,7 +69,7 @@ BUSINESS_OUTPUT_REFS: dict[str, tuple[str, ...]] = {
         "version_chains",
     ),
     "evidence": ("pdf_exports", "deliveries", "business_evidence"),
-    "recommendation": ("decisions", "human_review"),
+    "recommendation": ("decisions", "recommendation_judgments", "human_review"),
 }
 
 
@@ -70,7 +78,11 @@ def run_team_orchestration_subgraph(
     *,
     task_update: TaskStatusUpdate | None = None,
     dispatch_request: (
-        ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | RecommendationJudgeInput
+        | None
     ) = None,
 ) -> dict:
     """显式转换状态并执行一次 Task 同步或固定 Subagent 分派。
@@ -137,6 +149,32 @@ def run_evidence_subagent_orchestration(
     subgraph_result = team_orchestration_graph.invoke(subgraph_input)
     raw_output = subgraph_result.get("dispatch_result")
     output = raw_output if isinstance(raw_output, EvidenceSubagentOutput) else None
+    return (
+        team_orchestration_state_to_file_governance_update(subgraph_result),
+        output.model_copy(deep=True) if output is not None else None,
+    )
+
+
+def run_recommendation_judge_orchestration(
+    state: FileGovernanceState,
+    dispatch_request: RecommendationJudgeInput,
+) -> tuple[dict, RecommendationJudgeOutput | None]:
+    """执行一次 Recommendation Judge 分派并提取已校验第二意见。
+
+    Args:
+        state: 已完成确定性 Recommendation 的顶层治理工作状态。
+        dispatch_request: 当前版本组的压缩决策包。
+
+    Returns:
+        Team Orchestration 公开状态更新和可选已验证 Judge 输出。
+    """
+    subgraph_input = file_governance_to_team_orchestration_state(
+        state,
+        dispatch_request=dispatch_request,
+    )
+    subgraph_result = team_orchestration_graph.invoke(subgraph_input)
+    raw_output = subgraph_result.get("dispatch_result")
+    output = raw_output if isinstance(raw_output, RecommendationJudgeOutput) else None
     return (
         team_orchestration_state_to_file_governance_update(subgraph_result),
         output.model_copy(deep=True) if output is not None else None,
@@ -396,12 +434,49 @@ def dispatch_evidence_subagent_requests(
         dispatch_errors = cast(list[ErrorRecord], update.get("errors", []))
         errors.extend(dispatch_errors)
         if output is not None:
-            business_evidence.extend(
-                build_business_evidence_records(request["group_id"], output)
-            )
+            business_evidence.extend(build_business_evidence_records(request["group_id"], output))
         if has_orchestration_failure(dispatch_errors):
             break
     return working_state, business_evidence, errors
+
+
+def dispatch_recommendation_judge_requests(
+    state: FileGovernanceState,
+) -> tuple[
+    FileGovernanceState,
+    list[DecisionRecord],
+    list[RecommendationJudgeRecord],
+    list[ErrorRecord],
+]:
+    """串行执行每个版本组的 Judge 分派并用固定规则融合。
+
+    Args:
+        state: 已完成确定性 Recommendation 子图的顶层状态。
+
+    Returns:
+        已合并团队审计的状态、融合推荐、Judge 审计记录和新增错误。
+    """
+    requests = build_recommendation_judge_requests(state)
+    working_state = state
+    outputs_by_group: dict[str, RecommendationJudgeOutput] = {}
+    errors: list[ErrorRecord] = []
+    for request in requests:
+        update, output = run_recommendation_judge_orchestration(
+            working_state,
+            request,
+        )
+        working_state = apply_team_dispatch_update(working_state, update)
+        dispatch_errors = cast(list[ErrorRecord], update.get("errors", []))
+        errors.extend(dispatch_errors)
+        if output is not None:
+            outputs_by_group[request["group_id"]] = output
+        if has_orchestration_failure(dispatch_errors):
+            break
+    decisions, judgments = fuse_recommendation_judgments(
+        state.get("decisions", []),
+        outputs_by_group,
+    )
+    return working_state, decisions, judgments, errors
 
 
 def _task_by_type(

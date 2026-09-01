@@ -49,7 +49,7 @@ hooks:
     cleanup_run_resources_hook: ignore
 
 llm:
-  # 0.5.2 继续默认关闭真实模型；三个业务阶段分派时强制使用 Mock 且不访问网络。
+  # 1.0.5 继续默认关闭真实模型；四个固定 Subagent 分派时使用安全 Mock 且不访问网络。
   enabled: false
 
   # 这是兼容旧请求的单模型写法，运行时会规范化为 ID 为 default 的单一 Profile。
@@ -282,7 +282,7 @@ runtime:
     preserve_dirty: true
 
 recovery:
-  # 1.0.4 已完成业务证据理解、双轨关系、语义变更、审核规则与端到端验收；关闭时保留兼容失败语义。
+  # 1.0.5 已完成受约束 Judge、业务证据、双轨关系、语义变更与端到端审核规则。
   enabled: true
 
   # 未单独配置错误类别时使用保守策略：不自动重试、不静默降级、允许人工处理。

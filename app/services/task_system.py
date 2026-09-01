@@ -8,18 +8,20 @@ from app.state.models import TaskDefinition, TaskItem, TodoDefinition, TodoItem
 """本模块实现固定治理 Task DAG、拓扑校验、角色分配和 Todo 纯投影。"""
 
 
-# 固定 Task 类型到实际负责角色的映射；前三类 Task 可由固定 Subagent 执行。
+# 固定 Task 类型到实际负责角色的映射；前四类 Task 由固定 Subagent 参与。
 TASK_ROLE_BY_TYPE: dict[str, str] = {
     "inventory": "content",
     "version_analysis": "version",
     "evidence": "evidence",
-    "recommendation": "coordinator",
+    "recommendation": "recommendation_judge",
     "human_review": "coordinator",
     "report": "coordinator",
 }
 
 # 允许通过 Team Orchestration 分派给固定 Subagent 的 Task 类型。
-SUBAGENT_TASK_TYPES = frozenset({"inventory", "version_analysis", "evidence"})
+SUBAGENT_TASK_TYPES = frozenset(
+    {"inventory", "version_analysis", "evidence", "recommendation"}
+)
 
 # 文件治理运行使用的固定 Task DAG 模板，元组顺序同时作为稳定展示顺序。
 TASK_DAG_TEMPLATE: tuple[TaskDefinition, ...] = (
@@ -48,21 +50,32 @@ TASK_DAG_TEMPLATE: tuple[TaskDefinition, ...] = (
         "task_type": "recommendation",
         "title": "生成主版本推荐",
         "dependency_types": ("evidence",),
-        "input_refs": ("version_chains", "pdf_exports", "deliveries"),
+        "input_refs": (
+            "version_chains",
+            "diffs",
+            "pdf_exports",
+            "deliveries",
+            "business_evidence",
+        ),
         "requires_repository_write": False,
     },
     {
         "task_type": "human_review",
         "title": "完成人工审核",
         "dependency_types": ("recommendation",),
-        "input_refs": ("decisions", "human_review"),
+        "input_refs": ("decisions", "recommendation_judgments", "human_review"),
         "requires_repository_write": False,
     },
     {
         "task_type": "report",
         "title": "生成治理报告",
         "dependency_types": ("human_review",),
-        "input_refs": ("decisions", "errors", "human_review"),
+        "input_refs": (
+            "decisions",
+            "recommendation_judgments",
+            "errors",
+            "human_review",
+        ),
         "requires_repository_write": False,
     },
 )
@@ -362,7 +375,13 @@ def create_task_dag(
                 attempt_count=0,
                 dependencies=dependencies,
                 assigned_role=cast(
-                    Literal["coordinator", "content", "version", "evidence"],
+                    Literal[
+                        "coordinator",
+                        "content",
+                        "version",
+                        "evidence",
+                        "recommendation_judge",
+                    ],
                     TASK_ROLE_BY_TYPE[task_type],
                 ),
                 requires_repository_write=definition["requires_repository_write"],
@@ -381,7 +400,7 @@ def create_task_dag(
 def assign_tasks_to_roles(tasks: Sequence[TaskItem]) -> list[TaskItem]:
     """按照固定职责映射设置 Task 的 assigned_role。
 
-    本函数只修正角色字段，不修改 Task 状态、依赖、输入输出、错误或时间。前三类
+    本函数只修正角色字段，不修改 Task 状态、依赖、输入输出、错误或时间。前四类
     Task 的角色会用于 Team Orchestration 选择实际固定 Subagent。
 
     Args:

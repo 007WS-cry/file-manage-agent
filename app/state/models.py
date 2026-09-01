@@ -827,6 +827,56 @@ class DecisionRecord(TypedDict):
     # 必须保留的版本链文件；默认保留组内全部文件。
 
 
+class RecommendationJudgeRecord(TypedDict):
+    """Recommendation Judge 意见经确定性规则融合后的审计记录。"""
+
+    id: str
+    # 根据版本组生成的稳定裁决记录 ID。
+
+    group_id: str
+    # 本条第二意见对应的版本组 ID。
+
+    deterministic_recommended_file_id: str | None
+    # Judge 介入前由确定性规则选出的文件 ID。
+
+    deterministic_confidence: float
+    # Judge 介入前的确定性推荐置信度。
+
+    judge_recommended_file_id: str | None
+    # Judge 提出的候选文件 ID；弃权时为 None。
+
+    judge_confidence: float
+    # Judge 对其第二意见的置信度。
+
+    supporting_reasons: list[str]
+    # Judge 支持候选的有界理由。
+
+    counterarguments: list[str]
+    # Judge 对自身候选的反证或风险。
+
+    missing_information: list[str]
+    # 当前决策包中缺失且可能影响判断的信息。
+
+    should_abstain: bool
+    # Judge 是否明确弃权。
+
+    resolution: Literal[
+        "strong_consensus",
+        "weak_consensus",
+        "conflict_review",
+        "judge_priority_signal",
+        "abstained_review",
+        "deterministic_only",
+    ]
+    # 固定规则对确定性结果与 Judge 意见的融合类型。
+
+    review_required: bool
+    # 本次融合是否强制进入人工审核。
+
+    score_adjustment: float
+    # 低置信确定性场景中给候选的有上限固定加分。
+
+
 class HumanReviewState(TypedDict):
     """LangGraph interrupt 暂停与恢复所需的人工确认状态。"""
 
@@ -1986,6 +2036,7 @@ class TaskItem(TypedDict):
         "content",
         "version",
         "evidence",
+        "recommendation_judge",
     ]
     # 当前 Task 的固定负责角色；0.4.4 由 Team Orchestration 实际选择并调用。
 
@@ -2208,8 +2259,11 @@ class LLMConfigState(TypedDict):
     default_profile_id: str
     # 未声明任务专属路由时使用的默认 Profile ID。
 
-    task_profile_ids: dict[Literal["content", "version", "evidence"], str]
-    # 三个固定 Subagent 任务类型到 Profile ID 的可选路由映射。
+    task_profile_ids: dict[
+        Literal["content", "version", "evidence", "recommendation_judge"],
+        str,
+    ]
+    # 四个固定 Subagent 任务类型到 Profile ID 的可选路由映射。
 
     fallback_enabled: bool
     # 模型失败后是否允许使用协调 Agent 或确定性逻辑继续。
@@ -2276,7 +2330,13 @@ class AgentMemberState(TypedDict):
     id: str
     # Agent 的稳定唯一 ID。
 
-    role: Literal["coordinator", "content", "version", "evidence"]
+    role: Literal[
+        "coordinator",
+        "content",
+        "version",
+        "evidence",
+        "recommendation_judge",
+    ]
     # Agent 的固定职责，不支持运行时动态招聘。
 
     status: Literal["idle", "working", "waiting", "failed"]
@@ -2299,7 +2359,7 @@ class TeamState(TypedDict):
     # 唯一协调 Agent ID。
 
     members: list[AgentMemberState]
-    # 协调者、Content、Version 和 Evidence 四个固定成员。
+    # 协调者、Content、Version、Evidence 和 Judge 五个固定成员。
 
     protocol_version: str
     # Team Protocol 的结构版本，例如 team-protocol-v1。
@@ -2438,6 +2498,53 @@ class EvidenceSubagentInput(TypedDict):
     # PDF 匹配和发送证据的产物引用。
 
 
+class RecommendationJudgeCandidateInput(TypedDict):
+    """Recommendation Judge 决策包中的单个压缩候选。"""
+
+    file_id: str
+    # 候选文件的稳定 ID。
+
+    deterministic_score: float
+    # 确定性推荐引擎产生的当前分数。
+
+    version_position: Literal["leaf", "non_leaf", "unknown"]
+    # 候选在版本链中的叶子、非叶子或未知位置。
+
+    semantic_changes: list[str]
+    # 与候选相关的有界语义变更摘要。
+
+    evidence: list[str]
+    # 与候选相关的有界外部证据摘要。
+
+
+class RecommendationJudgeInput(TypedDict):
+    """Recommendation Judge 不含完整文档的压缩决策包。"""
+
+    task_id: str
+    # 当前 Recommendation Task ID。
+
+    group_id: str
+    # 当前等待第二意见的版本组 ID。
+
+    candidates: list[RecommendationJudgeCandidateInput]
+    # 由确定性状态压缩生成的候选列表。
+
+    deterministic_recommended_file_id: str | None
+    # 当前确定性推荐文件 ID。
+
+    deterministic_confidence: float
+    # 当前确定性推荐置信度。
+
+    deterministic_needs_human_review: bool
+    # 确定性规则是否已要求人工审核。
+
+    risk_flags: list[str]
+    # 分支、高重要性变更或证据风险等有界标记。
+
+    artifact_refs: list[str]
+    # 决策包允许 Judge 返回的受控引用白名单。
+
+
 class ContentSubagentOutput(BaseModel):
     """Content Subagent 允许返回的结构化结果。"""
 
@@ -2466,16 +2573,22 @@ class SemanticChangeAnalysis(BaseModel):
     significance: ChangeSignificance
     # 当前变更的业务重要性等级。
 
-    old_value: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
-    ] | None = None
+    old_value: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+        ]
+        | None
+    ) = None
     # 证据中可复核的旧值；版本方向未知或不存在旧值时为 None。
 
-    new_value: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
-    ] | None = None
+    new_value: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=1000),
+        ]
+        | None
+    ) = None
     # 证据中可复核的新值；版本方向未知或不存在新值时为 None。
 
     business_impact: Annotated[
@@ -2569,10 +2682,13 @@ class BusinessEvidenceAnalysis(BaseModel):
     actor_role: BusinessEvidenceActorRole
     # 从摘录语义识别出的参与者角色；无法确定时必须为 unknown。
 
-    effective_time: Annotated[
-        str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
-    ] | None = None
+    effective_time: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
+        ]
+        | None
+    ) = None
     # 证据生效时间，只能复用所引摘录元数据中的带时区时间。
 
     reason: Annotated[
@@ -2613,6 +2729,52 @@ class EvidenceSubagentOutput(BaseModel):
 
     artifact_refs: list[str] = Field(default_factory=list, max_length=50)
     # 详细证据分析的产物引用。
+
+
+class RecommendationJudgeOutput(BaseModel):
+    """Recommendation Judge 允许返回的受约束第二意见。"""
+
+    model_config = ConfigDict(extra="forbid")
+    # 禁止模型返回系统动作、分数改写或其他未定义字段。
+
+    summary: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=4000),
+    ]
+    # 面向 Team Protocol 和审计日志的简短中文裁决摘要。
+
+    recommended_file_id: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=256),
+        ]
+        | None
+    ) = None
+    # Judge 提出的候选文件 ID；只能来自输入候选，弃权时为 None。
+
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Judge 对第二意见的置信度。
+
+    supporting_reasons: list[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    ] = Field(default_factory=list, max_length=20)
+    # 支持当前候选的有界理由。
+
+    counterarguments: list[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    ] = Field(default_factory=list, max_length=20)
+    # 反对当前候选或支持其他候选的有界理由。
+
+    missing_information: list[
+        Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=1000)]
+    ] = Field(default_factory=list, max_length=20)
+    # 会影响判断但当前决策包未提供的信息。
+
+    should_abstain: bool = True
+    # 无法稳健判断时必须为 True，且 recommended_file_id 必须为 None。
+
+    artifact_refs: list[str] = Field(default_factory=list, max_length=50)
+    # Judge 使用的受控证据引用，必须属于输入白名单。
 
 
 class ContentSubagentGraphState(TypedDict):
@@ -2744,6 +2906,49 @@ class EvidenceSubagentGraphState(TypedDict):
     # 模型调用、输出校验或产物保存错误。
 
 
+class RecommendationJudgeGraphState(TypedDict):
+    """Recommendation Judge Subagent 内部子图状态。"""
+
+    error_context: ErrorContextState
+    # Judge 节点创建统一恢复错误所需的 Task 与策略上下文。
+
+    input: RecommendationJudgeInput
+    # 已通过 Team Protocol 校验的压缩决策包。
+
+    team: TeamState
+    # 用于校验 assignment、result 和 error 消息的固定团队状态。
+
+    llm: LLMConfigState
+    # 当前运行使用的统一多模型 LLM 配置。
+
+    skill_context: list[SkillInstructionState]
+    # 只包含当前 Recommendation Task 已绑定 Skill 的指令快照。
+
+    selected_model_profile_id: str
+    # ``resolve_model_profile`` 节点为 Judge 解析出的 Profile ID。
+
+    system_prompt: str
+    # Judge 固定职责、弃权与禁止执行动作边界组成的系统提示词。
+
+    user_prompt: str
+    # 只由压缩候选、确定性结果和受控证据组成的用户提示词。
+
+    output: RecommendationJudgeOutput | None
+    # Pydantic 校验后的第二意见；调用前为 None。
+
+    fallback_used: bool
+    # 是否使用了不影响确定性结果的弃权回退。
+
+    team_messages: Annotated[list[TeamMessage], merge_by_message_id]
+    # 本子图产生的 assignment、result 或 error Team Protocol 消息。
+
+    llm_calls: Annotated[list[LLMCallRecord], merge_by_id]
+    # 本子图产生的模型调用审计记录。
+
+    errors: Annotated[list[ErrorRecord], merge_by_id]
+    # 模型调用、输出校验或产物保存错误。
+
+
 class FileGovernanceState(TypedDict):
     """一次完整文件版本治理任务使用的顶层状态。
 
@@ -2774,7 +2979,7 @@ class FileGovernanceState(TypedDict):
     # 本次运行的模型 Provider、生成参数、超时和回退配置。
 
     team: TeamState
-    # 协调 Agent 和三个固定 Subagent 的团队状态。
+    # 协调 Agent 和四个固定 Subagent 的团队状态。
 
     skill_registry: SkillRegistryState
     # 顶层加载的 Skill 元数据及当前按 Task 绑定状态。
@@ -2863,6 +3068,9 @@ class FileGovernanceState(TypedDict):
     business_evidence: Annotated[list[BusinessEvidenceRecord], merge_by_id]
     # Evidence Subagent 候选经白名单校验和固定规则映射后的业务证据。
 
+    recommendation_judgments: Annotated[list[RecommendationJudgeRecord], merge_by_id]
+    # Judge 第二意见经固定融合规则处理后的审计记录。
+
     decisions: Annotated[list[DecisionRecord], merge_by_id]
     # 每个版本组各自的主版本推荐结果。
 
@@ -2906,10 +3114,22 @@ class TeamOrchestrationGraphState(TypedDict):
     task_update: TaskStatusUpdate | None
     # 顶层流程传入的单次状态更新；首次创建 DAG 时可以为 None。
 
-    dispatch_request: ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
+    dispatch_request: (
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | RecommendationJudgeInput
+        | None
+    )
     # 可选 Subagent 分派请求；状态同步调用或请求消费完成后为 None。
 
-    dispatch_result: ContentSubagentOutput | VersionSubagentOutput | EvidenceSubagentOutput | None
+    dispatch_result: (
+        ContentSubagentOutput
+        | VersionSubagentOutput
+        | EvidenceSubagentOutput
+        | RecommendationJudgeOutput
+        | None
+    )
     # 当前 Subagent 调用产生的 Pydantic 结构化结果。
 
     active_worktree_id: str | None

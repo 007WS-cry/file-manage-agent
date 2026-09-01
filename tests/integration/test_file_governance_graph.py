@@ -152,6 +152,10 @@ def test_top_graph_registers_task_tracking_around_four_business_subgraphs() -> N
     ) in edges
     assert (
         "run_recommendation_subgraph",
+        "dispatch_recommendation_judge_task",
+    ) in edges
+    assert (
+        "dispatch_recommendation_judge_task",
         "sync_recommendation_task_status",
     ) in edges
     assert ("validate_report_result", "persist_long_term_memory") in edges

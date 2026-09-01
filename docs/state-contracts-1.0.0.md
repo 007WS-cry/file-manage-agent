@@ -159,6 +159,21 @@ Recommendation 子图中的确定性规则决定。人工审核中断可展示�
 证据引用和规则结果。旧日志不含 `evidence_text` 时获得 `None`，Evidence 回退输出的
 `business_evidence` 为空，因此原确定性路径保持兼容。
 
+### 1.0.5 受约束推荐裁决扩展
+
+1.0.5 在确定性推荐之后增加固定 Recommendation Judge，并新增以下状态：
+
+| 状态 | 字段 | 含义 |
+| --- | --- | --- |
+| `RecommendationJudgeInput` | `candidates` | 只包含候选评分、版本位置、有界语义摘要和证据摘要的压缩决策包 |
+| `RecommendationJudgeOutput` | `recommended_file_id`、`confidence`、`should_abstain` | 可校验、可弃权的模型第二意见 |
+| `RecommendationJudgeRecord` | `resolution`、`review_required`、`score_adjustment` | 确定性融合后的审计结果 |
+| `FileGovernanceState` | `recommendation_judgments` | 按版本组保存的 Judge 意见与规则处置记录 |
+
+Judge 不接收完整文档，也不能写入版本事实或直接清除人工审核。输出文件 ID 必须属于
+输入候选白名单；模型与确定性结果冲突时强制人工审核；低置信确定性结果即使得到明确
+第二意见，也只能获得有界优先级提升。弃权或模型不可用时保留原确定性推荐和审核要求。
+
 ## 错误恢复协议
 
 `error_recovery` 的恢复值为：
@@ -206,8 +221,9 @@ API Schema 不直接返回 `FileGovernanceState`：
 
 ## 版本兼容
 
-1.0.4 的业务证据、语义和关系字段在运行时重新生成，不新增数据库迁移；既有 1.0.0 状态扩展仍保持
+1.0.5 的推荐裁决记录与 1.0.4 的业务证据、语义和关系字段均在运行时重新生成，
+不新增数据库迁移；既有 1.0.0 状态扩展仍保持
 向后补齐，不更改 0.8.2 数据库迁移链。升级前应备份应用数据库和
 checkpoint；升级后执行 `alembic upgrade head`。正在等待人工输入的后台任务必须保留
-原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.4 API 使用当前
+原数据库、checkpoint、`run_id` 和 `thread_id`，然后由 1.0.5 API 使用当前
 `interrupt_id` 恢复。

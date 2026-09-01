@@ -165,30 +165,31 @@ def test_initial_state_contains_safe_llm_and_fixed_team_contract(
         "content",
         "version",
         "evidence",
+        "recommendation_judge",
     ]
     assert state["team_messages"] == []
     assert state["llm_calls"] == []
 
 
 def test_release_version_is_consistent_across_package_and_docker() -> None:
-    """Python 包、项目元数据、Docker 默认值和 README 应统一为 1.0.4。"""
+    """Python 包、项目元数据、Docker 默认值和 README 应统一为 1.0.5。"""
     pyproject = (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
     compose = (PROJECT_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     dockerignore = (PROJECT_ROOT / ".dockerignore").read_text(encoding="utf-8")
     gitignore = (PROJECT_ROOT / ".gitignore").read_text(encoding="utf-8")
-    release_notes = (PROJECT_ROOT / "docs" / "release-1.0.4.md").read_text(
+    release_notes = (PROJECT_ROOT / "docs" / "release-1.0.5.md").read_text(
         encoding="utf-8"
     )
 
-    assert app.__version__ == "1.0.4"
-    assert 'version = "1.0.4"' in pyproject
-    assert "ARG APP_VERSION=1.0.4" in dockerfile
-    assert "image: file-manage-agent:1.0.4" in compose
-    assert "当前版本 `1.0.4`" in readme
-    assert "docs/release-1.0.4.md" in readme
-    assert "# 1.0.4 发布说明" in release_notes
+    assert app.__version__ == "1.0.5"
+    assert 'version = "1.0.5"' in pyproject
+    assert "ARG APP_VERSION=1.0.5" in dockerfile
+    assert "image: file-manage-agent:1.0.5" in compose
+    assert "当前版本 `1.0.5`" in readme
+    assert "docs/release-1.0.5.md" in readme
+    assert "# 1.0.5 发布说明" in release_notes
     for ignore_content in (dockerignore, gitignore):
         assert "change_evidence*.json" in ignore_content
         assert "semantic_change*.json" in ignore_content
@@ -231,6 +232,7 @@ def test_real_provider_sample_references_environment_without_secret_value() -> N
         "content": "content-claude",
         "version": "version-deepseek",
         "evidence": "evidence-qwen",
+        "recommendation_judge": "evidence-qwen",
     }
     assert {profile["provider"] for profile in llm_config["profiles"]} == {
         "anthropic",

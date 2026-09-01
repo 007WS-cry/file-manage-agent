@@ -55,6 +55,7 @@ from app.nodes.subgraphs_nodes import (
 from app.nodes.task_tracking import (
     dispatch_content_subagent_task,
     dispatch_evidence_subagent_task,
+    dispatch_recommendation_judge_task,
     finalize_run_tasks,
     plan_run_tasks,
     sync_evidence_task_status,
@@ -136,6 +137,10 @@ def build_file_governance_graph(
         destinations=("run_error_recovery_subgraph",),
     )
     builder.add_node("sync_recommendation_task_status", sync_recommendation_task_status)
+    builder.add_node(
+        "dispatch_recommendation_judge_task",
+        dispatch_recommendation_judge_task,
+    )
     builder.add_node("prepare_human_review", prepare_human_review)
     builder.add_node("request_human_review", request_human_review)
     builder.add_node("apply_human_selection", apply_human_selection)
@@ -262,7 +267,15 @@ def build_file_governance_graph(
             "recovery": "run_error_recovery_subgraph",
         },
     )
-    builder.add_edge("run_recommendation_subgraph", "sync_recommendation_task_status")
+    builder.add_edge("run_recommendation_subgraph", "dispatch_recommendation_judge_task")
+    builder.add_conditional_edges(
+        "dispatch_recommendation_judge_task",
+        route_team_orchestration_result,
+        {
+            "success": "sync_recommendation_task_status",
+            "failure": "run_error_recovery_subgraph",
+        },
+    )
     builder.add_conditional_edges(
         "sync_recommendation_task_status",
         has_pending_human_review,

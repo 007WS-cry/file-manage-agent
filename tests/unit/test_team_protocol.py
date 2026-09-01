@@ -38,17 +38,23 @@ def _content_payload() -> dict[str, object]:
     }
 
 
-def test_fixed_registry_maps_only_three_subagent_tasks() -> None:
-    """固定注册表应只包含 Content、Version 和 Evidence 三个角色。"""
+def test_fixed_registry_maps_four_subagent_tasks() -> None:
+    """固定注册表应包含 Content、Version、Evidence 和 Judge 四个角色。"""
     registry = get_fixed_subagent_registry()
 
-    assert set(registry) == {"content", "version", "evidence"}
+    assert set(registry) == {
+        "content",
+        "version",
+        "evidence",
+        "recommendation_judge",
+    }
     assert resolve_fixed_subagent_for_task("inventory").agent_id == "content-subagent"
-    assert (
-        resolve_fixed_subagent_for_task("version_analysis").agent_id
-        == "version-subagent"
-    )
+    assert resolve_fixed_subagent_for_task("version_analysis").agent_id == "version-subagent"
     assert resolve_fixed_subagent_for_task("evidence").agent_id == "evidence-subagent"
+    assert (
+        resolve_fixed_subagent_for_task("recommendation").agent_id
+        == "recommendation-judge-subagent"
+    )
     with pytest.raises(ValueError, match="没有固定 Subagent"):
         resolve_fixed_subagent_for_task("report")
 
@@ -100,11 +106,14 @@ def test_result_and_error_messages_both_pass_team_protocol() -> None:
         error="模型调用超时",
     )
 
-    assert validate_team_message(
-        result_message,
-        team=team,
-        allowed_artifact_refs=[ALLOWED_ARTIFACT_REF],
-    )["message_type"] == "result"
+    assert (
+        validate_team_message(
+            result_message,
+            team=team,
+            allowed_artifact_refs=[ALLOWED_ARTIFACT_REF],
+        )["message_type"]
+        == "result"
+    )
     assert validate_team_message(error_message, team=team)["message_type"] == "error"
     assert error_message["error"] == "模型调用超时"
 

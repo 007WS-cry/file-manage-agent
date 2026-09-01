@@ -162,7 +162,7 @@ def test_subgraph_creates_valid_dag_assigns_roles_and_projects_todos() -> None:
         "content",
         "version",
         "evidence",
-        "coordinator",
+        "recommendation_judge",
         "coordinator",
         "coordinator",
     ]

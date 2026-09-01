@@ -22,6 +22,7 @@ from app.state.models import (
     FileGovernanceState,
     InventoryGraphState,
     RecommendationGraphState,
+    RecommendationJudgeInput,
     RecoveryGraphState,
     TaskStatusUpdate,
     TeamOrchestrationGraphState,
@@ -186,7 +187,11 @@ def file_governance_to_team_orchestration_state(
     *,
     task_update: TaskStatusUpdate | None = None,
     dispatch_request: (
-        ContentSubagentInput | VersionSubagentInput | EvidenceSubagentInput | None
+        ContentSubagentInput
+        | VersionSubagentInput
+        | EvidenceSubagentInput
+        | RecommendationJudgeInput
+        | None
     ) = None,
 ) -> TeamOrchestrationGraphState:
     """把顶层治理状态转换为 Team Orchestration 子图输入。

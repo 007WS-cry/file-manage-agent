@@ -134,6 +134,9 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
     business_evidence_by_group: dict[str, list] = {}
     for item in state.get("business_evidence", []):
         business_evidence_by_group.setdefault(item["group_id"], []).append(item)
+    judgment_by_group = {
+        item["group_id"]: item for item in state.get("recommendation_judgments", [])
+    }
 
     lines = [
         "# 文件版本治理报告",
@@ -200,6 +203,36 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
         if decision["reasons"]:
             lines.extend(["", "推荐理由："])
             lines.extend(f"- {reason}" for reason in decision["reasons"])
+        judgment = judgment_by_group.get(group["id"])
+        if judgment is not None:
+            judge_name = (
+                file_by_id[judgment["judge_recommended_file_id"]]["file_name"]
+                if judgment["judge_recommended_file_id"] in file_by_id
+                else "弃权"
+            )
+            lines.extend(
+                [
+                    "",
+                    "### Recommendation Judge 第二意见",
+                    "",
+                    f"候选：`{judge_name}`",
+                    f"置信度：{judgment['judge_confidence']:.2f}",
+                    f"融合结果：`{judgment['resolution']}`",
+                    f"是否要求审核：{'yes' if judgment['review_required'] else 'no'}",
+                ]
+            )
+            if judgment["supporting_reasons"]:
+                lines.append("")
+                lines.append("支持理由：")
+                lines.extend(f"- {reason}" for reason in judgment["supporting_reasons"])
+            if judgment["counterarguments"]:
+                lines.append("")
+                lines.append("反证：")
+                lines.extend(f"- {reason}" for reason in judgment["counterarguments"])
+            if judgment["missing_information"]:
+                lines.append("")
+                lines.append("缺失信息：")
+                lines.extend(f"- {reason}" for reason in judgment["missing_information"])
         if chain["warnings"]:
             lines.extend(["", "版本链警告："])
             lines.extend(f"- {warning}" for warning in chain["warnings"])
@@ -273,9 +306,7 @@ def generate_governance_report(state: FileGovernanceState) -> dict:
             for item in group_business_evidence:
                 target_file = file_by_id.get(item["target_file_id"])
                 target_name = (
-                    target_file["file_name"]
-                    if target_file is not None
-                    else item["target_file_id"]
+                    target_file["file_name"] if target_file is not None else item["target_file_id"]
                 )
                 refs = "；".join(item["evidence_refs"])
                 action_label = BUSINESS_EVIDENCE_RULE_ACTION_LABELS.get(

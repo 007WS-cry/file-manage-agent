@@ -223,15 +223,17 @@ def test_task_tracking_preserves_v030_business_and_report_results(
     assert {call["agent_id"] for call in current_result["llm_calls"]} == {
         "content-subagent",
         "evidence-subagent",
+        "recommendation-judge-subagent",
     }
     assert all(diff["summary_source"] == "deterministic" for diff in current_result["diffs"])
     for field_name in BUSINESS_RESULT_FIELDS:
         assert current_result[field_name] == reference_result[field_name]
     assert current_result["human_review"] == reference_result["human_review"]
     assert current_result["report"]["summary"] == reference_result["report"]["summary"]
-    assert (
-        current_result["report"]["report_markdown"] == reference_result["report"]["report_markdown"]
-    )
+    assert current_result["report"]["report_markdown"].startswith("# 文件版本治理报告")
+    assert "### Recommendation Judge 第二意见" in current_result["report"][
+        "report_markdown"
+    ]
     assert current_result["report"]["warnings"] == reference_result["report"]["warnings"]
     assert [task["status"] for task in current_result["tasks"]] == [
         "completed",

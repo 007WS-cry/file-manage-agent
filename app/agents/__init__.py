@@ -6,6 +6,7 @@ from app.agents.protocol import (
     create_team_message,
     validate_content_subagent_input,
     validate_evidence_subagent_input,
+    validate_recommendation_judge_input,
     validate_team_message,
     validate_version_subagent_input,
 )
@@ -16,7 +17,7 @@ from app.agents.registry import (
     resolve_fixed_subagent_for_task,
 )
 
-"""本包集中公开三个固定 Subagent、静态注册表和 Team Protocol 接口。"""
+"""本包集中公开四个固定 Subagent、静态注册表和 Team Protocol 接口。"""
 
 # 本包允许业务图和测试直接导入的固定 Agent 与协议公共接口。
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "resolve_fixed_subagent_for_task",
     "validate_content_subagent_input",
     "validate_evidence_subagent_input",
+    "validate_recommendation_judge_input",
     "validate_team_message",
     "validate_version_subagent_input",
 ]

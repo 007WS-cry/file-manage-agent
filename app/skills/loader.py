@@ -25,7 +25,9 @@ ALLOWED_SKILL_TASK_TYPES = frozenset(
 )
 
 # Skill 注册表允许绑定的固定 Agent 角色。
-ALLOWED_SKILL_ROLES = frozenset({"coordinator", "content", "version", "evidence"})
+ALLOWED_SKILL_ROLES = frozenset(
+    {"coordinator", "content", "version", "evidence", "recommendation_judge"}
+)
 
 # 单个注册表文件允许的最大字节数，防止配置异常占用过多内存。
 MAX_SKILL_REGISTRY_BYTES = 128 * 1024

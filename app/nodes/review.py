@@ -35,9 +35,7 @@ def prepare_human_review(state: FileGovernanceState) -> dict:
                 )
             ),
             -int(group_has_relation_review(state.get("diffs", []), group_id)),
-            -REVIEW_PRIORITY_RANK[
-                highest_group_review_priority(state.get("diffs", []), group_id)
-            ],
+            -REVIEW_PRIORITY_RANK[highest_group_review_priority(state.get("diffs", []), group_id)],
             group_id,
         ),
     )
@@ -67,16 +65,12 @@ def request_human_review(state: FileGovernanceState) -> dict:
     pending_ids = list(state["human_review"]["pending_group_ids"])
     group_by_id = {item["id"]: item for item in state.get("version_groups", [])}
     file_by_id = {item["id"]: item for item in state.get("files", [])}
-    decision_by_group = {
-        item["group_id"]: item for item in state.get("decisions", [])
-    }
+    decision_by_group = {item["group_id"]: item for item in state.get("decisions", [])}
     review_groups = []
     for group_id in pending_ids:
         group = group_by_id[group_id]
         decision = decision_by_group[group_id]
-        group_diffs = [
-            diff for diff in state.get("diffs", []) if diff["group_id"] == group_id
-        ]
+        group_diffs = [diff for diff in state.get("diffs", []) if diff["group_id"] == group_id]
         semantic_changes = [
             {
                 "change_type": change["change_type"],
@@ -106,9 +100,7 @@ def request_human_review(state: FileGovernanceState) -> dict:
                     "uncertain",
                 ),
                 "llm_relation": (
-                    dict(diff["llm_relation"])
-                    if diff.get("llm_relation") is not None
-                    else None
+                    dict(diff["llm_relation"]) if diff.get("llm_relation") is not None else None
                 ),
                 "resolved_relation": diff.get("resolved_relation", "uncertain"),
                 "resolution": diff.get(
@@ -117,9 +109,7 @@ def request_human_review(state: FileGovernanceState) -> dict:
                 ),
                 "confidence": diff.get("relation_confidence", 0.0),
                 "review_required": diff.get("relation_review_required", False),
-                "review_reasons": list(
-                    diff.get("relation_review_reasons", [])
-                )[:5],
+                "review_reasons": list(diff.get("relation_review_reasons", []))[:5],
             }
             for diff in group_diffs
         ][:20]
@@ -139,6 +129,14 @@ def request_human_review(state: FileGovernanceState) -> dict:
             for item in state.get("business_evidence", [])
             if item["group_id"] == group_id
         ][:20]
+        recommendation_judgment = next(
+            (
+                dict(item)
+                for item in state.get("recommendation_judgments", [])
+                if item["group_id"] == group_id
+            ),
+            None,
+        )
         review_groups.append(
             {
                 "group_id": group_id,
@@ -159,6 +157,7 @@ def request_human_review(state: FileGovernanceState) -> dict:
                     group_id,
                 ),
                 "business_evidence": business_evidence,
+                "recommendation_judgment": recommendation_judgment,
                 "recommended_file_id": decision["recommended_file_id"],
                 "reasons": decision["reasons"],
                 "candidates": [

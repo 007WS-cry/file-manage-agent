@@ -9,7 +9,7 @@ from docx import Document
 from app.graphs.file_governance import build_file_governance_graph
 from app.state.factories import create_initial_state
 
-"""本文件验证真实 Provider 不可用时三个业务阶段安全回退且治理事实保持一致。"""
+"""本文件验证真实 Provider 不可用时四个固定 Subagent 安全回退且确定性事实不变。"""
 
 # 测试专用且刻意不设置的 API Key 环境变量名称。
 MISSING_API_KEY_ENV = "FILE_MANAGE_AGENT_TEST_MISSING_OPENAI_KEY"
@@ -126,8 +126,7 @@ def test_missing_api_key_falls_back_without_changing_governance_results(
     assert baseline["run"]["status"] == "completed"
     assert fallback["run"]["status"] == "partial"
     assert all(
-        fallback[field_name] == baseline[field_name]
-        for field_name in DETERMINISTIC_RESULT_FIELDS
+        fallback[field_name] == baseline[field_name] for field_name in DETERMINISTIC_RESULT_FIELDS
     )
     assert fallback["llm_calls"]
     assert all(call["status"] == "fallback" for call in fallback["llm_calls"])
@@ -136,6 +135,7 @@ def test_missing_api_key_falls_back_without_changing_governance_results(
         "content-subagent",
         "version-subagent",
         "evidence-subagent",
+        "recommendation-judge-subagent",
     }
     assert all(diff["summary_source"] == "deterministic" for diff in fallback["diffs"])
     assert all(diff["summary_message_id"] is None for diff in fallback["diffs"])

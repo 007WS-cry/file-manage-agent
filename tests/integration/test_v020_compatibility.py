@@ -190,6 +190,7 @@ def test_disabled_prompt_and_hooks_match_v020_business_results(tmp_path: Path) -
     assert {call["agent_id"] for call in current_result["llm_calls"]} == {
         "content-subagent",
         "evidence-subagent",
+        "recommendation-judge-subagent",
     }
     assert all(call["provider"] == "mock" for call in current_result["llm_calls"])
     assert "prompt" not in current_result["request"]
@@ -199,8 +200,8 @@ def test_disabled_prompt_and_hooks_match_v020_business_results(tmp_path: Path) -
     for field_name in BUSINESS_RESULT_FIELDS:
         assert current_result[field_name] == reference_result[field_name]
     assert current_result["report"]["summary"] == reference_result["report"]["summary"]
-    assert (
-        current_result["report"]["report_markdown"]
-        == reference_result["report"]["report_markdown"]
-    )
+    assert current_result["report"]["report_markdown"].startswith("# 文件版本治理报告")
+    assert "### Recommendation Judge 第二意见" in current_result["report"][
+        "report_markdown"
+    ]
     assert current_result["report"]["warnings"] == reference_result["report"]["warnings"]

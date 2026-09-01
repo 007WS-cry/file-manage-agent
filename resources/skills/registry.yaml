@@ -27,12 +27,20 @@ skills:
     roles:
       - evidence
 
+  - id: recommendation-second-opinion
+    name: 受约束推荐第二意见
+    description: 对压缩候选决策包提出可弃权的结构化意见，供固定规则融合。
+    path: recommendation-second-opinion/SKILL.md
+    task_types:
+      - recommendation
+    roles:
+      - recommendation_judge
+
   - id: governance-report
     name: 治理报告编排
     description: 将版本事实、推荐、人工选择和错误整理为可审计的文件治理报告。
     path: governance-report/SKILL.md
     task_types:
-      - recommendation
       - human_review
       - report
     roles:

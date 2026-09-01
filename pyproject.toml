@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "file-manage-agent"
-version = "1.0.4"
-description = "具备受约束双轨版本关系判定、语义变更分析与确定性人工审核规则的 LangGraph 只读文件版本治理 Agent"
+version = "1.0.5"
+description = "具备受约束 Recommendation Judge、双通道决策与确定性风险控制的 LangGraph 只读文件版本治理 Agent"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -73,6 +73,7 @@ include = ["app*", "scripts*"]
 "resources/skills/file-content-analysis" = ["resources/skills/file-content-analysis/SKILL.md"]
 "resources/skills/version-relation" = ["resources/skills/version-relation/SKILL.md"]
 "resources/skills/evidence-confidence" = ["resources/skills/evidence-confidence/SKILL.md"]
+"resources/skills/recommendation-second-opinion" = ["resources/skills/recommendation-second-opinion/SKILL.md"]
 "resources/skills/governance-report" = ["resources/skills/governance-report/SKILL.md"]
 
 [tool.pytest.ini_options]

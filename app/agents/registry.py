@@ -19,6 +19,12 @@ from app.agents.evidence import (
     build_deterministic_evidence_output,
     build_evidence_subagent_prompts,
 )
+from app.agents.recommendation_judge import (
+    RECOMMENDATION_JUDGE_SUBAGENT_ID,
+    RECOMMENDATION_JUDGE_SUBAGENT_TASK_TYPES,
+    build_deterministic_recommendation_judge_output,
+    build_recommendation_judge_prompts,
+)
 from app.agents.version import (
     VERSION_SUBAGENT_ID,
     VERSION_SUBAGENT_TASK_TYPES,
@@ -28,10 +34,11 @@ from app.agents.version import (
 from app.state.models import (
     ContentSubagentOutput,
     EvidenceSubagentOutput,
+    RecommendationJudgeOutput,
     VersionSubagentOutput,
 )
 
-"""本模块提供三个固定 Subagent 的不可变注册表和按角色、Task 类型解析接口。"""
+"""本模块提供四个固定 Subagent 的不可变注册表和按角色、Task 类型解析接口。"""
 
 # 固定 Subagent Prompt 构造器的统一调用类型。
 SubagentPromptBuilder = Callable[[Any], tuple[str, str]]
@@ -47,7 +54,7 @@ class FixedSubagentDefinition:
     agent_id: str
     # TeamState 中使用的稳定 Agent ID。
 
-    role: Literal["content", "version", "evidence"]
+    role: Literal["content", "version", "evidence", "recommendation_judge"]
     # Agent 的唯一固定职责。
 
     task_types: tuple[str, ...]
@@ -66,7 +73,7 @@ class FixedSubagentDefinition:
     # 模型失败时根据确定性输入生成结果的纯函数。
 
 
-# 三个固定角色到不可变 Agent 定义的注册表。
+# 四个固定角色到不可变 Agent 定义的注册表。
 FIXED_SUBAGENT_REGISTRY: Mapping[str, FixedSubagentDefinition] = MappingProxyType(
     {
         "content": FixedSubagentDefinition(
@@ -96,6 +103,15 @@ FIXED_SUBAGENT_REGISTRY: Mapping[str, FixedSubagentDefinition] = MappingProxyTyp
             prompt_builder=build_evidence_subagent_prompts,
             fallback_builder=build_deterministic_evidence_output,
         ),
+        "recommendation_judge": FixedSubagentDefinition(
+            agent_id=RECOMMENDATION_JUDGE_SUBAGENT_ID,
+            role="recommendation_judge",
+            task_types=RECOMMENDATION_JUDGE_SUBAGENT_TASK_TYPES,
+            skill_ids=("recommendation-second-opinion",),
+            output_model=RecommendationJudgeOutput,
+            prompt_builder=build_recommendation_judge_prompts,
+            fallback_builder=build_deterministic_recommendation_judge_output,
+        ),
     }
 )
 
@@ -124,7 +140,7 @@ def resolve_fixed_subagent(
     """按照固定角色解析 Subagent 定义。
 
     Args:
-        role: content、version 或 evidence 角色名称。
+        role: content、version、evidence 或 recommendation_judge 角色名称。
 
     Returns:
         对应角色的不可变固定 Agent 定义。
@@ -150,7 +166,7 @@ def resolve_fixed_subagent_for_task(
     """按照固定 Task 类型解析唯一负责的 Subagent。
 
     Args:
-        task_type: Inventory、Version Analysis 或 Evidence Task 类型。
+        task_type: Inventory、Version Analysis、Evidence 或 Recommendation Task 类型。
 
     Returns:
         负责该 Task 类型的固定 Agent 定义。

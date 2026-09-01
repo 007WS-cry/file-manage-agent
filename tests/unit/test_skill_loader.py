@@ -22,6 +22,7 @@ def test_default_registry_loads_metadata_without_skill_content() -> None:
         "file-content-analysis",
         "version-relation",
         "evidence-confidence",
+        "recommendation-second-opinion",
         "governance-report",
     ]
     assert all(skill["status"] == "available" for skill in registry["skills"])

@@ -203,7 +203,7 @@ def create_llm_config_state(
     """根据单模型或多模型配置创建统一且不含凭据实际值的 LLM 状态。
 
     旧版 ``provider/model`` 配置会自动转换成 ID 为 ``default`` 的单一 Profile；
-    新版可声明多个 ``profiles``，再用 ``task_profile_ids`` 为三个固定 Subagent
+    新版可声明多个 ``profiles``，再用 ``task_profile_ids`` 为四个固定 Subagent
     分别路由。API Key 和 Base URL 均只保存环境变量名称，实际值不进入 checkpoint。
 
     Args:
