@@ -30,6 +30,7 @@ from app.nodes.team_orchestration import (
     initialize_fixed_agent_team,
     invoke_content_subagent_graph,
     invoke_evidence_subagent_graph,
+    invoke_recommendation_judge_subagent_graph,
     invoke_version_subagent_graph,
     merge_subagent_artifacts,
     prepare_readonly_workspace,
@@ -48,7 +49,7 @@ from app.state.models import TeamOrchestrationGraphState
 
 
 def build_team_orchestration_graph():
-    """构建 Task 同步及三个固定 Subagent 的统一分派编排子图。
+    """构建 Task 同步及四个固定 Subagent 的统一分派编排子图。
 
     Returns:
         可独立调用、验证 Team Protocol 并在失败时确定性回退的 LangGraph。
@@ -74,6 +75,10 @@ def build_team_orchestration_graph():
     builder.add_node("invoke_content_subagent_graph", invoke_content_subagent_graph)
     builder.add_node("invoke_version_subagent_graph", invoke_version_subagent_graph)
     builder.add_node("invoke_evidence_subagent_graph", invoke_evidence_subagent_graph)
+    builder.add_node(
+        "invoke_recommendation_judge_subagent_graph",
+        invoke_recommendation_judge_subagent_graph,
+    )
     builder.add_node("validate_team_message", validate_team_message)
     builder.add_node("fallback_to_coordinator", fallback_to_coordinator)
     builder.add_node("build_fallback_result_message", build_fallback_result_message)
@@ -144,12 +149,17 @@ def build_team_orchestration_graph():
             "content": "invoke_content_subagent_graph",
             "version": "invoke_version_subagent_graph",
             "evidence": "invoke_evidence_subagent_graph",
+            "recommendation_judge": "invoke_recommendation_judge_subagent_graph",
             "fallback": "fallback_to_coordinator",
         },
     )
     builder.add_edge("invoke_content_subagent_graph", "validate_team_message")
     builder.add_edge("invoke_version_subagent_graph", "validate_team_message")
     builder.add_edge("invoke_evidence_subagent_graph", "validate_team_message")
+    builder.add_edge(
+        "invoke_recommendation_judge_subagent_graph",
+        "validate_team_message",
+    )
     builder.add_conditional_edges(
         "validate_team_message",
         route_team_message_validation,

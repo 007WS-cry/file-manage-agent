@@ -38,6 +38,7 @@ FIXED_TEAM_ROLE_BY_ID: dict[str, str] = {
     "content-subagent": "content",
     "version-subagent": "version",
     "evidence-subagent": "evidence",
+    "recommendation-judge-subagent": "recommendation_judge",
 }
 
 # TeamState 允许保存的成员运行状态。
@@ -49,6 +50,7 @@ ALLOWED_SKILL_IDS_BY_ROLE: dict[str, frozenset[str]] = {
     "content": frozenset({"file-content-analysis"}),
     "version": frozenset({"version-relation"}),
     "evidence": frozenset({"evidence-confidence"}),
+    "recommendation_judge": frozenset({"recommendation-second-opinion"}),
 }
 
 
@@ -138,7 +140,7 @@ def create_worktree_error(
 
 
 def normalize_fixed_team(team: TeamState | None) -> TeamState:
-    """初始化或校验协调者和三个固定 Subagent 组成的团队状态。
+    """初始化或校验协调者和四个固定 Subagent 组成的团队状态。
 
     Args:
         team: 可选已有 TeamState；首次独立调用时可以省略。
@@ -172,7 +174,7 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
     if not isinstance(raw_members, list):
         raise TypeError("TeamState.members 必须是列表")
     if len(raw_members) != len(FIXED_TEAM_ROLE_BY_ID):
-        raise ValueError("TeamState 必须且只能包含协调者和三个固定 Subagent")
+        raise ValueError("TeamState 必须且只能包含协调者和四个固定 Subagent")
 
     normalized_members: list[AgentMemberState] = []
     seen_ids: set[str] = set()
@@ -199,7 +201,7 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
         tool_names = raw_member.get("tool_names")
         skill_ids = raw_member.get("skill_ids")
         if tool_names != []:
-            raise ValueError("0.4.4 固定 Subagent 不配置工具或 Worktree 能力")
+            raise ValueError("1.0.5 固定 Subagent 不配置工具或 Worktree 能力")
         if not isinstance(skill_ids, list) or any(
             not isinstance(skill_id, str) or not skill_id.strip() for skill_id in skill_ids
         ):
@@ -213,7 +215,13 @@ def normalize_fixed_team(team: TeamState | None) -> TeamState:
             AgentMemberState(
                 id=agent_id,
                 role=cast(
-                    Literal["coordinator", "content", "version", "evidence"],
+                    Literal[
+                        "coordinator",
+                        "content",
+                        "version",
+                        "evidence",
+                        "recommendation_judge",
+                    ],
                     expected_role,
                 ),
                 status=cast(
@@ -254,7 +262,7 @@ def update_team_dispatch_status(
         不修改输入对象的新 TeamState；开始时标记 waiting/working，结束时恢复 idle。
 
     Raises:
-        ValueError: agent_id 不是三个固定 Subagent 之一时抛出。
+        ValueError: agent_id 不是四个固定 Subagent 之一时抛出。
     """
     normalized = normalize_fixed_team(team)
     if agent_id == normalized["coordinator_id"] or agent_id not in FIXED_TEAM_ROLE_BY_ID:

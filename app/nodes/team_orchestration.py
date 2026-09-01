@@ -10,6 +10,7 @@ from app.agents.protocol import (
     create_result_message,
     validate_content_subagent_input,
     validate_evidence_subagent_input,
+    validate_recommendation_judge_input,
     validate_version_subagent_input,
 )
 from app.agents.protocol import (
@@ -18,11 +19,13 @@ from app.agents.protocol import (
 from app.agents.protocol import (
     validate_team_message as validate_protocol_message,
 )
+from app.agents.recommendation_judge import build_recommendation_judge_assignment_summary
 from app.agents.registry import (
     resolve_fixed_subagent_for_task,
 )
 from app.graphs.content_subagent import content_subagent_graph
 from app.graphs.evidence_subagent import evidence_subagent_graph
+from app.graphs.recommendation_judge import recommendation_judge_graph
 from app.graphs.version_subagent import version_subagent_graph
 from app.services.task_system import (
     assign_tasks_to_roles as assign_roles,
@@ -41,6 +44,8 @@ from app.state.models import (
     ContentSubagentGraphState,
     EvidenceSubagentGraphState,
     LLMCallRecord,
+    RecommendationJudgeGraphState,
+    RecommendationJudgeInput,
     TaskItem,
     TeamOrchestrationGraphState,
     VersionSubagentGraphState,
@@ -65,11 +70,12 @@ from app.utils.task_orchestration import (
 
 """本模块只定义 Team Orchestration 图中实际注册的 Task 同步和 Subagent 分派节点。"""
 
-# 三个编排 assignment 使用与角色子图一致的稳定摘要，确保消息 ID 可幂等合并。
+# 四个编排 assignment 使用与角色子图一致的稳定摘要，确保消息 ID 可幂等合并。
 ASSIGNMENT_SUMMARY_BY_ROLE: dict[str, str] = {
     "content": "分配内容摘要与关键字段解释任务，输入仅包含短预览和受控引用。",
     "version": "分配版本差异解释任务，输入仅包含比较结果、信号和受控引用。",
     "evidence": "分配外部证据解释任务，输入仅包含 PDF、发送摘要和受控引用。",
+    "recommendation_judge": "分配受约束推荐第二意见任务，输入仅包含压缩决策包。",
 }
 
 
@@ -125,7 +131,7 @@ def assign_tasks_to_roles(state: TeamOrchestrationGraphState) -> dict:
 
 
 def initialize_fixed_agent_team(state: TeamOrchestrationGraphState) -> dict:
-    """初始化或校验协调者与三个固定 Subagent 的团队状态。
+    """初始化或校验协调者与四个固定 Subagent 的团队状态。
 
     Args:
         state: 已通过 Task DAG 校验且可选携带已有 TeamState 的编排状态。
@@ -136,11 +142,7 @@ def initialize_fixed_agent_team(state: TeamOrchestrationGraphState) -> dict:
     try:
         return {"team": normalize_fixed_team(state.get("team"))}
     except (KeyError, TypeError, ValueError) as error:
-        return {
-            "errors": [
-                create_orchestration_error(state, "initialize_fixed_agent_team", error)
-            ]
-        }
+        return {"errors": [create_orchestration_error(state, "initialize_fixed_agent_team", error)]}
 
 
 def validate_orchestration_action(state: TeamOrchestrationGraphState) -> dict:
@@ -250,7 +252,14 @@ def prepare_task_worktree(state: TeamOrchestrationGraphState) -> dict:
             "worktrees": [worktree],
             "active_worktree_id": worktree["id"],
         }
-    except (FileNotFoundError, TimeoutError, KeyError, TypeError, ValueError, RuntimeError) as error:
+    except (
+        FileNotFoundError,
+        TimeoutError,
+        KeyError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+    ) as error:
         return {
             "active_worktree_id": None,
             "errors": [
@@ -280,11 +289,7 @@ def close_task_worktree(state: TeamOrchestrationGraphState) -> dict:
         return {"active_worktree_id": None}
     try:
         worktree = next(
-            (
-                item
-                for item in state.get("worktrees", [])
-                if item.get("id") == worktree_id
-            ),
+            (item for item in state.get("worktrees", []) if item.get("id") == worktree_id),
             None,
         )
         if worktree is None:
@@ -303,7 +308,14 @@ def close_task_worktree(state: TeamOrchestrationGraphState) -> dict:
                 )
             ]
         return update
-    except (FileNotFoundError, TimeoutError, KeyError, TypeError, ValueError, RuntimeError) as error:
+    except (
+        FileNotFoundError,
+        TimeoutError,
+        KeyError,
+        TypeError,
+        ValueError,
+        RuntimeError,
+    ) as error:
         return {
             "active_worktree_id": None,
             "errors": [
@@ -341,8 +353,10 @@ def validate_subagent_payload(state: TeamOrchestrationGraphState) -> dict:
             normalized = validate_content_subagent_input(request)
         elif definition.role == "version":
             normalized = validate_version_subagent_input(request)
-        else:
+        elif definition.role == "evidence":
             normalized = validate_evidence_subagent_input(request)
+        else:
+            normalized = validate_recommendation_judge_input(request)
         return {"dispatch_request": normalized, "dispatch_result": None}
     except (KeyError, TypeError, ValueError) as error:
         return {
@@ -366,11 +380,16 @@ def create_assignment_message(state: TeamOrchestrationGraphState) -> dict:
             raise TeamProtocolError("创建 assignment 前缺少 dispatch_request")
         task = resolve_subagent_task(state.get("tasks", []), request["task_id"])
         definition = resolve_fixed_subagent_for_task(task["task_type"])
+        assignment_summary = ASSIGNMENT_SUMMARY_BY_ROLE[definition.role]
+        if definition.role == "recommendation_judge":
+            assignment_summary = build_recommendation_judge_assignment_summary(
+                cast(RecommendationJudgeInput, request)
+            )
         message = create_protocol_assignment_message(
             team=state["team"],
             task_id=task["task_id"],
             receiver=definition.agent_id,
-            summary=ASSIGNMENT_SUMMARY_BY_ROLE[definition.role],
+            summary=assignment_summary,
             artifact_refs=request["artifact_refs"],
         )
         team = update_team_dispatch_status(
@@ -381,9 +400,7 @@ def create_assignment_message(state: TeamOrchestrationGraphState) -> dict:
         )
         return {"team": team, "team_messages": [message]}
     except (KeyError, TypeError, ValueError) as error:
-        return {
-            "errors": [create_dispatch_error(state, "create_assignment_message", error)]
-        }
+        return {"errors": [create_dispatch_error(state, "create_assignment_message", error)]}
 
 
 def invoke_content_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
@@ -418,9 +435,7 @@ def invoke_content_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             team_messages=assignments,
             llm_calls=[],
             errors=[dict(error) for error in state.get("errors", [])],
-            error_context=copy_error_context(
-                create_error_context(state, task_type="inventory")
-            ),
+            error_context=copy_error_context(create_error_context(state, task_type="inventory")),
         )
         result = content_subagent_graph.invoke(subgraph_state)
         return {
@@ -530,9 +545,7 @@ def invoke_evidence_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
             team_messages=assignments,
             llm_calls=[],
             errors=[dict(error) for error in state.get("errors", [])],
-            error_context=copy_error_context(
-                create_error_context(state, task_type="evidence")
-            ),
+            error_context=copy_error_context(create_error_context(state, task_type="evidence")),
         )
         result = evidence_subagent_graph.invoke(subgraph_state)
         return {
@@ -549,6 +562,64 @@ def invoke_evidence_subagent_graph(state: TeamOrchestrationGraphState) -> dict:
                     state,
                     "invoke_evidence_subagent_graph",
                     RuntimeError(f"{type(error).__name__}: Evidence Subagent 子图调用失败"),
+                )
+            ],
+        }
+
+
+def invoke_recommendation_judge_subagent_graph(
+    state: TeamOrchestrationGraphState,
+) -> dict:
+    """把已验证 Judge 分派转换为独立子图状态并同步调用该子图。
+
+    Args:
+        state: 已创建 assignment 且角色确定为 recommendation_judge 的编排状态。
+
+    Returns:
+        Judge 结构化意见、Team Message、LLM 审计和可选非致命错误。
+    """
+    try:
+        request = state["dispatch_request"]
+        if request is None or "candidates" not in request:
+            raise TeamProtocolError("Recommendation Judge 分派请求类型不匹配")
+        assignments = [
+            dict(message)
+            for message in state.get("team_messages", [])
+            if message.get("task_id") == request["task_id"]
+            and message.get("message_type") == "assignment"
+        ]
+        subgraph_state = RecommendationJudgeGraphState(
+            input=cast(dict, request),
+            team=normalize_fixed_team(state["team"]),
+            llm=dict(state["llm"]),
+            skill_context=[dict(instruction) for instruction in state.get("skill_context", [])],
+            selected_model_profile_id="",
+            system_prompt="",
+            user_prompt="",
+            output=None,
+            fallback_used=False,
+            team_messages=assignments,
+            llm_calls=[],
+            errors=[dict(error) for error in state.get("errors", [])],
+            error_context=copy_error_context(
+                create_error_context(state, task_type="recommendation")
+            ),
+        )
+        result = recommendation_judge_graph.invoke(subgraph_state)
+        return {
+            "dispatch_result": result.get("output"),
+            "team_messages": list(result.get("team_messages", [])),
+            "llm_calls": list(result.get("llm_calls", [])),
+            "errors": list(result.get("errors", [])),
+        }
+    except Exception as error:
+        return {
+            "dispatch_result": None,
+            "errors": [
+                create_dispatch_error(
+                    state,
+                    "invoke_recommendation_judge_subagent_graph",
+                    RuntimeError(f"{type(error).__name__}: Recommendation Judge 子图调用失败"),
                 )
             ],
         }
@@ -619,8 +690,10 @@ def fallback_to_coordinator(state: TeamOrchestrationGraphState) -> dict:
                 normalized = validate_content_subagent_input(request)
             elif definition.role == "version":
                 normalized = validate_version_subagent_input(request)
-            else:
+            elif definition.role == "evidence":
                 normalized = validate_evidence_subagent_input(request)
+            else:
+                normalized = validate_recommendation_judge_input(request)
             output = definition.fallback_builder(normalized)
         except (KeyError, TypeError, ValueError):
             output = definition.output_model(
@@ -951,8 +1024,4 @@ def update_todos_from_tasks(state: TeamOrchestrationGraphState) -> dict:
         )
         return {"todos": todos}
     except (KeyError, TypeError, ValueError) as error:
-        return {
-            "errors": [
-                create_orchestration_error(state, "update_todos_from_tasks", error)
-            ]
-        }
+        return {"errors": [create_orchestration_error(state, "update_todos_from_tasks", error)]}

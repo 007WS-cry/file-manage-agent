@@ -12,6 +12,8 @@ from app.state.models import (
     ContentSubagentInput,
     ControlledEvidenceSnippet,
     EvidenceSubagentInput,
+    RecommendationJudgeCandidateInput,
+    RecommendationJudgeInput,
     RelationEvidenceRecord,
     TeamMessage,
     TeamState,
@@ -139,9 +141,7 @@ RELATION_EVIDENCE_FIELDS = frozenset(
 )
 
 # 关系证据允许使用的封闭来源类型集合。
-RELATION_EVIDENCE_TYPES = frozenset(
-    {"similarity", "ordering", "file_type", "change", "context"}
-)
+RELATION_EVIDENCE_TYPES = frozenset({"similarity", "ordering", "file_type", "change", "context"})
 
 # Evidence Subagent 输入协议允许的固定字段。
 EVIDENCE_INPUT_FIELDS = frozenset(
@@ -163,6 +163,43 @@ EVIDENCE_SNIPPET_FIELDS = frozenset(
 # 受控业务证据摘录允许声明的固定来源。
 EVIDENCE_SNIPPET_SOURCES = frozenset({"local_log", "email_mcp", "manual"})
 
+# Recommendation Judge 输入协议允许的固定字段。
+RECOMMENDATION_JUDGE_INPUT_FIELDS = frozenset(
+    {
+        "task_id",
+        "group_id",
+        "candidates",
+        "deterministic_recommended_file_id",
+        "deterministic_confidence",
+        "deterministic_needs_human_review",
+        "risk_flags",
+        "artifact_refs",
+    }
+)
+
+# Recommendation Judge 单个压缩候选允许的固定字段。
+RECOMMENDATION_JUDGE_CANDIDATE_FIELDS = frozenset(
+    {
+        "file_id",
+        "deterministic_score",
+        "version_position",
+        "semantic_changes",
+        "evidence",
+    }
+)
+
+# Recommendation Judge 单次决策包允许携带的最大候选数。
+MAX_RECOMMENDATION_JUDGE_CANDIDATES = 8
+
+# Recommendation Judge 每个候选的单类摘要最大条目数。
+MAX_RECOMMENDATION_JUDGE_SUMMARIES_PER_FIELD = 3
+
+# Recommendation Judge 单条候选摘要允许的最大字符数。
+MAX_RECOMMENDATION_JUDGE_SUMMARY_CHARACTERS = 160
+
+# Recommendation Judge 规范化决策包允许的最大 JSON 字符数。
+MAX_RECOMMENDATION_JUDGE_INPUT_CHARACTERS = 16_000
+
 # TeamMessage 运行时校验必须覆盖的全部协议字段。
 TEAM_MESSAGE_FIELDS = frozenset(
     {
@@ -180,9 +217,7 @@ TEAM_MESSAGE_FIELDS = frozenset(
 )
 
 # Team Protocol 允许的消息类型。
-TEAM_MESSAGE_TYPES = frozenset(
-    {"assignment", "progress", "result", "question", "error"}
-)
+TEAM_MESSAGE_TYPES = frozenset({"assignment", "progress", "result", "question", "error"})
 
 # Team Protocol 允许的消息状态。
 TEAM_MESSAGE_STATUSES = frozenset({"created", "sent", "validated", "rejected"})
@@ -210,9 +245,7 @@ def _reject_unknown_fields(
     """
     unknown_fields = sorted(set(payload) - allowed_fields)
     if unknown_fields:
-        raise TeamProtocolError(
-            f"{payload_name} 包含协议外字段：{', '.join(unknown_fields)}"
-        )
+        raise TeamProtocolError(f"{payload_name} 包含协议外字段：{', '.join(unknown_fields)}")
 
 
 def _normalize_required_text(
@@ -240,9 +273,7 @@ def _normalize_required_text(
     if not normalized:
         raise TeamProtocolError(f"{field_name} 不得为空")
     if len(normalized) > max_characters:
-        raise TeamProtocolError(
-            f"{field_name} 不得超过 {max_characters} 个字符"
-        )
+        raise TeamProtocolError(f"{field_name} 不得超过 {max_characters} 个字符")
     return normalized
 
 
@@ -310,9 +341,7 @@ def _normalize_text_list(
             raise TeamProtocolError(f"{field_name} 不得包含重复项：{text}")
         normalized.append(text)
     if max_total_characters is not None and sum(map(len, normalized)) > max_total_characters:
-        raise TeamProtocolError(
-            f"{field_name} 全部文本不得超过 {max_total_characters} 个字符"
-        )
+        raise TeamProtocolError(f"{field_name} 全部文本不得超过 {max_total_characters} 个字符")
     return normalized
 
 
@@ -449,9 +478,7 @@ def _normalize_change_evidence(value: object) -> list[ChangeEvidenceRecord]:
     normalized: list[ChangeEvidenceRecord] = []
     seen_refs: set[str] = set()
     total_characters = 0
-    allowed_fields = frozenset(
-        {"evidence_ref", "source", "old_value", "new_value"}
-    )
+    allowed_fields = frozenset({"evidence_ref", "source", "old_value", "new_value"})
     for index, raw_item in enumerate(value):
         if not isinstance(raw_item, Mapping):
             raise TeamProtocolError(f"change_evidence[{index}] 必须是对象")
@@ -522,9 +549,7 @@ def _normalize_relation_constraints(value: object) -> VersionRelationConstraints
         TeamProtocolError: 约束不是对象、字段不完整或值不是布尔值时抛出。
     """
     if value is None:
-        value = {
-            field_name: False for field_name in VERSION_RELATION_CONSTRAINT_FIELDS
-        }
+        value = {field_name: False for field_name in VERSION_RELATION_CONSTRAINT_FIELDS}
     if not isinstance(value, Mapping):
         raise TeamProtocolError("relation_constraints 必须是对象")
     _reject_unknown_fields(
@@ -534,9 +559,7 @@ def _normalize_relation_constraints(value: object) -> VersionRelationConstraints
     )
     missing_fields = sorted(VERSION_RELATION_CONSTRAINT_FIELDS - set(value))
     if missing_fields:
-        raise TeamProtocolError(
-            "relation_constraints 缺少字段：" + ", ".join(missing_fields)
-        )
+        raise TeamProtocolError("relation_constraints 缺少字段：" + ", ".join(missing_fields))
     for field_name in VERSION_RELATION_CONSTRAINT_FIELDS:
         if not isinstance(value[field_name], bool):
             raise TeamProtocolError(f"relation_constraints.{field_name} 必须是布尔值")
@@ -604,9 +627,7 @@ def _normalize_relation_evidence(value: object) -> list[RelationEvidenceRecord]:
         seen_refs.add(evidence_ref)
         evidence_type = raw_item.get("evidence_type")
         if evidence_type not in RELATION_EVIDENCE_TYPES:
-            raise TeamProtocolError(
-                f"relation_evidence[{index}].evidence_type 不在允许范围内"
-            )
+            raise TeamProtocolError(f"relation_evidence[{index}].evidence_type 不在允许范围内")
         description = _normalize_required_text(
             raw_item.get("description"),
             field_name=f"relation_evidence[{index}].description",
@@ -644,9 +665,7 @@ def _normalize_evidence_snippets(value: object) -> list[ControlledEvidenceSnippe
     if not isinstance(value, list):
         raise TeamProtocolError("evidence_snippets 必须是列表")
     if len(value) > MAX_EVIDENCE_SNIPPETS:
-        raise TeamProtocolError(
-            f"evidence_snippets 不得超过 {MAX_EVIDENCE_SNIPPETS} 项"
-        )
+        raise TeamProtocolError(f"evidence_snippets 不得超过 {MAX_EVIDENCE_SNIPPETS} 项")
     normalized: list[ControlledEvidenceSnippet] = []
     seen_refs: set[str] = set()
     total_characters = 0
@@ -667,9 +686,7 @@ def _normalize_evidence_snippets(value: object) -> list[ControlledEvidenceSnippe
             raise TeamProtocolError("evidence_snippets 不得包含重复 evidence_ref")
         source = item.get("source")
         if source not in EVIDENCE_SNIPPET_SOURCES:
-            raise TeamProtocolError(
-                f"evidence_snippets[{index}].source 不在允许的来源中"
-            )
+            raise TeamProtocolError(f"evidence_snippets[{index}].source 不在允许的来源中")
         text = _normalize_required_text(
             item.get("text"),
             field_name=f"evidence_snippets[{index}].text",
@@ -677,9 +694,7 @@ def _normalize_evidence_snippets(value: object) -> list[ControlledEvidenceSnippe
         )
         total_characters += len(text)
         if total_characters > MAX_EVIDENCE_SNIPPETS_TOTAL_CHARACTERS:
-            raise TeamProtocolError(
-                "evidence_snippets 全部文本超过受控总字符上限"
-            )
+            raise TeamProtocolError("evidence_snippets 全部文本超过受控总字符上限")
         effective_time = item.get("effective_time")
         normalized_time: str | None = None
         if effective_time is not None:
@@ -689,17 +704,13 @@ def _normalize_evidence_snippets(value: object) -> list[ControlledEvidenceSnippe
                 max_characters=64,
             )
             try:
-                parsed_time = datetime.fromisoformat(
-                    normalized_time.replace("Z", "+00:00")
-                )
+                parsed_time = datetime.fromisoformat(normalized_time.replace("Z", "+00:00"))
             except ValueError as error:
                 raise TeamProtocolError(
                     f"evidence_snippets[{index}].effective_time 必须是 ISO 8601 时间"
                 ) from error
             if parsed_time.tzinfo is None:
-                raise TeamProtocolError(
-                    f"evidence_snippets[{index}].effective_time 必须包含时区"
-                )
+                raise TeamProtocolError(f"evidence_snippets[{index}].effective_time 必须包含时区")
         normalized.append(
             ControlledEvidenceSnippet(
                 evidence_ref=evidence_ref,
@@ -756,9 +767,7 @@ def validate_content_subagent_input(
         structure_summary=_normalize_json_mapping(
             payload.get("structure_summary"), field_name="structure_summary"
         ),
-        key_fields=_normalize_json_mapping(
-            payload.get("key_fields"), field_name="key_fields"
-        ),
+        key_fields=_normalize_json_mapping(payload.get("key_fields"), field_name="key_fields"),
         artifact_refs=_normalize_artifact_refs(
             payload.get("artifact_refs"), field_name="artifact_refs"
         ),
@@ -794,16 +803,11 @@ def validate_version_subagent_input(
         field_name="comparison_id",
         max_characters=256,
     )
-    change_evidence = _normalize_change_evidence(
-        payload.get("change_evidence", [])
-    )
-    relation_evidence = _normalize_relation_evidence(
-        payload.get("relation_evidence", [])
-    )
+    change_evidence = _normalize_change_evidence(payload.get("change_evidence", []))
+    relation_evidence = _normalize_relation_evidence(payload.get("relation_evidence", []))
     expected_evidence_prefix = f"diff:{comparison_id}:"
     if any(
-        not item["evidence_ref"].startswith(expected_evidence_prefix)
-        for item in change_evidence
+        not item["evidence_ref"].startswith(expected_evidence_prefix) for item in change_evidence
     ):
         raise TeamProtocolError("change_evidence 引用必须属于当前 comparison_id")
     deterministic_relation = payload.get("deterministic_relation", "uncertain")
@@ -852,9 +856,7 @@ def validate_version_subagent_input(
             payload.get("deterministic_relation_confidence", 0.0),
             field_name="deterministic_relation_confidence",
         ),
-        relation_constraints=_normalize_relation_constraints(
-            payload.get("relation_constraints")
-        ),
+        relation_constraints=_normalize_relation_constraints(payload.get("relation_constraints")),
         relation_evidence=relation_evidence,
         ordering_signals=_normalize_text_list(
             payload.get("ordering_signals"),
@@ -918,6 +920,148 @@ def validate_evidence_subagent_input(
     )
 
 
+def _normalize_recommendation_judge_candidates(
+    value: object,
+) -> list[RecommendationJudgeCandidateInput]:
+    """校验 Recommendation Judge 决策包中的压缩候选。
+
+    Args:
+        value: 等待校验的候选列表。
+
+    Returns:
+        按输入顺序复制且没有重复文件 ID 的候选列表。
+
+    Raises:
+        TeamProtocolError: 候选数量、字段、分数、位置或摘要超出协议时抛出。
+    """
+    if not isinstance(value, list):
+        raise TeamProtocolError("candidates 必须是列表")
+    if len(value) > MAX_RECOMMENDATION_JUDGE_CANDIDATES:
+        raise TeamProtocolError(f"candidates 不得超过 {MAX_RECOMMENDATION_JUDGE_CANDIDATES} 项")
+    normalized: list[RecommendationJudgeCandidateInput] = []
+    seen_file_ids: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise TeamProtocolError(f"candidates[{index}] 必须是对象")
+        _reject_unknown_fields(
+            item,
+            allowed_fields=RECOMMENDATION_JUDGE_CANDIDATE_FIELDS,
+            payload_name=f"candidates[{index}]",
+        )
+        file_id = _normalize_required_text(
+            item.get("file_id"),
+            field_name=f"candidates[{index}].file_id",
+            max_characters=256,
+        )
+        if file_id in seen_file_ids:
+            raise TeamProtocolError(f"candidates 包含重复 file_id：{file_id}")
+        position = item.get("version_position")
+        if position not in {"leaf", "non_leaf", "unknown"}:
+            raise TeamProtocolError(f"candidates[{index}].version_position 不是允许的位置")
+        normalized.append(
+            RecommendationJudgeCandidateInput(
+                file_id=file_id,
+                deterministic_score=_normalize_probability(
+                    item.get("deterministic_score"),
+                    field_name=f"candidates[{index}].deterministic_score",
+                ),
+                version_position=cast(
+                    Literal["leaf", "non_leaf", "unknown"],
+                    position,
+                ),
+                semantic_changes=_normalize_text_list(
+                    item.get("semantic_changes", []),
+                    field_name=f"candidates[{index}].semantic_changes",
+                    max_items=MAX_RECOMMENDATION_JUDGE_SUMMARIES_PER_FIELD,
+                    max_item_characters=MAX_RECOMMENDATION_JUDGE_SUMMARY_CHARACTERS,
+                    max_total_characters=MAX_TEXT_LIST_TOTAL_CHARACTERS,
+                ),
+                evidence=_normalize_text_list(
+                    item.get("evidence", []),
+                    field_name=f"candidates[{index}].evidence",
+                    max_items=MAX_RECOMMENDATION_JUDGE_SUMMARIES_PER_FIELD,
+                    max_item_characters=MAX_RECOMMENDATION_JUDGE_SUMMARY_CHARACTERS,
+                    max_total_characters=MAX_TEXT_LIST_TOTAL_CHARACTERS,
+                ),
+            )
+        )
+        seen_file_ids.add(file_id)
+    return normalized
+
+
+def validate_recommendation_judge_input(
+    payload: Mapping[str, object],
+) -> RecommendationJudgeInput:
+    """校验 Recommendation Judge 只收到压缩决策包和受控引用。
+
+    Args:
+        payload: 协调 Agent 生成的 Judge 输入信封。
+
+    Returns:
+        不包含完整文档正文且各字段均有界的决策包。
+
+    Raises:
+        TeamProtocolError: 输入包含未知字段、非法候选或确定性推荐不属于候选时抛出。
+    """
+    if not isinstance(payload, Mapping):
+        raise TeamProtocolError("Recommendation Judge 输入必须是对象")
+    _reject_unknown_fields(
+        payload,
+        allowed_fields=RECOMMENDATION_JUDGE_INPUT_FIELDS,
+        payload_name="Recommendation Judge 输入",
+    )
+    candidates = _normalize_recommendation_judge_candidates(payload.get("candidates"))
+    candidate_ids = {item["file_id"] for item in candidates}
+    deterministic_id = payload.get("deterministic_recommended_file_id")
+    if deterministic_id is not None:
+        deterministic_id = _normalize_required_text(
+            deterministic_id,
+            field_name="deterministic_recommended_file_id",
+            max_characters=256,
+        )
+        if deterministic_id not in candidate_ids:
+            raise TeamProtocolError("deterministic_recommended_file_id 必须属于 candidates")
+    needs_review = payload.get("deterministic_needs_human_review")
+    if not isinstance(needs_review, bool):
+        raise TeamProtocolError("deterministic_needs_human_review 必须是布尔值")
+    normalized_input = RecommendationJudgeInput(
+        task_id=_normalize_required_text(
+            payload.get("task_id"),
+            field_name="task_id",
+            max_characters=256,
+        ),
+        group_id=_normalize_required_text(
+            payload.get("group_id"),
+            field_name="group_id",
+            max_characters=256,
+        ),
+        candidates=candidates,
+        deterministic_recommended_file_id=cast(str | None, deterministic_id),
+        deterministic_confidence=_normalize_probability(
+            payload.get("deterministic_confidence"),
+            field_name="deterministic_confidence",
+        ),
+        deterministic_needs_human_review=needs_review,
+        risk_flags=_normalize_text_list(
+            payload.get("risk_flags", []),
+            field_name="risk_flags",
+            max_items=50,
+            max_item_characters=MAX_STRUCTURED_STRING_CHARACTERS,
+            max_total_characters=MAX_TEXT_LIST_TOTAL_CHARACTERS,
+        ),
+        artifact_refs=_normalize_artifact_refs(
+            payload.get("artifact_refs"),
+            field_name="artifact_refs",
+        ),
+    )
+    serialized_input = json.dumps(normalized_input, ensure_ascii=False, sort_keys=True)
+    if len(serialized_input) > MAX_RECOMMENDATION_JUDGE_INPUT_CHARACTERS:
+        raise TeamProtocolError(
+            "Recommendation Judge 压缩决策包超过 16000 个字符"
+        )
+    return normalized_input
+
+
 def _normalize_iso_timestamp(value: object) -> str:
     """校验 Team Message 时间为带时区的 ISO 8601 字符串。
 
@@ -930,9 +1074,7 @@ def _normalize_iso_timestamp(value: object) -> str:
     Raises:
         TeamProtocolError: 时间为空、格式非法或缺少时区时抛出。
     """
-    normalized = _normalize_required_text(
-        value, field_name="created_at", max_characters=64
-    )
+    normalized = _normalize_required_text(value, field_name="created_at", max_characters=64)
     try:
         parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
     except ValueError as exc:
@@ -1012,15 +1154,11 @@ def validate_team_message(
     )
     if allowed_artifact_refs is not None:
         allowed_refs = {
-            item.strip()
-            for item in allowed_artifact_refs
-            if isinstance(item, str) and item.strip()
+            item.strip() for item in allowed_artifact_refs if isinstance(item, str) and item.strip()
         }
         unauthorized = [item for item in artifact_refs if item not in allowed_refs]
         if unauthorized:
-            raise TeamProtocolError(
-                f"Team Message 包含未授权产物引用：{', '.join(unauthorized)}"
-            )
+            raise TeamProtocolError(f"Team Message 包含未授权产物引用：{', '.join(unauthorized)}")
 
     error = _normalize_optional_error(payload.get("error"))
     if message_type == "assignment" and sender != coordinator_id:
@@ -1042,9 +1180,7 @@ def validate_team_message(
             Literal["assignment", "progress", "result", "question", "error"],
             message_type,
         ),
-        status=cast(
-            Literal["created", "sent", "validated", "rejected"], status
-        ),
+        status=cast(Literal["created", "sent", "validated", "rejected"], status),
         summary=summary,
         artifact_refs=artifact_refs,
         error=error,

@@ -65,7 +65,7 @@ prompt_snapshot*.txt
 prompt_snapshot*.json
 hook_audit*.json
 
-# 1.0.4 Task、业务证据、语义与关系判断、恢复、后台任务、报告和发布验收快照含运行信息
+# 1.0.5 Task、Judge 决策包、语义与证据判断、恢复、后台任务、报告和发布验收快照含运行信息
 task_dag*.json
 task_snapshot*.json
 task_update*.json
@@ -100,6 +100,10 @@ version_relation*.json
 evidence_snippet*.json
 business_evidence*.json
 evidence_classification*.json
+recommendation_judge*.json
+decision_package*.json
+second_opinion*.json
+decision_fusion*.json
 checkpoint_snapshot*.json
 checkpoint_dump*.json
 release_acceptance*.json

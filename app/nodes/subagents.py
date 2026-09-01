@@ -46,19 +46,21 @@ from app.state.models import (
     EvidenceSubagentGraphState,
     EvidenceSubagentOutput,
     LLMCallRecord,
+    RecommendationJudgeGraphState,
     VersionSubagentGraphState,
     VersionSubagentOutput,
 )
 from app.utils.error_context import create_node_error
 from app.utils.runtime import utc_now_iso
 
-"""本模块只实现三个 Subagent LangGraph 中通过 add_node 明确注册的节点函数。"""
+"""本模块只实现四个 Subagent LangGraph 共用与三个业务角色专属的注册节点。"""
 
-# 三个固定 Subagent 子图状态的联合类型。
+# 四个固定 Subagent 子图状态的联合类型。
 SubagentGraphState = (
     ContentSubagentGraphState
     | VersionSubagentGraphState
     | EvidenceSubagentGraphState
+    | RecommendationJudgeGraphState
 )
 
 # 单个 Subagent Prompt 信封允许的最大字符数，防止完整正文进入模型上下文。
@@ -85,6 +87,8 @@ def resolve_model_profile(state: SubagentGraphState) -> dict:
         task_type = "content"
     elif "comparison_id" in input_data:
         task_type = "version"
+    elif "candidates" in input_data:
+        task_type = "recommendation_judge"
     else:
         task_type = "evidence"
 
@@ -135,9 +139,7 @@ def execute_before_model_hooks(state: SubagentGraphState) -> dict:
     elif not isinstance(user_prompt, str) or not user_prompt.strip():
         error_message = "Subagent user_prompt 必须是非空字符串"
     elif len(system_prompt) + len(user_prompt) > MAX_SUBAGENT_PROMPT_CHARACTERS:
-        error_message = (
-            f"Subagent Prompt 总长度不得超过 {MAX_SUBAGENT_PROMPT_CHARACTERS} 个字符"
-        )
+        error_message = f"Subagent Prompt 总长度不得超过 {MAX_SUBAGENT_PROMPT_CHARACTERS} 个字符"
 
     if error_message is None:
         return {}
@@ -179,6 +181,8 @@ def execute_after_model_hooks(state: SubagentGraphState) -> dict:
         definition = resolve_fixed_subagent("content")
     elif "comparison_id" in input_data:
         definition = resolve_fixed_subagent("version")
+    elif "candidates" in input_data:
+        definition = resolve_fixed_subagent("recommendation_judge")
     else:
         definition = resolve_fixed_subagent("evidence")
 
@@ -200,9 +204,10 @@ def execute_after_model_hooks(state: SubagentGraphState) -> dict:
             "model_profile_id"
         ) != state.get("selected_model_profile_id"):
             error_message = "LLMCallRecord.model_profile_id 与任务路由结果不一致"
-        elif state.get("llm", {}).get("enabled") is False and call_record.get(
-            "model_profile_id"
-        ) != DISABLED_MODEL_PROFILE_ID:
+        elif (
+            state.get("llm", {}).get("enabled") is False
+            and call_record.get("model_profile_id") != DISABLED_MODEL_PROFILE_ID
+        ):
             error_message = "关闭真实 LLM 时必须审计为 disabled-mock Profile"
 
     if error_message is None:
@@ -276,14 +281,10 @@ def build_content_subagent_prompt(state: ContentSubagentGraphState) -> dict:
             digest = str(instruction.get("content_sha256", ""))
             if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
                 raise ValueError("Content Skill 正文为空或摘要不一致")
-            skill_blocks.append(
-                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
-            )
+            skill_blocks.append(f"### {instruction['name']} ({instruction['skill_id']})\n{content}")
         if skill_blocks:
             system_prompt = (
-                system_prompt
-                + "\n\n## 当前 Task 已绑定 Skills\n"
-                + "\n\n".join(skill_blocks)
+                system_prompt + "\n\n## 当前 Task 已绑定 Skills\n" + "\n\n".join(skill_blocks)
             )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
@@ -437,7 +438,11 @@ def build_content_result_message(state: ContentSubagentGraphState) -> dict:
     """
     definition = resolve_fixed_subagent("content")
     raw_task_id = state.get("input", {}).get("task_id")
-    task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id.strip() else INVALID_PROTOCOL_TASK_ID
+    task_id = (
+        raw_task_id
+        if isinstance(raw_task_id, str) and raw_task_id.strip()
+        else INVALID_PROTOCOL_TASK_ID
+    )
     output = state.get("output")
     if output is not None:
         message = create_result_message(
@@ -573,14 +578,10 @@ def build_version_subagent_prompt(state: VersionSubagentGraphState) -> dict:
             digest = str(instruction.get("content_sha256", ""))
             if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
                 raise ValueError("Version Skill 正文为空或摘要不一致")
-            skill_blocks.append(
-                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
-            )
+            skill_blocks.append(f"### {instruction['name']} ({instruction['skill_id']})\n{content}")
         if skill_blocks:
             system_prompt = (
-                system_prompt
-                + "\n\n## 当前 Task 已绑定 Skills\n"
-                + "\n\n".join(skill_blocks)
+                system_prompt + "\n\n## 当前 Task 已绑定 Skills\n" + "\n\n".join(skill_blocks)
             )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
@@ -674,23 +675,17 @@ def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
         output = validate_structured_output(state.get("output"), VersionSubagentOutput)
         validate_output_artifact_refs(output, allowed_refs=state["input"]["artifact_refs"])
         evidence_by_ref = {
-            item["evidence_ref"]: item
-            for item in state["input"].get("change_evidence", [])
+            item["evidence_ref"]: item for item in state["input"].get("change_evidence", [])
         }
         allowed_evidence_refs = set(evidence_by_ref)
         seen_classifications: set[tuple[str, tuple[str, ...]]] = set()
         for index, semantic_change in enumerate(output.semantic_changes):
             evidence_refs = semantic_change.evidence_refs
             if len(evidence_refs) != len(set(evidence_refs)):
-                raise ValueError(
-                    f"semantic_changes[{index}].evidence_refs 不得包含重复引用"
-                )
+                raise ValueError(f"semantic_changes[{index}].evidence_refs 不得包含重复引用")
             invented_refs = sorted(set(evidence_refs) - allowed_evidence_refs)
             if invented_refs:
-                raise ValueError(
-                    "Version Subagent 返回了未授权差异证据引用："
-                    + invented_refs[0]
-                )
+                raise ValueError("Version Subagent 返回了未授权差异证据引用：" + invented_refs[0])
             cited_evidence = [evidence_by_ref[item] for item in evidence_refs]
             for value_name in ("old_value", "new_value"):
                 semantic_value = getattr(semantic_change, value_name)
@@ -704,8 +699,7 @@ def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
                         f"semantic_changes[{index}].{value_name} 无法由所引差异证据复核"
                     )
             if not state["input"].get("version_order_known", False) and (
-                semantic_change.old_value is not None
-                or semantic_change.new_value is not None
+                semantic_change.old_value is not None or semantic_change.new_value is not None
             ):
                 raise ValueError("版本方向未知时 semantic_changes 不得断言 old/new value")
             classification_key = (
@@ -721,16 +715,12 @@ def validate_version_subagent_output(state: VersionSubagentGraphState) -> dict:
             if len(relation_refs) != len(set(relation_refs)):
                 raise ValueError("relation_assessment.evidence_refs 不得包含重复引用")
             allowed_relation_refs = {
-                item["evidence_ref"]
-                for item in state["input"].get("relation_evidence", [])
+                item["evidence_ref"] for item in state["input"].get("relation_evidence", [])
             }
-            invented_relation_refs = sorted(
-                set(relation_refs) - allowed_relation_refs
-            )
+            invented_relation_refs = sorted(set(relation_refs) - allowed_relation_refs)
             if invented_relation_refs:
                 raise ValueError(
-                    "Version Subagent 返回了未授权关系证据引用："
-                    + invented_relation_refs[0]
+                    "Version Subagent 返回了未授权关系证据引用：" + invented_relation_refs[0]
                 )
             if relation_assessment.relation != "uncertain" and not relation_refs:
                 raise ValueError("非 uncertain 关系候选必须至少引用一项关系证据")
@@ -788,7 +778,11 @@ def build_version_result_message(state: VersionSubagentGraphState) -> dict:
     """
     definition = resolve_fixed_subagent("version")
     raw_task_id = state.get("input", {}).get("task_id")
-    task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id.strip() else INVALID_PROTOCOL_TASK_ID
+    task_id = (
+        raw_task_id
+        if isinstance(raw_task_id, str) and raw_task_id.strip()
+        else INVALID_PROTOCOL_TASK_ID
+    )
     output = state.get("output")
     if output is not None:
         message = create_result_message(
@@ -924,14 +918,10 @@ def build_evidence_subagent_prompt(state: EvidenceSubagentGraphState) -> dict:
             digest = str(instruction.get("content_sha256", ""))
             if not content.strip() or hashlib.sha256(content.encode("utf-8")).hexdigest() != digest:
                 raise ValueError("Evidence Skill 正文为空或摘要不一致")
-            skill_blocks.append(
-                f"### {instruction['name']} ({instruction['skill_id']})\n{content}"
-            )
+            skill_blocks.append(f"### {instruction['name']} ({instruction['skill_id']})\n{content}")
         if skill_blocks:
             system_prompt = (
-                system_prompt
-                + "\n\n## 当前 Task 已绑定 Skills\n"
-                + "\n\n".join(skill_blocks)
+                system_prompt + "\n\n## 当前 Task 已绑定 Skills\n" + "\n\n".join(skill_blocks)
             )
         return {"system_prompt": system_prompt, "user_prompt": user_prompt}
     except (KeyError, TypeError, ValueError) as error:
@@ -1082,7 +1072,11 @@ def build_evidence_result_message(state: EvidenceSubagentGraphState) -> dict:
     """
     definition = resolve_fixed_subagent("evidence")
     raw_task_id = state.get("input", {}).get("task_id")
-    task_id = raw_task_id if isinstance(raw_task_id, str) and raw_task_id.strip() else INVALID_PROTOCOL_TASK_ID
+    task_id = (
+        raw_task_id
+        if isinstance(raw_task_id, str) and raw_task_id.strip()
+        else INVALID_PROTOCOL_TASK_ID
+    )
     output = state.get("output")
     if output is not None:
         message = create_result_message(

@@ -61,7 +61,8 @@ RECOVERY_NODE_TRANSITIONS = {
     "sync_evidence_task_status": "dispatch_evidence_subagent_task",
     "dispatch_evidence_subagent_task": "run_context_compact_after_evidence",
     "run_context_compact_after_evidence": "run_recommendation_subgraph",
-    "run_recommendation_subgraph": "sync_recommendation_task_status",
+    "run_recommendation_subgraph": "dispatch_recommendation_judge_task",
+    "dispatch_recommendation_judge_task": "sync_recommendation_task_status",
     "sync_recommendation_task_status": "generate_governance_report",
     "sync_human_review_task_status": "generate_governance_report",
     "validate_report_result": "persist_long_term_memory",
@@ -93,6 +94,7 @@ RECOVERY_STAGE_NODES = {
     "context_compact_after_evidence": "run_context_compact_after_evidence",
     "recommendation": "run_recommendation_subgraph",
     "recommendation_subgraph": "run_recommendation_subgraph",
+    "recommendation_judge_subagent": "dispatch_recommendation_judge_task",
     "human_review": "sync_human_review_task_status",
     "after_run": "execute_after_run_hooks",
     "after_run_hooks": "execute_after_run_hooks",
@@ -122,6 +124,10 @@ RECOVERY_ORCHESTRATION_NODE_TRANSITIONS = {
         "dispatch_evidence_subagent_task",
         "run_context_compact_after_evidence",
     ),
+    "invoke_recommendation_judge_subagent_graph": (
+        "dispatch_recommendation_judge_task",
+        "sync_recommendation_task_status",
+    ),
 }
 
 # Team Orchestration 分派链中的节点集合，用 Task 类型消歧后回到对应顶层包装节点。
@@ -135,6 +141,7 @@ RECOVERY_ORCHESTRATION_DISPATCH_NODES = frozenset(
         "invoke_content_subagent_graph",
         "invoke_version_subagent_graph",
         "invoke_evidence_subagent_graph",
+        "invoke_recommendation_judge_subagent_graph",
         "validate_team_message",
         "fallback_to_coordinator",
         "build_fallback_result_message",
@@ -149,6 +156,7 @@ RECOVERY_ORCHESTRATION_TASK_NODES = {
     "inventory": "dispatch_content_subagent_task",
     "version_analysis": "run_version_analysis_subgraph",
     "evidence": "dispatch_evidence_subagent_task",
+    "recommendation": "dispatch_recommendation_judge_task",
 }
 
 # 允许在顶层条件边重新执行的节点集合。
@@ -165,6 +173,7 @@ RECOVERABLE_NODE_TASK_TYPES = {
     "run_evidence_subgraph": "evidence",
     "run_context_compact_after_evidence": "evidence",
     "run_recommendation_subgraph": "recommendation",
+    "dispatch_recommendation_judge_task": "recommendation",
     "recall_long_term_memory": "inventory",
     "persist_long_term_memory": "report",
     "validate_report_result": "report",
@@ -186,7 +195,9 @@ RECOVERABLE_INPUT_FIELDS = (
     "version_chains",
     "pdf_exports",
     "deliveries",
+    "business_evidence",
     "decisions",
+    "recommendation_judgments",
     "tasks",
 )
 

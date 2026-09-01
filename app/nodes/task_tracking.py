@@ -7,6 +7,7 @@ from app.utils.task_tracking import (
     build_content_dispatch_requests,
     build_evidence_dispatch_requests,
     dispatch_evidence_subagent_requests,
+    dispatch_recommendation_judge_requests,
     dispatch_stage_subagent_requests,
     has_orchestration_failure,
     public_task_update,
@@ -180,6 +181,72 @@ def sync_recommendation_task_status(state: FileGovernanceState) -> dict:
         "recommendation",
         next_task_type=None,
     )
+
+
+def dispatch_recommendation_judge_task(state: FileGovernanceState) -> dict:
+    """在确定性 Recommendation 完成后分派 Judge 并固定融合第二意见。
+
+    每个版本组只传递压缩候选、语义摘要、证据摘要与风险标记。
+    Judge 输出先通过候选和引用白名单校验，再由确定性规则处理共识、
+    冲突、低置信优先级和弃权；已有审核标记不会被模型清除。
+
+    Args:
+        state: 已合并确定性推荐且 Recommendation Task 仍在运行的顶层状态。
+
+    Returns:
+        固定团队、融合推荐、Judge 审计、人工审核状态和新增错误。
+    """
+    try:
+        working_state, decisions, judgments, errors = dispatch_recommendation_judge_requests(state)
+        pending_group_id_set = {
+            decision["group_id"] for decision in decisions if decision["needs_human_review"]
+        }
+        existing_pending_group_ids = [
+            group_id
+            for group_id in state["human_review"].get("pending_group_ids", [])
+            if group_id in pending_group_id_set
+        ]
+        pending_group_ids = existing_pending_group_ids + sorted(
+            pending_group_id_set - set(existing_pending_group_ids)
+        )
+        recovery_errors = [
+            {**dict(item), "fatal": True}
+            if item.get("stage") == "recommendation_judge_subagent"
+            and item.get("status") == "pending"
+            else dict(item)
+            for item in errors
+        ]
+        return {
+            "team": working_state["team"],
+            "tasks": list(working_state.get("tasks", [])),
+            "todos": list(working_state.get("todos", [])),
+            "team_messages": list(working_state.get("team_messages", [])),
+            "llm_calls": list(working_state.get("llm_calls", [])),
+            "decisions": decisions,
+            "recommendation_judgments": judgments,
+            "human_review": {
+                "pending_group_ids": pending_group_ids,
+                "selections": dict(state["human_review"].get("selections", {})),
+                "review_note": state["human_review"].get("review_note"),
+            },
+            "errors": recovery_errors,
+        }
+    except Exception as error:
+        return {
+            "errors": [
+                create_node_error(
+                    state,
+                    stage="recommendation_judge_subagent",
+                    node_name="dispatch_recommendation_judge_task",
+                    category="protocol",
+                    message=(
+                        f"{type(error).__name__}: Recommendation Judge 分派未完成，"
+                        "已保留确定性推荐和原审核要求。"
+                    ),
+                    fatal=False,
+                )
+            ]
+        }
 
 
 def sync_human_review_task_status(state: FileGovernanceState) -> dict:

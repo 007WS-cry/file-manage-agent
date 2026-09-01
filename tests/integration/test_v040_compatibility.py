@@ -274,9 +274,8 @@ def test_disabled_llm_preserves_v040_governance_conclusions(tmp_path: Path) -> N
     for field_name in GOVERNANCE_CONCLUSION_FIELDS:
         assert current_result[field_name] == reference_result[field_name]
     assert current_result["report"]["summary"] == reference_result["report"]["summary"]
-    assert (
-        current_result["report"]["report_markdown"] == reference_result["report"]["report_markdown"]
-    )
+    assert current_result["report"]["report_markdown"].startswith("# 文件版本治理报告")
+    assert "### Recommendation Judge 第二意见" in current_result["report"]["report_markdown"]
     assert all(diff["summary_source"] == "deterministic" for diff in current_result["diffs"])
     assert current_result["llm"]["enabled"] is False
     assert {call["provider"] for call in current_result["llm_calls"]} == {"mock"}
@@ -303,6 +302,7 @@ def test_v040_state_without_agent_fields_receives_safe_v050_defaults(tmp_path: P
         "content",
         "version",
         "evidence",
+        "recommendation_judge",
     ]
     assert result["team_messages"]
     assert result["llm_calls"]

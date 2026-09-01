@@ -15,6 +15,7 @@ from app.state.models import (
     EvidenceSubagentGraphState,
     FileGovernanceState,
     InventoryGraphState,
+    RecommendationJudgeGraphState,
     RecoveryGraphState,
     TeamOrchestrationGraphState,
     VersionAnalysisGraphState,
@@ -312,7 +313,13 @@ def route_team_orchestration_result(state: FileGovernanceState) -> Literal["succ
         存在 Team Orchestration 致命错误时返回 ``failure``，否则返回 ``success``。
     """
     has_orchestration_error = any(
-        error.get("stage") in {"team_orchestration", "content_subagent", "evidence_subagent"}
+        error.get("stage")
+        in {
+            "team_orchestration",
+            "content_subagent",
+            "evidence_subagent",
+            "recommendation_judge_subagent",
+        }
         and is_error_unresolved(error)
         for error in state.get("errors", [])
     )
@@ -696,15 +703,15 @@ def route_worktree_preparation_result(
 
 def select_subagent(
     state: TeamOrchestrationGraphState,
-) -> Literal["content", "version", "evidence", "fallback"]:
+) -> Literal["content", "version", "evidence", "recommendation_judge", "fallback"]:
     """根据已验证 dispatch_request 的辨识字段选择唯一固定 Subagent。
 
     Args:
         state: 已创建 assignment Team Message 的编排状态。
 
     Returns:
-        返回 ``content``、``version`` 或 ``evidence``；请求或 assignment
-        不完整时返回 ``fallback``。
+        返回 ``content``、``version``、``evidence`` 或 ``recommendation_judge``；
+        请求或 assignment 不完整时返回 ``fallback``。
     """
     if any(
         error.get("node_name") == "create_assignment_message" for error in state.get("errors", [])
@@ -717,6 +724,8 @@ def select_subagent(
         return "content"
     if "comparison_id" in request:
         return "version"
+    if "candidates" in request and "deterministic_confidence" in request:
+        return "recommendation_judge"
     if "group_id" in request:
         return "evidence"
     return "fallback"
@@ -742,9 +751,12 @@ def route_team_message_validation(
 
 
 def route_subagent_input_validation(
-    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState
+    | RecommendationJudgeGraphState,
 ) -> Literal["valid", "invalid"]:
-    """根据三个固定 Subagent 的输入协议校验结果选择 Prompt 或错误消息。
+    """根据四个固定 Subagent 的输入协议校验结果选择 Prompt 或错误消息。
 
     Args:
         state: 已执行角色专属输入校验节点的 Subagent 子图状态。
@@ -756,6 +768,7 @@ def route_subagent_input_validation(
         "validate_content_subagent_input",
         "validate_version_subagent_input",
         "validate_evidence_subagent_input",
+        "validate_recommendation_judge_input",
     }
     has_input_error = any(
         error.get("node_name") in input_nodes for error in state.get("errors", [])
@@ -764,7 +777,10 @@ def route_subagent_input_validation(
 
 
 def route_subagent_prompt_validation(
-    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState
+    | RecommendationJudgeGraphState,
 ) -> Literal["invoke", "error"]:
     """根据最小 Prompt 和固定 before-model 安全检查结果决定是否调用模型。
 
@@ -779,6 +795,7 @@ def route_subagent_prompt_validation(
         "build_content_subagent_prompt",
         "build_version_subagent_prompt",
         "build_evidence_subagent_prompt",
+        "build_recommendation_judge_prompt",
         "execute_before_model_hooks",
     }
     has_prompt_error = any(
@@ -788,7 +805,10 @@ def route_subagent_prompt_validation(
 
 
 def route_subagent_llm_result(
-    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState
+    | RecommendationJudgeGraphState,
 ) -> Literal["validate", "fallback", "error"]:
     """根据结构化模型结果和回退开关选择输出校验、确定性回退或错误消息。
 
@@ -807,7 +827,10 @@ def route_subagent_llm_result(
 
 
 def route_subagent_output_validation(
-    state: ContentSubagentGraphState | VersionSubagentGraphState | EvidenceSubagentGraphState,
+    state: ContentSubagentGraphState
+    | VersionSubagentGraphState
+    | EvidenceSubagentGraphState
+    | RecommendationJudgeGraphState,
 ) -> Literal["persist", "fallback", "error"]:
     """根据输出 Schema 和引用白名单校验结果选择固化、回退或错误消息。
 

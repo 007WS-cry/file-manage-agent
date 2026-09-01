@@ -29,7 +29,7 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 内容标准化、版本分组、文件对差异、版本边、分叉和版本链；
 - 可解释主版本评分和低置信度人工确认；
 - Inventory、Version Analysis、Evidence、Recommendation 四个业务子图和顶层治理图；
-- Content、Version、Evidence 三个可独立调用的固定 Subagent 子图；
+- Content、Version、Evidence、Recommendation Judge 四个可独立调用的固定 Subagent 子图；
 - 标准化内容及中间 JSON 产物的隔离、原子持久化；
 - 进程内或 SQLite LangGraph checkpoint；
 - 独立 SQLAlchemy 应用数据库、十表 ORM/迁移和 Repository 数据访问边界；
@@ -48,6 +48,7 @@ Gemini、GLM、DeepSeek、Qwen、OpenAI 及其他主流 Provider 和第三方中
 - 官方 MCP Python SDK 的 Streamable HTTP 只读邮件证据客户端和脱敏模拟服务；
 - 邮件 MCP 成功时生成 `email_mcp` DeliveryRecord，关闭或不可用时自动使用本地日志；
 - 1.0.4 允许 Evidence Subagent 从有界 `evidence_text` 中提出业务证据候选，再由固定规则加权、排除或转人工审核；
+- 1.0.5 让 Recommendation Judge 只读取压缩决策包并给出可弃权第二意见，由确定性规则融合共识、冲突和有界优先级；
 - API、Worker、Scheduler 和模拟邮件 MCP 共用字段稳定的单行 JSON 日志；
 - Docker Compose 一次编排迁移、API、Worker、Scheduler 与模拟邮件 MCP；
 - 32 个真实 DOCX、32 个并发 PDF 任务及最高 500 文件演示生成能力；

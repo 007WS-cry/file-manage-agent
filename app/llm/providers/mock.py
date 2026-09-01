@@ -14,9 +14,21 @@ from app.llm.schemas import validate_structured_output
 
 """本模块提供不访问网络的确定性 Mock LLM Provider，用于测试和安全关闭模式。"""
 
-# 默认 Mock 结构化结果适配三个固定 Subagent 的最小摘要协议。
+# 默认 Mock 结构化结果适配三个解释型 Subagent 的最小摘要协议。
 DEFAULT_MOCK_RESPONSE_PAYLOAD = {
     "summary": "Mock LLM 已生成结构化摘要。",
+    "artifact_refs": [],
+}
+
+# Recommendation Judge 在关闭真实模型时使用的安全弃权 Mock 输出。
+DEFAULT_RECOMMENDATION_JUDGE_MOCK_RESPONSE_PAYLOAD = {
+    "summary": "Mock Recommendation Judge 已弃权，保留确定性结果。",
+    "recommended_file_id": None,
+    "confidence": 0.0,
+    "supporting_reasons": [],
+    "counterarguments": [],
+    "missing_information": ["真实 LLM 已关闭。"],
+    "should_abstain": True,
     "artifact_refs": [],
 }
 
@@ -137,10 +149,13 @@ class MockLLMProvider(LLMProvider):
         if self.latency_seconds:
             time.sleep(self.latency_seconds)
 
-        output = validate_structured_output(
-            deepcopy(self.response_payload),
-            output_model,
-        )
+        payload = deepcopy(self.response_payload)
+        if (
+            output_model.__name__ == "RecommendationJudgeOutput"
+            and payload == DEFAULT_MOCK_RESPONSE_PAYLOAD
+        ):
+            payload = deepcopy(DEFAULT_RECOMMENDATION_JUDGE_MOCK_RESPONSE_PAYLOAD)
+        output = validate_structured_output(payload, output_model)
         total_tokens = (
             self.input_tokens + self.output_tokens
             if self.input_tokens is not None and self.output_tokens is not None
